@@ -52,10 +52,14 @@ class DenseBlock(nn.Module):
 
 class RobocarMLP(nn.Module):
     """
-    MLP baseline ultra-léger pour la conduite autonome.
+    MLP conduite autonome v3.
 
-    Input  : [ray_0, ..., ray_N]  →  N features (Z-scorés, sans speed)
-    Output : [steering, acceleration]    →  [-1, 1] via Tanh
+    Input  : [ray_0..ray_N, Δray_0..Δray_N]  →  N*2 features (Z-scorés + delta)
+    Output : steering [-1,1] via Tanh  +  accel [0,1] via Sigmoid (bimodal)
+
+    use_delta : ajoute les Δrays (différence frame t - frame t-1)
+                → contexte temporel sans LSTM, réduit le zigzag
+    bimodal_accel : tête Sigmoid + BCELoss pour l'accel (0=frein, 1=gaz)
     """
 
     def __init__(
@@ -64,10 +68,14 @@ class RobocarMLP(nn.Module):
         hidden_dims: list = None,
         dropout: list = None,
         use_batch_norm: bool = True,
+        use_delta: bool = True,
+        bimodal_accel: bool = True,
     ):
         super().__init__()
         self.n_rays = n_rays
-        self.input_size = n_rays  # plus de speed (toujours 0 dans ce simulateur)
+        self.use_delta = use_delta
+        self.bimodal_accel = bimodal_accel
+        self.input_size = n_rays * 2 if use_delta else n_rays
         self.output_size = 2
 
         hidden_dims = hidden_dims or [128, 64, 32]
@@ -77,24 +85,46 @@ class RobocarMLP(nn.Module):
         layers = []
         in_dim = self.input_size
         for i, (out_dim, drop) in enumerate(zip(hidden_dims, dropout)):
-            # Pas de BN sur la dernière couche cachée (avant la tête)
             use_bn = use_batch_norm and i < len(hidden_dims) - 1
             layers.append(DenseBlock(in_dim, out_dim, dropout=drop, use_bn=use_bn))
             in_dim = out_dim
 
         self.backbone = nn.Sequential(*layers)
-        self.head = nn.Linear(in_dim, self.output_size)
-        nn.init.xavier_uniform_(self.head.weight)
-        nn.init.zeros_(self.head.bias)
+        # Tête steering : Tanh → [-1, 1]
+        self.steer_head = nn.Linear(in_dim, 1)
+        # Tête accel : Sigmoid → [0, 1] (bimodal 0/1) ou Tanh si bimodal=False
+        self.accel_head = nn.Linear(in_dim, 1)
+        for head in [self.steer_head, self.accel_head]:
+            nn.init.xavier_uniform_(head.weight)
+            nn.init.zeros_(head.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.tanh(self.head(self.backbone(x)))
+        """
+        Retourne [steer, accel_logit] pendant le training.
+        - steer    : Tanh → [-1, 1]
+        - accel    : logit brut (sans Sigmoid) si bimodal → BCEWithLogitsLoss AMP-safe
+        Appeler .predict() à l'inférence pour obtenir la proba Sigmoid [0,1].
+        """
+        feat = self.backbone(x)
+        steer = torch.tanh(self.steer_head(feat))
+        accel_raw = self.accel_head(feat)
+        if self.bimodal_accel:
+            accel = accel_raw  # logits bruts, Sigmoid appliqué par BCEWithLogitsLoss
+        else:
+            accel = torch.tanh(accel_raw)
+        return torch.cat([steer, accel], dim=-1)
 
-    def predict(self, rays: np.ndarray, speed: float) -> tuple[float, float]:
+    def predict(self, rays: np.ndarray, delta_rays: Optional[np.ndarray] = None) -> tuple[float, float]:
+        """Inférence : applique Sigmoid sur accel si bimodal (forward retourne logits)."""
         self.eval()
         with torch.no_grad():
-            obs = np.concatenate([rays, [speed]], dtype=np.float32)
-            out = self.forward(torch.from_numpy(obs).unsqueeze(0)).squeeze(0).numpy()
+            if self.use_delta and delta_rays is not None:
+                obs = np.concatenate([rays, delta_rays], dtype=np.float32)
+            else:
+                obs = rays.astype(np.float32)
+            out = self.forward(torch.from_numpy(obs).unsqueeze(0)).squeeze(0)
+            if self.bimodal_accel:
+                out = torch.stack([out[0], torch.sigmoid(out[1])])
         return float(out[0]), float(out[1])
 
     def count_parameters(self) -> int:
@@ -106,14 +136,24 @@ class RobocarMLP(nn.Module):
         torch.save({
             "arch": "mlp",
             "state_dict": self.state_dict(),
-            "config": {"n_rays": self.n_rays, "input_size": self.input_size},
+            "config": {
+                "n_rays": self.n_rays,
+                "input_size": self.input_size,
+                "use_delta": self.use_delta,
+                "bimodal_accel": self.bimodal_accel,
+            },
             "metadata": metadata or {},
         }, path)
 
     @classmethod
     def load(cls, path: str) -> "RobocarMLP":
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
-        model = cls(n_rays=ckpt["config"]["n_rays"])
+        cfg = ckpt["config"]
+        model = cls(
+            n_rays=cfg["n_rays"],
+            use_delta=cfg.get("use_delta", False),
+            bimodal_accel=cfg.get("bimodal_accel", False),
+        )
         model.load_state_dict(ckpt["state_dict"])
         return model.eval()
 
@@ -305,6 +345,32 @@ class WeightedHuberLoss(nn.Module):
         return weighted.mean()
 
 
+class BimodalLoss(nn.Module):
+    """
+    Loss combinée pour modèle bimodal v3:
+    - Steering : HuberLoss (continu [-1,1])
+    - Accel    : BCELoss (binaire 0/1)
+
+    steer_weight=0.85 car le steering est la variable critique.
+    """
+
+    def __init__(self, steer_weight: float = 0.85, bce_weight: float = 0.15, delta: float = 1.0):
+        super().__init__()
+        self.steer_weight = steer_weight
+        self.bce_weight = bce_weight
+        self.steer_loss_fn = nn.HuberLoss(delta=delta)
+        # BCEWithLogitsLoss = Sigmoid + BCELoss fusionnés → AMP-safe + stable
+        self.accel_loss_fn = nn.BCEWithLogitsLoss()
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        steer_loss = self.steer_loss_fn(pred[:, 0], target[:, 0])
+        # Binariser la cible accel : 0 si ≤0.5, 1 si >0.5
+        accel_target = (target[:, 1] > 0.5).float()
+        # pred[:, 1] = logits bruts (SANS Sigmoid) → BCEWithLogitsLoss applique Sigmoid intern.
+        accel_loss = self.accel_loss_fn(pred[:, 1], accel_target)
+        return self.steer_weight * steer_loss + self.bce_weight * accel_loss
+
+
 class WeightedMSELoss(nn.Module):
     """MSE pondérée (baseline — préférer WeightedHuberLoss)."""
 
@@ -329,6 +395,8 @@ def build_model(
 
 
 def build_loss(loss_type: str = "huber", steer_weight: float = 0.7, accel_weight: float = 0.3, delta: float = 1.0):
+    if loss_type == "bimodal":
+        return BimodalLoss(steer_weight=steer_weight, bce_weight=accel_weight, delta=delta)
     if loss_type == "huber":
         return WeightedHuberLoss(steer_weight, accel_weight, delta)
     return WeightedMSELoss(steer_weight, accel_weight)

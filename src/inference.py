@@ -23,38 +23,36 @@ from src.client import RobocarEnv
 
 class SmoothingFilter:
     """
-    Filtre exponentiel robuste pour lisser les actions.
-
-    Fixes v2 (Grok):
-    - Premier step: initialise avec la valeur brute (pas de 0)
-    - Reset épisode: méthode reset() explicite
-    - NaN guard: nan_to_num avant chaque update
-    - alpha adaptatif possible (vitesse élevée → moins de lissage)
+    Filtre adaptatif : alpha élevé en virage (réactif), bas en ligne droite (stable).
+    Deadzone sur le steering pour supprimer le micro-zigzag.
+    Recommandé Grok/Gemini v2.
     """
 
-    def __init__(self, alpha: float = 0.7):
-        self.alpha = alpha
+    def __init__(self, alpha: float = 0.57, alpha_max: float = 0.92, deadzone: float = 0.06):
+        self.alpha_base = alpha
+        self.alpha_max = alpha_max
+        self.deadzone = deadzone
         self._smoothed: Optional[np.ndarray] = None
 
     def reset(self):
-        """À appeler à chaque reset d'épisode Unity."""
         self._smoothed = None
 
     def update(self, raw: np.ndarray) -> np.ndarray:
-        """
-        raw: np.ndarray [steering, accel]
-        Retourne la valeur lissée.
-        """
-        # Guard NaN/Inf
         raw = np.nan_to_num(raw, nan=0.0, posinf=1.0, neginf=-1.0)
 
         if self._smoothed is None:
-            # Premier step: pas d'historique → valeur brute directement
             self._smoothed = raw.copy()
         else:
-            self._smoothed = self.alpha * raw + (1.0 - self.alpha) * self._smoothed
+            # Alpha adaptatif : plus réactif si changement de steering fort (virage)
+            delta = abs(raw[0] - self._smoothed[0])
+            alpha = self.alpha_base + (self.alpha_max - self.alpha_base) * min(delta, 1.0)
+            self._smoothed = alpha * raw + (1.0 - alpha) * self._smoothed
 
-        return self._smoothed.copy()
+        result = self._smoothed.copy()
+        # Deadzone steering : supprime le micro-zigzag en ligne droite
+        if abs(result[0]) < self.deadzone:
+            result[0] = 0.0
+        return result
 
     def __call__(self, raw: np.ndarray) -> np.ndarray:
         return self.update(raw)
@@ -156,11 +154,12 @@ def run_inference_pytorch(
 
     smoother = SmoothingFilter(alpha=smoothing_alpha)
     tracker = PerformanceTracker()
-    episode_done = False
+    prev_rays = None  # Pour delta_rays (v3)
 
     with RobocarEnv(config_path=config_path, port=port) as env:
         observations = env.reset()
         smoother.reset()
+        prev_rays = None
         print(f"[Inference] Connecté — {len(observations)} agent(s). Démarrage...\n")
 
         try:
@@ -178,14 +177,30 @@ def run_inference_pytorch(
                 rays = obs.rays
                 if ray_mu is not None:
                     rays = (rays - ray_mu) / ray_sigma
-                x = torch.from_numpy(rays).unsqueeze(0)
+
+                # Delta rays : contexte temporel (v3)
+                if hasattr(model, "use_delta") and model.use_delta:
+                    delta_rays = np.zeros_like(rays) if prev_rays is None else (rays - prev_rays)
+                    prev_rays = rays.copy()
+                    x = torch.from_numpy(
+                        np.concatenate([rays, delta_rays]).astype(np.float32)
+                    ).unsqueeze(0)
+                else:
+                    x = torch.from_numpy(rays).unsqueeze(0)
 
                 with torch.no_grad():
-                    pred = model(x).squeeze(0).numpy()
+                    raw = model(x).squeeze(0)
+                    # forward() retourne logits bruts pour accel → Sigmoid ici à l'inférence
+                    if hasattr(model, "bimodal_accel") and model.bimodal_accel:
+                        raw = torch.stack([raw[0], torch.sigmoid(raw[1])])
+                    pred = raw.numpy()
 
                 pred_smooth = smoother.update(pred)
-                steering = float(np.clip(pred_smooth[0], -0.7, 0.7))  # limiter les coups brusques
-                acceleration = 0.5  # fixe — accel bimodale non apprise
+                steering = float(np.clip(pred_smooth[0], -0.7, 0.7))
+                if hasattr(model, "bimodal_accel") and model.bimodal_accel:
+                    acceleration = float(np.clip(pred_smooth[1], 0.3, 1.0))
+                else:
+                    acceleration = 0.5  # fixe — ancien comportement
 
                 env.send_actions(steering=steering, acceleration=acceleration)
                 observations = env.step()

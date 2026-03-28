@@ -37,6 +37,7 @@ def train_epoch(model, loader, optimizer, loss_fn, device, clip_grad=1.0, use_am
     scaler = torch.amp.GradScaler(enabled=use_amp and device.type == "cuda")
     total_loss = 0.0
     all_preds, all_targets = [], []
+    bimodal = getattr(model, "bimodal_accel", False)
 
     for obs, action in loader:
         obs, action = obs.to(device, non_blocking=True), action.to(device, non_blocking=True)
@@ -54,7 +55,11 @@ def train_epoch(model, loader, optimizer, loss_fn, device, clip_grad=1.0, use_am
         scaler.update()
 
         total_loss += loss.item() * len(obs)
-        all_preds.append(pred.detach().float().cpu())
+        # Sigmoid sur logits accel pour métriques cohérentes avec la cible [0,1]
+        pred_m = pred.detach().float().cpu()
+        if bimodal:
+            pred_m = torch.stack([pred_m[:, 0], torch.sigmoid(pred_m[:, 1])], dim=1)
+        all_preds.append(pred_m)
         all_targets.append(action.float().cpu())
 
     preds = torch.cat(all_preds)
@@ -69,13 +74,21 @@ def eval_epoch(model, loader, loss_fn, device):
     model.eval()
     total_loss = 0.0
     all_preds, all_targets = [], []
+    bimodal = getattr(model, "bimodal_accel", False)
 
     for obs, action in loader:
         obs, action = obs.to(device, non_blocking=True), action.to(device, non_blocking=True)
         pred = model(obs)
         loss = loss_fn(pred, action)
         total_loss += loss.item() * len(obs)
-        all_preds.append(pred.float().cpu())
+        # Convertir logits accel → probabilité [0,1] pour les métriques
+        pred_metrics = pred.float().cpu()
+        if bimodal:
+            pred_metrics = torch.stack([
+                pred_metrics[:, 0],
+                torch.sigmoid(pred_metrics[:, 1]),
+            ], dim=1)
+        all_preds.append(pred_metrics)
         all_targets.append(action.float().cpu())
 
     preds = torch.cat(all_preds)
@@ -89,14 +102,14 @@ def train(
     data_path: str,
     output_dir: str = "models",
     arch: str = "mlp",
-    loss_type: str = "huber",
+    loss_type: str = "bimodal",
     n_rays: Optional[int] = None,
     epochs: int = 100,
     batch_size: int = 256,
     lr: float = 1e-3,
     weight_decay: float = 1e-4,
-    steer_weight: float = 0.7,
-    accel_weight: float = 0.3,
+    steer_weight: float = 0.85,
+    accel_weight: float = 0.15,
     patience: int = 15,
     resume_path: Optional[str] = None,
     seed: int = 42,
@@ -104,6 +117,8 @@ def train(
     compile_model: bool = False,
     num_workers: int = 4,
     use_weighted_sampler: bool = True,
+    use_delta: bool = True,
+    bimodal_accel: bool = True,
 ):
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -122,6 +137,8 @@ def train(
     print(f" Epochs        : {epochs} | BS: {batch_size} | LR: {lr}")
     print(f" Mixed FP16    : {mixed_precision and device.type == 'cuda'}")
     print(f" Sampler       : {'weighted' if use_weighted_sampler else 'uniform'}")
+    print(f" Delta rays    : {use_delta}")
+    print(f" Bimodal accel : {bimodal_accel}")
     print(f"{'='*62}\n")
 
     # Charger les stats Z-score si disponibles
@@ -145,6 +162,7 @@ def train(
         prefetch_factor=2 if num_workers > 0 else None,
         filter_stopped=False,
         ray_stats=ray_stats,
+        use_delta=use_delta,
     )
 
     # Détecter n_rays depuis le dataset
@@ -155,7 +173,7 @@ def train(
         model = load_model(resume_path).to(device)
         print(f"[Resume] {resume_path}")
     else:
-        model = build_model(arch=arch, n_rays=detected_n_rays).to(device)
+        model = build_model(arch=arch, n_rays=detected_n_rays, use_delta=use_delta, bimodal_accel=bimodal_accel).to(device)
 
     # torch.compile (PyTorch 2.0+)
     if compile_model:
@@ -256,7 +274,7 @@ def main():
     parser.add_argument("--output", default="models")
     parser.add_argument("--arch", default="mlp", choices=["mlp", "cnn"],
                         help="Architecture: mlp (baseline) ou cnn (recommandé Gemini)")
-    parser.add_argument("--loss", default="huber", choices=["huber", "weighted_mse"],
+    parser.add_argument("--loss", default="bimodal", choices=["bimodal", "huber", "weighted_mse"],
                         help="Fonction de perte")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=256)
@@ -271,6 +289,8 @@ def main():
     parser.add_argument("--compile", action="store_true", help="Activer torch.compile")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--no-sampler", action="store_true", help="Désactiver WeightedRandomSampler")
+    parser.add_argument("--no-delta", action="store_true", help="Désactiver delta rays (v2 mode)")
+    parser.add_argument("--no-bimodal", action="store_true", help="Désactiver tête accel bimodale")
     args = parser.parse_args()
 
     train(
@@ -291,6 +311,8 @@ def main():
         compile_model=args.compile,
         num_workers=args.workers,
         use_weighted_sampler=not args.no_sampler,
+        use_delta=not args.no_delta,
+        bimodal_accel=not args.no_bimodal,
     )
 
 

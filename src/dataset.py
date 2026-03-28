@@ -7,6 +7,10 @@ Améliorations v2 (Gemini + Grok):
 - Speed jitter: ±jitter variation de vitesse (robustesse)
 - Ray cutout: masquer 1-2 rayons aléatoires (simule capteur défaillant)
 - WeightedRandomSampler: rééquilibrer la distribution du steering
+
+Améliorations v3:
+- use_delta: ajoute Δrays (ray_t - ray_{t-1}) → contexte temporel, réduit zigzag
+- Flip adapté pour obs=[rays, Δrays] (flip les deux moitiés séparément)
 """
 
 import random
@@ -39,6 +43,7 @@ class DrivingDataset(Dataset):
         filter_stopped: bool = True,
         speed_threshold: float = 0.05,
         ray_stats: Optional[dict] = None,
+        use_delta: bool = True,
     ):
         self.augment = augment
         self.flip_prob = flip_prob
@@ -46,6 +51,7 @@ class DrivingDataset(Dataset):
         self.noise_adaptive = noise_adaptive
         self.speed_jitter = speed_jitter
         self.ray_cutout = ray_cutout
+        self.use_delta = use_delta
 
         df = self._load_data(data_path)
 
@@ -70,7 +76,17 @@ class DrivingDataset(Dataset):
             print(f"[Dataset] Z-score appliqué (mu={mu.mean():.3f}, sigma_mean={sigma.mean():.3f})")
 
         # Speed toujours 0 dans ce simulateur — on l'exclut
-        self.observations = rays
+        # Delta rays : différence temporelle frame t - frame t-1
+        # Donne au modèle le sens du mouvement (approche/éloignement obstacle)
+        if use_delta:
+            delta_rays = np.concatenate([
+                np.zeros((1, rays.shape[1]), dtype=np.float32),
+                np.diff(rays, axis=0).astype(np.float32),
+            ], axis=0)
+            self.observations = np.concatenate([rays, delta_rays], axis=1)
+        else:
+            self.observations = rays
+
         self.actions = df[["steering", "acceleration"]].values.astype(np.float32)
         self._print_stats()
 
@@ -92,26 +108,34 @@ class DrivingDataset(Dataset):
 
     def _augment(self, obs: torch.Tensor, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Applique les augmentations data (toutes en tenseurs torch)."""
-        rays = obs  # obs = seulement les rays (Z-scorés), plus de speed
+        n = self.n_rays
 
         # 1. Flip horizontal (symétrie gauche/droite)
         if random.random() < self.flip_prob:
-            rays = rays.flip(0)
+            if self.use_delta:
+                # Flip séparément rays et delta_rays
+                obs = torch.cat([obs[:n].flip(0), obs[n:].flip(0)])
+            else:
+                obs = obs.flip(0)
             action = action * torch.tensor([-1.0, 1.0])
 
-        # 2. Bruit gaussien sur les rayons (std fixe, Z-score donc ~N(0,1))
+        # 2. Bruit gaussien sur les rayons uniquement (pas sur les deltas)
         if self.noise_std > 0:
-            noise = torch.randn_like(rays) * self.noise_std
-            rays = rays + noise
+            noise = torch.randn(n) * self.noise_std
+            obs = obs.clone()
+            obs[:n] = obs[:n] + noise
 
         # 3. Ray cutout (masquer 1-2 rayons → simuler capteur mort)
-        if self.ray_cutout and self.n_rays > 4 and random.random() < 0.3:
+        if self.ray_cutout and n > 4 and random.random() < 0.3:
             n_cut = random.choice([1, 2])
-            indices = random.sample(range(self.n_rays), n_cut)
+            indices = random.sample(range(n), n_cut)
+            obs = obs.clone()
             for i in indices:
-                rays[i] = 0.0
+                obs[i] = 0.0
+                if self.use_delta:
+                    obs[n + i] = 0.0
 
-        return rays, action
+        return obs, action
 
     def get_steering_weights(self, n_bins: int = 20) -> torch.Tensor:
         """
@@ -178,6 +202,7 @@ def create_dataloaders(
     seed: int = 42,
     filter_stopped: bool = True,
     ray_stats: Optional[dict] = None,
+    use_delta: bool = True,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """
     Crée les DataLoaders train/val/test.
@@ -186,7 +211,7 @@ def create_dataloaders(
     du steering pour éviter que le modèle apprenne à toujours aller tout droit.
     """
     # Dataset complet sans augmentation pour le split propre
-    full_ds = DrivingDataset(data_path, n_rays=n_rays, augment=False, filter_stopped=filter_stopped, ray_stats=ray_stats)
+    full_ds = DrivingDataset(data_path, n_rays=n_rays, augment=False, filter_stopped=filter_stopped, ray_stats=ray_stats, use_delta=use_delta)
     n = len(full_ds)
 
     n_test = int(n * test_ratio)
@@ -199,7 +224,7 @@ def create_dataloaders(
     )
 
     # Train dataset avec augmentation
-    train_ds_aug = DrivingDataset(data_path, n_rays=n_rays, augment=augment_train, filter_stopped=filter_stopped, ray_stats=ray_stats)
+    train_ds_aug = DrivingDataset(data_path, n_rays=n_rays, augment=augment_train, filter_stopped=filter_stopped, ray_stats=ray_stats, use_delta=use_delta)
     train_subset = Subset(train_ds_aug, train_split.indices)
 
     # WeightedRandomSampler pour rééquilibrer le steering

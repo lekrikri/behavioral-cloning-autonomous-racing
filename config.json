@@ -1,0 +1,9 @@
+{
+  "agents": [
+    {
+      "fov": 180,
+      "nbRay": 10,
+      "rayMaxDistance": 300.0
+    }
+  ]
+}

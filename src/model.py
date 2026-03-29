@@ -70,12 +70,14 @@ class RobocarMLP(nn.Module):
         use_batch_norm: bool = True,
         use_delta: bool = True,
         bimodal_accel: bool = True,
+        n_derived: int = 3,
     ):
         super().__init__()
         self.n_rays = n_rays
         self.use_delta = use_delta
         self.bimodal_accel = bimodal_accel
-        self.input_size = n_rays * 2 if use_delta else n_rays
+        self.n_derived = n_derived
+        self.input_size = (n_rays * 2 if use_delta else n_rays) + n_derived
         self.output_size = 2
 
         hidden_dims = hidden_dims or [128, 64, 32]
@@ -141,6 +143,7 @@ class RobocarMLP(nn.Module):
                 "input_size": self.input_size,
                 "use_delta": self.use_delta,
                 "bimodal_accel": self.bimodal_accel,
+                "n_derived": 3,
             },
             "metadata": metadata or {},
         }, path)
@@ -153,6 +156,7 @@ class RobocarMLP(nn.Module):
             n_rays=cfg["n_rays"],
             use_delta=cfg.get("use_delta", False),
             bimodal_accel=cfg.get("bimodal_accel", False),
+            n_derived=cfg.get("n_derived", 0),  # 0 pour les anciens checkpoints sans derived features
         )
         model.load_state_dict(ckpt["state_dict"])
         return model.eval()
@@ -354,20 +358,31 @@ class BimodalLoss(nn.Module):
     steer_weight=0.85 car le steering est la variable critique.
     """
 
-    def __init__(self, steer_weight: float = 0.85, bce_weight: float = 0.15, delta: float = 1.0):
+    def __init__(self, steer_weight: float = 0.85, bce_weight: float = 0.15, delta: float = 1.0,
+                 accel_pos_weight: float = 0.5):
+        """
+        accel_pos_weight : poids des frames "gaz" (y=1) dans la BCE.
+          < 1.0 → pénalise moins le gaz (majorité) → le modèle apprend à distinguer frein/gaz
+          ~0.5  → équilibre efficace pour ~60% gaz / 40% non-gaz
+        """
         super().__init__()
         self.steer_weight = steer_weight
         self.bce_weight = bce_weight
         self.steer_loss_fn = nn.HuberLoss(delta=delta)
-        # BCEWithLogitsLoss = Sigmoid + BCELoss fusionnés → AMP-safe + stable
+        # pos_weight < 1 réduit la pénalité sur la classe majoritaire (gaz=1)
+        # register_buffer → suit automatiquement le device (CPU/GPU)
+        self.register_buffer("_accel_pos_weight", torch.tensor([accel_pos_weight]))
         self.accel_loss_fn = nn.BCEWithLogitsLoss()
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         steer_loss = self.steer_loss_fn(pred[:, 0], target[:, 0])
-        # Binariser la cible accel : 0 si ≤0.5, 1 si >0.5
-        accel_target = (target[:, 1] > 0.5).float()
-        # pred[:, 1] = logits bruts (SANS Sigmoid) → BCEWithLogitsLoss applique Sigmoid intern.
-        accel_loss = self.accel_loss_fn(pred[:, 1], accel_target)
+        # Binariser la cible accel : 0 si ≤0.3, 1 si >0.3 (seuil adapté à la distribution)
+        accel_target = (target[:, 1] > 0.3).float()
+        # pos_weight suit le device automatiquement via F.binary_cross_entropy_with_logits
+        accel_loss = F.binary_cross_entropy_with_logits(
+            pred[:, 1], accel_target,
+            pos_weight=self._accel_pos_weight.to(pred.device)
+        )
         return self.steer_weight * steer_loss + self.bce_weight * accel_loss
 
 
@@ -383,31 +398,291 @@ class WeightedMSELoss(nn.Module):
         return (mse * self.weights.to(pred.device)).mean()
 
 
+class RobocarSpatial(nn.Module):
+    """
+    Architecture Conv1D+MLP — 2 couches Conv1D kernel=5 (ChatGPT/Grok/Gemini).
+
+    Deux branches:
+    - 2× Conv1D(k=5) sur les rays (2 channels: raw + spatial_delta)
+      → couche 1: features locales | couche 2: patterns globaux (virage, ligne droite)
+    - FC sur les features dérivées (asymétrie, front, min)
+
+    ~35k params, <2ms CPU, AMP-safe.
+    """
+
+    def __init__(
+        self,
+        n_rays: int = 20,
+        n_derived: int = 3,
+        bimodal_accel: bool = True,
+    ):
+        super().__init__()
+        self.n_rays = n_rays
+        self.n_derived = n_derived
+        self.bimodal_accel = bimodal_accel
+        self.use_delta = False
+        self.input_size = n_rays + n_derived
+
+        # 1 couche Conv1D kernel=3 — architecture éprouvée v10
+        self.ray_conv = nn.Sequential(
+            nn.Conv1d(2, 12, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+        )  # output flatten: (B, 12*n_rays)
+
+        self.derived_fc = nn.Sequential(
+            nn.Linear(n_derived, 16),
+            nn.ReLU(inplace=True),
+        )
+
+        self.shared = nn.Sequential(
+            nn.Linear(12 * n_rays + 16, 96),
+            nn.LayerNorm(96),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.15),
+            nn.Linear(96, 48),
+            nn.LayerNorm(48),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.10),
+        )
+
+        self.steer_head = nn.Linear(48, 1)
+        self.accel_head = nn.Linear(48, 1)
+
+        for m in self.modules():
+            if isinstance(m, (nn.Linear, nn.Conv1d)):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        rays = x[:, :self.n_rays]
+        derived = x[:, self.n_rays:]
+
+        # Spatial delta (edge detection)
+        spatial_delta = torch.zeros_like(rays)
+        spatial_delta[:, 1:] = rays[:, 1:] - rays[:, :-1]
+
+        ray_input = torch.stack([rays, spatial_delta], dim=1)  # (B, 2, n_rays)
+        conv_out = self.ray_conv(ray_input).flatten(1)          # (B, 12*n_rays)
+
+        derived_out = self.derived_fc(derived)
+        combined = torch.cat([conv_out, derived_out], dim=1)
+        feat = self.shared(combined)
+
+        steer = torch.tanh(self.steer_head(feat))
+        if self.bimodal_accel:
+            accel = self.accel_head(feat)          # logits bruts pour BCEWithLogitsLoss
+        else:
+            accel = torch.sigmoid(self.accel_head(feat))  # régression [0,1] pour HuberLoss
+        return torch.cat([steer, accel], dim=-1)
+
+    def predict(self, rays: np.ndarray, derived: np.ndarray) -> tuple[float, float]:
+        self.eval()
+        with torch.no_grad():
+            obs = np.concatenate([rays, derived]).astype(np.float32)
+            out = self.forward(torch.from_numpy(obs).unsqueeze(0)).squeeze(0)
+            if self.bimodal_accel:
+                out = torch.stack([out[0], torch.sigmoid(out[1])])
+        return float(out[0]), float(out[1])
+
+    def count_parameters(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def save(self, path: str, metadata: Optional[dict] = None):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({
+            "arch": "spatial",
+            "state_dict": self.state_dict(),
+            "config": {
+                "n_rays": self.n_rays,
+                "n_derived": self.n_derived,
+                "input_size": self.input_size,
+                "use_delta": False,
+                "bimodal_accel": self.bimodal_accel,
+            },
+            "metadata": metadata or {},
+        }, path)
+
+    @classmethod
+    def load(cls, path: str) -> "RobocarSpatial":
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        cfg = ckpt["config"]
+        model = cls(
+            n_rays=cfg["n_rays"],
+            n_derived=cfg.get("n_derived", 4),
+            bimodal_accel=cfg.get("bimodal_accel", True),
+        )
+        model.load_state_dict(ckpt["state_dict"])
+        return model.eval()
+
+    def export_onnx(self, path: str):
+        """Export ONNX (eval + cpu + opset 17)."""
+        path = Path(path)
+        self.eval()
+        self.cpu()
+        dummy = torch.zeros(1, self.input_size, dtype=torch.float32)
+        torch.onnx.export(
+            self, dummy, str(path),
+            opset_version=18,
+            do_constant_folding=True,
+            input_names=["observation"],
+            output_names=["action"],
+            dynamic_axes={"observation": {0: "batch"}, "action": {0: "batch"}},
+        )
+        try:
+            import onnx
+            onnx.checker.check_model(onnx.load(str(path)))
+            print(f"[ONNX] Spatial export valide: {path}")
+        except ImportError:
+            print(f"[ONNX] Spatial exporté (installer onnx pour validation): {path}")
+
+    def __repr__(self):
+        return f"RobocarSpatial(n_rays={self.n_rays}, n_derived={self.n_derived}, params={self.count_parameters():,})"
+
+
+class LightGRUCar(nn.Module):
+    """
+    GRU léger pour conduite autonome temporellement cohérente.
+
+    Entrée  : séquence (B, seq_len, n_rays + n_derived)
+    Sortie  : [steer_tanh, accel_logit] sur le DERNIER timestep
+
+    ~20k params — compatible Jetson Nano.
+    Élimine le zigzag sur lignes droites grâce à la mémoire temporelle.
+    """
+
+    def __init__(
+        self,
+        n_rays: int = 20,
+        n_derived: int = 3,
+        hidden: int = 64,
+        seq_len: int = 10,
+        bimodal_accel: bool = True,
+    ):
+        super().__init__()
+        self.n_rays = n_rays
+        self.n_derived = n_derived
+        self.hidden = hidden
+        self.seq_len = seq_len
+        self.bimodal_accel = bimodal_accel
+        self.use_delta = False
+        self.input_size = n_rays + n_derived
+
+        self.gru = nn.GRU(
+            input_size=self.input_size,
+            hidden_size=hidden,
+            num_layers=1,
+            batch_first=True,
+        )
+        self.fc = nn.Sequential(
+            nn.Linear(hidden, 48),
+            nn.LayerNorm(48),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.10),
+            nn.Linear(48, 2),
+        )
+
+        # Initialisation orthogonale recommandée pour GRU
+        for name, param in self.gru.named_parameters():
+            if "weight_hh" in name:
+                nn.init.orthogonal_(param)
+            elif "weight_ih" in name:
+                nn.init.xavier_uniform_(param)
+            elif "bias" in name:
+                nn.init.zeros_(param)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x : (B, seq_len, n_rays + n_derived) — séquence temporelle
+        Retourne (B, 2) : [steer_tanh, accel_tanh→[0,1]]
+        """
+        out, _ = self.gru(x)
+        # Passe toute la séquence dans fc pour accès à tous les timesteps
+        out_seq = self.fc(out)                         # (B, seq_len, 2)
+        steer = torch.tanh(out_seq[:, :, 0:1])        # (B, seq_len, 1)
+        accel = torch.sigmoid(out_seq[:, :, 1:2])     # (B, seq_len, 1) — [0,1] regression
+        out_full = torch.cat([steer, accel], dim=-1)  # (B, seq_len, 2)
+        return out_full  # on retourne toute la séquence pour TCL en train, [:, -1, :] en inférence
+
+    def count_parameters(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def save(self, path: str, metadata: Optional[dict] = None):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({
+            "arch": "gru",
+            "state_dict": self.state_dict(),
+            "config": {
+                "n_rays": self.n_rays,
+                "n_derived": self.n_derived,
+                "hidden": self.hidden,
+                "seq_len": self.seq_len,
+                "bimodal_accel": self.bimodal_accel,
+                "input_size": self.input_size,
+            },
+            "metadata": metadata or {},
+        }, path)
+
+    @classmethod
+    def load(cls, path: str) -> "LightGRUCar":
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        cfg = ckpt["config"]
+        model = cls(
+            n_rays=cfg["n_rays"],
+            n_derived=cfg.get("n_derived", 3),
+            hidden=cfg.get("hidden", 64),
+            seq_len=cfg.get("seq_len", 10),
+            bimodal_accel=cfg.get("bimodal_accel", True),
+        )
+        model.load_state_dict(ckpt["state_dict"])
+        return model.eval()
+
+    def __repr__(self):
+        return (f"LightGRUCar(n_rays={self.n_rays}, hidden={self.hidden}, "
+                f"seq_len={self.seq_len}, params={self.count_parameters():,})")
+
+
 def build_model(
-    arch: Literal["mlp", "cnn"] = "mlp",
+    arch: Literal["mlp", "cnn", "spatial", "gru"] = "spatial",
     n_rays: int = 10,
     **kwargs,
 ):
     """Factory pour créer un modèle selon l'architecture choisie."""
     if arch == "cnn":
         return RobocarCNN(n_rays=n_rays, **kwargs)
+    if arch == "spatial":
+        spatial_kwargs = {k: v for k, v in kwargs.items()
+                         if k in ("n_derived", "bimodal_accel")}
+        return RobocarSpatial(n_rays=n_rays, **spatial_kwargs)
+    if arch == "gru":
+        gru_kwargs = {k: v for k, v in kwargs.items()
+                      if k in ("n_derived", "hidden", "seq_len", "bimodal_accel")}
+        return LightGRUCar(n_rays=n_rays, **gru_kwargs)
     return RobocarMLP(n_rays=n_rays, **kwargs)
 
 
-def build_loss(loss_type: str = "huber", steer_weight: float = 0.7, accel_weight: float = 0.3, delta: float = 1.0):
+def build_loss(loss_type: str = "bimodal", steer_weight: float = 0.88, accel_weight: float = 0.12,
+               delta: float = 1.0, accel_pos_weight: float = 0.5):
     if loss_type == "bimodal":
-        return BimodalLoss(steer_weight=steer_weight, bce_weight=accel_weight, delta=delta)
+        return BimodalLoss(steer_weight=steer_weight, bce_weight=accel_weight, delta=delta,
+                           accel_pos_weight=accel_pos_weight)
     if loss_type == "huber":
         return WeightedHuberLoss(steer_weight, accel_weight, delta)
     return WeightedMSELoss(steer_weight, accel_weight)
 
 
 def load_model(path: str):
-    """Charge MLP ou CNN selon le checkpoint."""
+    """Charge MLP, CNN, Spatial ou GRU selon le checkpoint."""
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
     arch = ckpt.get("arch", "mlp")
     if arch == "cnn":
         return RobocarCNN.load(path)
+    if arch == "spatial":
+        return RobocarSpatial.load(path)
+    if arch == "gru":
+        return LightGRUCar.load(path)
     return RobocarMLP.load(path)
 
 

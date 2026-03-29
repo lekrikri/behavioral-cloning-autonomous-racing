@@ -128,6 +128,7 @@ def run_inference_pytorch(
     port: int = 5005,
     smoothing_alpha: float = 0.7,
     max_steps: int = 0,
+    deadzone: float = 0.06,
 ):
     """Inférence avec modèle PyTorch."""
     import torch
@@ -152,14 +153,45 @@ def run_inference_pytorch(
         ray_sigma = np.array(stats["std"], dtype=np.float32)
         print(f"[Inference] Z-score chargé depuis {stats_path}")
 
-    smoother = SmoothingFilter(alpha=smoothing_alpha)
+    smoother = SmoothingFilter(alpha=smoothing_alpha, deadzone=deadzone)
     tracker = PerformanceTracker()
-    prev_rays = None  # Pour delta_rays (v3)
+    prev_rays = None        # Pour delta_rays (si use_delta)
+    prev_steering = 0.0    # Action-conditioning : dernière prédiction steering
+    # Buffer GRU : deque de seq_len frames (rempli de zéros au départ)
+    seq_len = getattr(model, "seq_len", 10)
+    input_size = getattr(model, "input_size", 23)
+    obs_buffer = deque([np.zeros(input_size, dtype=np.float32)] * seq_len, maxlen=seq_len)
 
     with RobocarEnv(config_path=config_path, port=port) as env:
         observations = env.reset()
         smoother.reset()
         prev_rays = None
+        prev_steering = 0.0
+        obs_buffer = None  # initialisé après burn-in
+
+        # Burn-in GRU : collecter seq_len vraies frames en action neutre
+        # Le GRU voit de vraies observations variées → hidden state propre
+        burn_in_frames = []
+        if is_gru := hasattr(model, "seq_len"):
+            print(f"[Inference] Burn-in GRU ({seq_len} frames)...", end="", flush=True)
+            while len(burn_in_frames) < seq_len:
+                env.send_actions(steering=0.0, acceleration=0.5)
+                obs_list = env.step()
+                if obs_list:
+                    obs0 = obs_list[0]
+                    r = obs0.rays
+                    if ray_mu is not None:
+                        r = (r - ray_mu) / ray_sigma
+                    n = len(r); half = n // 2
+                    asym = (r[half:].sum() - r[:half].sum()) / (r.sum() + 1e-8)
+                    frnt = r[half-1:half+1].mean()
+                    mnr  = r.min()
+                    burn_in_frames.append(
+                        np.concatenate([r, np.array([asym, frnt, mnr], dtype=np.float32)])
+                    )
+            obs_buffer = deque(burn_in_frames, maxlen=seq_len)
+            print(" OK")
+
         print(f"[Inference] Connecté — {len(observations)} agent(s). Démarrage...\n")
 
         try:
@@ -178,29 +210,79 @@ def run_inference_pytorch(
                 if ray_mu is not None:
                     rays = (rays - ray_mu) / ray_sigma
 
-                # Delta rays : contexte temporel (v3)
-                if hasattr(model, "use_delta") and model.use_delta:
+                # front_raw : rayon frontal NON Z-scoré [0,1] pour l'heuristique accel
+                raw_rays = obs.rays   # valeurs originales [0,1] avant Z-score
+                _n_raw = len(raw_rays); _h_raw = _n_raw // 2
+                front_raw = float(raw_rays[_h_raw - 1 : _h_raw + 1].mean())  # [0,1]
+
+                # Features dérivées (asymétrie, front_ray, min_ray) — seulement si le modèle en a
+                model_n_derived = getattr(model, "n_derived", 0)
+                if model_n_derived >= 3:
+                    n = len(rays)
+                    half = n // 2
+                    left_sum = rays[:half].sum()
+                    right_sum = rays[half:].sum()
+                    asymmetry = (right_sum - left_sum) / (left_sum + right_sum + 1e-8)
+                    front_ray = float(rays[half - 1 : half + 1].mean())
+                    min_ray = rays.min()
+                    derived = np.array([asymmetry, front_ray, min_ray], dtype=np.float32)
+                    if model_n_derived == 4:
+                        derived = np.append(derived, prev_steering).astype(np.float32)
+                else:
+                    derived = np.array([], dtype=np.float32)
+
+                frame = np.concatenate([rays, derived]).astype(np.float32)
+
+                # GRU : buffer glissant de seq_len frames → (1, seq_len, features)
+                is_gru = hasattr(model, "seq_len")
+                if is_gru:
+                    if obs_buffer is None:
+                        # Warm-up : remplir le buffer avec la 1ère vraie frame
+                        obs_buffer = deque([frame.copy()] * seq_len, maxlen=seq_len)
+                    obs_buffer.append(frame)
+                    seq = np.stack(list(obs_buffer))       # (seq_len, features)
+                    x = torch.from_numpy(seq).unsqueeze(0) # (1, seq_len, features)
+                # Delta rays : contexte temporel (si modèle entraîné avec use_delta)
+                elif hasattr(model, "use_delta") and model.use_delta:
                     delta_rays = np.zeros_like(rays) if prev_rays is None else (rays - prev_rays)
                     prev_rays = rays.copy()
                     x = torch.from_numpy(
-                        np.concatenate([rays, delta_rays]).astype(np.float32)
+                        np.concatenate([rays, delta_rays, derived]).astype(np.float32)
                     ).unsqueeze(0)
                 else:
-                    x = torch.from_numpy(rays).unsqueeze(0)
+                    x = torch.from_numpy(frame).unsqueeze(0)
 
                 with torch.no_grad():
-                    raw = model(x).squeeze(0)
-                    # forward() retourne logits bruts pour accel → Sigmoid ici à l'inférence
-                    if hasattr(model, "bimodal_accel") and model.bimodal_accel:
-                        raw = torch.stack([raw[0], torch.sigmoid(raw[1])])
+                    out = model(x)
+                    # LightGRUCar retourne (B, seq_len, 2) ou (B, 2) selon l'arch
+                    if out.dim() == 3:
+                        raw = out[0, -1, :]   # dernier timestep : steer_tanh, accel_sigmoid
+                    else:
+                        raw = out.squeeze(0)
+                        # Anciens modèles BCE : appliquer Sigmoid sur accel logit
+                        if hasattr(model, "bimodal_accel") and model.bimodal_accel:
+                            raw = torch.stack([raw[0], torch.sigmoid(raw[1])])
                     pred = raw.numpy()
 
                 pred_smooth = smoother.update(pred)
-                steering = float(np.clip(pred_smooth[0], -0.7, 0.7))
-                if hasattr(model, "bimodal_accel") and model.bimodal_accel:
-                    acceleration = float(np.clip(pred_smooth[1], 0.3, 1.0))
+                # Offset gauche -0.02 sur virages doux (0.05–0.35) : corrige biais droite
+                steer_raw = pred_smooth[0]
+                if 0.05 < abs(steer_raw) < 0.35:
+                    steer_raw = steer_raw - 0.02 * np.sign(steer_raw)
+                steering = float(np.clip(steer_raw, -1.0, 1.0))
+
+                # Accel : anticipation front_raw — freine seulement si virage réellement proche
+                # front_raw > 0.65 (ligne droite / mur loin) → pleine vitesse, pas de cap
+                # front_raw < 0.65 (virage approche)         → cap progressif [0.45, 0.90]
+                geo_base = max(0.35, 1.0 - 1.2 * abs(steering))
+                if front_raw >= 0.65:
+                    front_cap = 1.0                           # libre sur ligne droite
                 else:
-                    acceleration = 0.5  # fixe — ancien comportement
+                    front_cap = 0.45 + 0.70 * front_raw      # 0→0.45 | 0.65→0.91
+                acceleration = float(np.clip(min(geo_base, front_cap), 0.35, 0.95))
+
+                # Mettre à jour prev_steering pour le prochain step (action conditioning)
+                prev_steering = float(np.clip(pred_smooth[0], -1.0, 1.0))
 
                 env.send_actions(steering=steering, acceleration=acceleration)
                 observations = env.step()
@@ -295,6 +377,7 @@ def main():
     parser.add_argument("--config", default="config.json")
     parser.add_argument("--port", type=int, default=5005)
     parser.add_argument("--smoothing", type=float, default=0.7)
+    parser.add_argument("--deadzone", type=float, default=0.06, help="Deadzone steering (supprime micro-zigzag)")
     parser.add_argument("--max-steps", type=int, default=0)
     parser.add_argument("--onnx", action="store_true")
     args = parser.parse_args()
@@ -303,7 +386,7 @@ def main():
     if use_onnx:
         run_inference_onnx(args.model, args.config, args.port, args.smoothing)
     else:
-        run_inference_pytorch(args.model, args.config, args.port, args.smoothing, args.max_steps)
+        run_inference_pytorch(args.model, args.config, args.port, args.smoothing, args.max_steps, args.deadzone)
 
 
 if __name__ == "__main__":

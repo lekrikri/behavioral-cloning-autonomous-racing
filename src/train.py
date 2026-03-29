@@ -28,24 +28,66 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.model import build_model, build_loss, load_model
-from src.dataset import create_dataloaders
+from src.dataset import create_dataloaders, create_sequence_dataloaders
 from src.evaluate import compute_metrics, print_metrics
 
 
-def train_epoch(model, loader, optimizer, loss_fn, device, clip_grad=1.0, use_amp=True):
+_TCL_LAMBDA = 0.25   # poids Temporal Consistency Loss (GRU)
+_PSL_LAMBDA = 0.30   # poids PairwiseSmoothingLoss (spatial + temporal split)
+
+
+def _extract_last(pred: torch.Tensor) -> torch.Tensor:
+    """GRU retourne (B, seq_len, 2) — on prend le dernier timestep → (B, 2)."""
+    if pred.dim() == 3:
+        return pred[:, -1, :]
+    return pred
+
+
+def _pairwise_smoothing_loss(pred: torch.Tensor, lambda_ps: float = _PSL_LAMBDA) -> torch.Tensor:
+    """Anti-zigzag pour modèle frame-indépendant (spatial + temporal split).
+
+    Requiert que les samples consécutifs dans le batch soient des frames consécutives
+    (temporal split + shuffle=False dans le train loader).
+
+    Pénalise |steer_{t+1} - steer_t|² pour chaque paire consécutive dans le batch.
+    pred : (B, 2) — steer en index 0
+    """
+    steer = pred[:, 0]                   # (B,)
+    delta = steer[1:] - steer[:-1]       # (B-1,)
+    return lambda_ps * (delta ** 2).mean()
+
+
+def _temporal_consistency_loss(pred: torch.Tensor, lambda_tc: float = _TCL_LAMBDA) -> torch.Tensor:
+    """Pénalise les variations abruptes de steering dans la séquence GRU.
+    pred : (B, seq_len, 2) — steer en index 0.
+    Minimise |steer_t - steer_{t-1}|² sur toute la séquence.
+    """
+    if pred.dim() != 3:
+        return torch.tensor(0.0, device=pred.device)
+    steer_seq = pred[:, :, 0]                          # (B, seq_len)
+    delta = steer_seq[:, 1:] - steer_seq[:, :-1]       # (B, seq_len-1)
+    return lambda_tc * (delta ** 2).mean()
+
+
+def train_epoch(model, loader, optimizer, loss_fn, device, clip_grad=1.0, use_amp=True, use_psl=False):
     model.train()
     scaler = torch.amp.GradScaler(enabled=use_amp and device.type == "cuda")
     total_loss = 0.0
     all_preds, all_targets = [], []
-    bimodal = getattr(model, "bimodal_accel", False)
+    is_gru = hasattr(model, "seq_len")
 
     for obs, action in loader:
         obs, action = obs.to(device, non_blocking=True), action.to(device, non_blocking=True)
-        optimizer.zero_grad(set_to_none=True)  # plus efficace que zero_grad()
+        optimizer.zero_grad(set_to_none=True)
 
         with torch.amp.autocast(device_type=device.type, enabled=use_amp and device.type == "cuda"):
-            pred = model(obs)
+            pred_full = model(obs)
+            pred = _extract_last(pred_full)            # (B, 2)
             loss = loss_fn(pred, action)
+            if is_gru:
+                loss = loss + _temporal_consistency_loss(pred_full)
+            elif use_psl:
+                loss = loss + _pairwise_smoothing_loss(pred)
 
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
@@ -55,9 +97,9 @@ def train_epoch(model, loader, optimizer, loss_fn, device, clip_grad=1.0, use_am
         scaler.update()
 
         total_loss += loss.item() * len(obs)
-        # Sigmoid sur logits accel pour métriques cohérentes avec la cible [0,1]
         pred_m = pred.detach().float().cpu()
-        if bimodal:
+        # Sigmoid sur logit accel pour métriques [0,1]
+        if getattr(model, "bimodal_accel", False):
             pred_m = torch.stack([pred_m[:, 0], torch.sigmoid(pred_m[:, 1])], dim=1)
         all_preds.append(pred_m)
         all_targets.append(action.float().cpu())
@@ -74,21 +116,20 @@ def eval_epoch(model, loader, loss_fn, device):
     model.eval()
     total_loss = 0.0
     all_preds, all_targets = [], []
-    bimodal = getattr(model, "bimodal_accel", False)
+    is_gru = hasattr(model, "seq_len")
 
     for obs, action in loader:
         obs, action = obs.to(device, non_blocking=True), action.to(device, non_blocking=True)
-        pred = model(obs)
+        pred_full = model(obs)
+        pred = _extract_last(pred_full)
         loss = loss_fn(pred, action)
+        if is_gru:
+            loss = loss + _temporal_consistency_loss(pred_full)
         total_loss += loss.item() * len(obs)
-        # Convertir logits accel → probabilité [0,1] pour les métriques
-        pred_metrics = pred.float().cpu()
-        if bimodal:
-            pred_metrics = torch.stack([
-                pred_metrics[:, 0],
-                torch.sigmoid(pred_metrics[:, 1]),
-            ], dim=1)
-        all_preds.append(pred_metrics)
+        pred_m = pred.float().cpu()
+        if getattr(model, "bimodal_accel", False):
+            pred_m = torch.stack([pred_m[:, 0], torch.sigmoid(pred_m[:, 1])], dim=1)
+        all_preds.append(pred_m)
         all_targets.append(action.float().cpu())
 
     preds = torch.cat(all_preds)
@@ -101,15 +142,15 @@ def eval_epoch(model, loader, loss_fn, device):
 def train(
     data_path: str,
     output_dir: str = "models",
-    arch: str = "mlp",
+    arch: str = "spatial",
     loss_type: str = "bimodal",
     n_rays: Optional[int] = None,
     epochs: int = 100,
     batch_size: int = 256,
     lr: float = 1e-3,
     weight_decay: float = 1e-4,
-    steer_weight: float = 0.85,
-    accel_weight: float = 0.15,
+    steer_weight: float = 0.88,
+    accel_weight: float = 0.12,
     patience: int = 15,
     resume_path: Optional[str] = None,
     seed: int = 42,
@@ -119,6 +160,10 @@ def train(
     use_weighted_sampler: bool = True,
     use_delta: bool = True,
     bimodal_accel: bool = True,
+    use_action_cond: bool = True,
+    seq_len: int = 10,
+    gru_hidden: int = 64,
+    use_temporal_split: bool = False,
 ):
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -137,8 +182,13 @@ def train(
     print(f" Epochs        : {epochs} | BS: {batch_size} | LR: {lr}")
     print(f" Mixed FP16    : {mixed_precision and device.type == 'cuda'}")
     print(f" Sampler       : {'weighted' if use_weighted_sampler else 'uniform'}")
+    print(f" Temporal split: {use_temporal_split}")
+    print(f" Pairwise loss : {use_temporal_split and arch != 'gru'} (λ={_PSL_LAMBDA})")
     print(f" Delta rays    : {use_delta}")
     print(f" Bimodal accel : {bimodal_accel}")
+    print(f" Action cond   : {use_action_cond}")
+    if arch == "gru":
+        print(f" GRU hidden    : {gru_hidden} | seq_len: {seq_len}")
     print(f"{'='*62}\n")
 
     # Charger les stats Z-score si disponibles
@@ -150,30 +200,49 @@ def train(
             ray_stats = _json.load(f)
         print(f"[Train] Z-score stats chargées depuis {ray_stats_path}")
 
-    # DataLoaders optimisés
-    train_loader, val_loader, test_loader = create_dataloaders(
-        data_path,
-        n_rays=n_rays,
-        batch_size=batch_size,
-        augment_train=True,
-        use_weighted_sampler=use_weighted_sampler,
-        num_workers=num_workers,
-        pin_memory=True,
-        prefetch_factor=2 if num_workers > 0 else None,
-        filter_stopped=False,
-        ray_stats=ray_stats,
-        use_delta=use_delta,
-    )
-
-    # Détecter n_rays depuis le dataset
-    detected_n_rays = train_loader.dataset.dataset.n_rays
+    # DataLoaders — séquentiels pour GRU, classiques sinon
+    if arch == "gru":
+        train_loader, val_loader, test_loader = create_sequence_dataloaders(
+            data_path,
+            seq_len=seq_len,
+            n_rays=n_rays,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            pin_memory=True,
+            ray_stats=ray_stats,
+        )
+        base_ds = train_loader.dataset.dataset
+        detected_n_rays = base_ds.n_rays
+        n_derived = base_ds.n_derived
+    else:
+        train_loader, val_loader, test_loader = create_dataloaders(
+            data_path,
+            n_rays=n_rays,
+            batch_size=batch_size,
+            augment_train=True,
+            use_weighted_sampler=use_weighted_sampler,
+            num_workers=num_workers,
+            pin_memory=True,
+            prefetch_factor=2 if num_workers > 0 else None,
+            filter_stopped=False,
+            ray_stats=ray_stats,
+            use_delta=use_delta,
+            use_action_cond=use_action_cond,
+            temporal_split=use_temporal_split,
+        )
+        base_ds = train_loader.dataset.dataset
+        detected_n_rays = base_ds.n_rays
+        n_derived = base_ds.n_derived + (1 if use_action_cond else 0)
 
     # Modèle
     if resume_path:
         model = load_model(resume_path).to(device)
         print(f"[Resume] {resume_path}")
     else:
-        model = build_model(arch=arch, n_rays=detected_n_rays, use_delta=use_delta, bimodal_accel=bimodal_accel).to(device)
+        model = build_model(arch=arch, n_rays=detected_n_rays,
+                            use_delta=use_delta, bimodal_accel=bimodal_accel,
+                            n_derived=n_derived,
+                            hidden=gru_hidden, seq_len=seq_len).to(device)
 
     # torch.compile (PyTorch 2.0+)
     if compile_model:
@@ -187,7 +256,26 @@ def train(
 
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6)
-    loss_fn = build_loss(loss_type, steer_weight, accel_weight)
+
+    # GRU : accel en régression Tanh→Sigmoid [0,1], pas de BCE bimodal
+    if arch == "gru":
+        loss_fn = build_loss("huber", steer_weight=steer_weight, accel_weight=accel_weight)
+        print(f"[Train] GRU → loss Huber (accel régression [0,1], TCL λ={_TCL_LAMBDA})")
+    elif loss_type == "bimodal":
+        # Calculer le pos_weight depuis le dataset COMPLET (distribution originale, stable)
+        # → évite le biais du sampler (train resamplé ≠ distribution réelle)
+        all_accel = torch.from_numpy(base_ds.actions[:, 1])
+        ACCEL_THRESH = 0.25
+        pos_ratio = (all_accel > ACCEL_THRESH).float().mean().item()
+        computed_pos_weight = (1.0 - pos_ratio) / max(pos_ratio, 1e-6)
+        print(f"[Train] Accel pos_ratio={pos_ratio:.2f} → pos_weight={computed_pos_weight:.3f}")
+        loss_fn = build_loss(loss_type, steer_weight, accel_weight,
+                             accel_pos_weight=computed_pos_weight)
+    else:
+        loss_fn = build_loss(loss_type, steer_weight, accel_weight)
+
+    # PairwiseSmoothingLoss actif seulement pour spatial + temporal_split
+    use_psl = use_temporal_split and arch != "gru"
 
     history = {"train_loss": [], "val_loss": [], "val_mae_steer": [], "val_mae_accel": []}
     best_val_loss = float("inf")
@@ -202,7 +290,7 @@ def train(
     for epoch in range(1, epochs + 1):
         t0 = time.time()
         train_m = train_epoch(model, train_loader, optimizer, loss_fn, device,
-                              use_amp=mixed_precision)
+                              use_amp=mixed_precision, use_psl=use_psl)
         val_m = eval_epoch(model, val_loader, loss_fn, device)
         scheduler.step(val_m["loss"])
 
@@ -272,8 +360,8 @@ def main():
     parser = argparse.ArgumentParser(description="Entraîner le modèle Robocar v2")
     parser.add_argument("--data", required=True)
     parser.add_argument("--output", default="models")
-    parser.add_argument("--arch", default="mlp", choices=["mlp", "cnn"],
-                        help="Architecture: mlp (baseline) ou cnn (recommandé Gemini)")
+    parser.add_argument("--arch", default="spatial", choices=["mlp", "cnn", "spatial", "gru"],
+                        help="Architecture: spatial (Conv1D, défaut), mlp, cnn, gru")
     parser.add_argument("--loss", default="bimodal", choices=["bimodal", "huber", "weighted_mse"],
                         help="Fonction de perte")
     parser.add_argument("--epochs", type=int, default=100)
@@ -291,6 +379,11 @@ def main():
     parser.add_argument("--no-sampler", action="store_true", help="Désactiver WeightedRandomSampler")
     parser.add_argument("--no-delta", action="store_true", help="Désactiver delta rays (v2 mode)")
     parser.add_argument("--no-bimodal", action="store_true", help="Désactiver tête accel bimodale")
+    parser.add_argument("--no-action-cond", action="store_true", help="Désactiver action conditioning")
+    parser.add_argument("--seq-len", type=int, default=10, help="Longueur séquence GRU")
+    parser.add_argument("--gru-hidden", type=int, default=64, help="Taille hidden GRU")
+    parser.add_argument("--temporal-split", action="store_true",
+                        help="Split temporel (train=0→75%%, val→90%%, test→100%%) + PairwiseSmoothingLoss")
     args = parser.parse_args()
 
     train(
@@ -313,6 +406,10 @@ def main():
         use_weighted_sampler=not args.no_sampler,
         use_delta=not args.no_delta,
         bimodal_accel=not args.no_bimodal,
+        use_action_cond=not args.no_action_cond,
+        seq_len=args.seq_len,
+        gru_hidden=args.gru_hidden,
+        use_temporal_split=args.temporal_split,
     )
 
 

@@ -1,0 +1,44 @@
+# Données collectées (potentiellement large)
+data/*.csv
+data/synthetic.csv
+
+# Modèles entraînés
+models/*.pth
+models/*.onnx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# Plots générés
+*.png
+evaluation.png
+training_curves.png
+
+# Logs
+*.log
+
+# Simulateur (binaires lourds)
+BuildLinux/
+RacingSimulatorWindows/
+
+# Notes personnelles
+memory/
+
+# Windows Zone.Identifier
+*.Identifier
+
+# PDF (distribué séparément)
+*.pdf
+
+# Garder les dossiers vides
+!data/.gitkeep
+!models/.gitkeep

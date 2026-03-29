@@ -29,7 +29,7 @@ from src.input_manager import create_input_manager
 def build_csv_header(n_rays: int) -> list[str]:
     """Construit l'en-tête CSV dynamiquement selon le nombre de rayons."""
     ray_cols = [f"ray_{i}" for i in range(n_rays)]
-    return ["timestamp", *ray_cols, "speed", "steering", "acceleration"]
+    return ["episode_id", "step", "timestamp", *ray_cols, "speed", "steering", "acceleration"]
 
 
 def collect(
@@ -73,6 +73,8 @@ def collect(
     frame_count = 0
     skipped = 0
     start_time = time.time()
+    episode_id = int(start_time)  # identifiant unique par session de collecte
+    step = 0                      # compteur de frames dans l'épisode
 
     print(f"[DataCollector] Démarrage — sortie: {output_path}")
     print(f"[DataCollector] Rayons: {n_rays} | Max frames: {max_frames or 'illimité'}")
@@ -116,9 +118,10 @@ def collect(
                 else:
                     # Enregistrer la frame
                     timestamp = time.time()
-                    row = [timestamp, *obs.rays.tolist(), obs.speed, steering, acceleration]
+                    row = [episode_id, step, timestamp, *obs.rays.tolist(), obs.speed, steering, acceleration]
                     writer.writerow(row)
                     frame_count += 1
+                    step += 1
 
                 if verbose and time.time() - last_print >= 1.0:
                     elapsed = time.time() - start_time

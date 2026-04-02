@@ -19,6 +19,16 @@ try:
     import pyvesc
     import serial
     _PYVESC_AVAILABLE = True
+
+    # SetServoPos absent de certaines versions de pyvesc — on l'ajoute (VESC cmd ID=11)
+    if not hasattr(pyvesc, "SetServoPos"):
+        from pyvesc.messages.base import VESCMessage
+        class SetServoPos(metaclass=VESCMessage):
+            """Set servo position (0.0 to 1.0)."""
+            id = 11
+            fields = [("servo_pos", "H", 1000)]
+        pyvesc.SetServoPos = SetServoPos
+
 except ImportError:
     _PYVESC_AVAILABLE = False
     print("[VESC] pyvesc non installé — mode simulation activé")
@@ -86,8 +96,8 @@ class VESCInterface:
             return
 
         try:
-            self.ser.write(pyvesc.encode(pyvesc.SetServoPos(servo_pos)))
-            self.ser.write(pyvesc.encode(pyvesc.SetDutyCycle(duty)))
+            self.ser.write(pyvesc.encode(pyvesc.SetServoPos(servo_pos)))       # scale=1000 → float OK
+            self.ser.write(pyvesc.encode(pyvesc.SetDutyCycle(int(duty * 1e5)))) # no scale → int requis
         except Exception as e:
             print(f"[VESC] Erreur envoi commande : {e}")
             self.stop()
@@ -96,7 +106,7 @@ class VESCInterface:
         """Arrêt d'urgence — moteur à 0, servo centré."""
         if not self._sim_mode and self.ser and self.ser.is_open:
             try:
-                self.ser.write(pyvesc.encode(pyvesc.SetDutyCycle(0.0)))
+                self.ser.write(pyvesc.encode(pyvesc.SetDutyCycle(0)))
                 self.ser.write(pyvesc.encode(pyvesc.SetServoPos(self.servo_center)))
             except Exception:
                 pass

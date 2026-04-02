@@ -67,7 +67,9 @@ class DepthToRays:
         # Distance MINIMUM par colonne dans la ROI
         # → reproduit le comportement d'un raycast physique (1er obstacle rencontré)
         # np.nanmin ignore les NaN ; si toute la colonne est NaN → max_dist (piste libre)
-        with np.errstate(all="ignore"):
+        import warnings
+        with warnings.catch_warnings(), np.errstate(all="ignore"):
+            warnings.simplefilter("ignore", RuntimeWarning)
             col_min = np.nanmin(roi, axis=0)                      # (W,)
         col_min = np.where(np.isnan(col_min), self.max_dist_mm, col_min)
 

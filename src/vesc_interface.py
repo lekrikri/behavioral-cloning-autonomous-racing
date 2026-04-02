@@ -121,7 +121,7 @@ class VESCInterface:
     def close(self) -> None:
         """Fermer proprement la connexion."""
         self.stop()
-        if self.ser and self.ser.is_open:
+        if getattr(self, "ser", None) and self.ser.is_open:
             self.ser.close()
         print("[VESC] Connexion fermée.")
 

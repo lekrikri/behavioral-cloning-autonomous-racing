@@ -8,7 +8,7 @@
 #   git clone https://github.com/lekrikri/behavioral-cloning-autonomous-racing.git
 
 JETSON_IP="${1:-}"
-JETSON_USER="${2:-jetson}"
+JETSON_USER="${2:-robocar}"
 REMOTE_DIR="/home/${JETSON_USER}/behavioral-cloning-autonomous-racing"
 
 if [ -z "$JETSON_IP" ]; then

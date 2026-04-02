@@ -1,0 +1,23 @@
+# Requirements Jetson Nano — G-CAR-000 Real Car Deployment
+# Install with: pip3 install -r requirements_jetson.txt
+#
+# ⚠️  onnxruntime-gpu : utiliser le wheel ARM64 Jetson fourni par NVIDIA
+#     https://elinux.org/Jetson_Zoo#ONNX_Runtime
+#     pip3 install onnxruntime_gpu-*.whl
+#
+# ⚠️  depthai : nécessite udev rules + cmake build sur Jetson
+#     sudo curl -fL https://docs.luxonis.com/install_dependencies.sh | bash
+#     pip3 install depthai
+
+numpy>=1.21.0
+pyserial>=3.5
+pyvesc>=0.1.6
+
+# OAK-D Lite (installé séparément — voir commentaire ci-dessus)
+# depthai>=2.24.0
+
+# ONNX Runtime GPU (wheel ARM64 Jetson — voir commentaire ci-dessus)
+# onnxruntime-gpu
+
+# Pour le développement / tests sur PC uniquement
+onnxruntime>=1.16.0    # CPU — remplacé par onnxruntime-gpu sur Jetson

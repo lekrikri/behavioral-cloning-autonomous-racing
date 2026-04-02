@@ -42,3 +42,4 @@ memory/
 # Garder les dossiers vides
 !data/.gitkeep
 !models/.gitkeep
+PROMPT_EXPERTS_REALCAR.md

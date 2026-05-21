@@ -1,10 +1,12 @@
-# Données collectées (potentiellement large)
+# Données collectées
 data/*.csv
-data/synthetic.csv
 
-# Modèles entraînés
+# Modèles entraînés (sauf le .onnx actif déjà tracké)
 models/*.pth
 models/*.onnx
+models/*.onnx.data
+models/**/*.pth
+models/v*/training_history.json
 
 # Python
 __pycache__/
@@ -33,13 +35,30 @@ RacingSimulatorWindows/
 # Notes personnelles
 memory/
 
-# Windows Zone.Identifier
+# Windows artifacts
 *.Identifier
 
 # PDF (distribué séparément)
 *.pdf
 
+# Fichiers internes / déplacés dans docs/
+PROMPT_EXPERTS_REALCAR.md
+PROMPT_EXPERT_VESC_BLDC.md
+JOURNAL_PROJET.md
+RAPPORT_DEMARCHE_PROJET.md
+VESC_DIAGNOSTIC_RESUME.md
+SCRIPT_PRESENTATION.md
+*.html
+
+# Fichiers de debug VESC (non trackés, usage local)
+vesc_*.py
+test_*.py
+parse_mcconf_xml.py
+vesc_autoconfig.sh
+
+# Historiques training racine models/
+models/training_history.json
+
 # Garder les dossiers vides
 !data/.gitkeep
 !models/.gitkeep
-PROMPT_EXPERTS_REALCAR.md

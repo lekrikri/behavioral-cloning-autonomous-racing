@@ -84,20 +84,35 @@ Alpha adapts to steering magnitude — reactive in corners, stable on straights.
 ## Project Structure
 
 ```
-src/
-├── client.py          # RobocarEnv — Unity ML-Agents gRPC wrapper (port 5005)
-├── data_collector.py  # Human driving data collection → CSV
-├── dataset.py         # DrivingDataset — Z-score, augmentation, temporal split
-├── model.py           # RobocarSpatial (Conv1D) + RobocarMLP
-├── train.py           # Training loop — BimodalLoss + PairwiseSmoothingLoss
-├── inference.py       # Real-time inference — SmoothingFilter + front_raw heuristic
-└── evaluate.py        # MAE / RMSE / R² metrics + plots
-
-data/                  # Collected CSV datasets (gitignored)
-models/                # Trained checkpoints .pth + .onnx (gitignored)
-notebooks/             # EDA notebook
-config.json            # Simulator config (nbRay=20, fov=180)
-GUIDE_COMPLET.md       # In-depth technical guide (French)
+behavioral-cloning-autonomous-racing/
+├── src/                    # Core ML code
+│   ├── model.py            # RobocarSpatial — Conv1D + GRU
+│   ├── dataset.py          # DrivingDataset + augmentations
+│   ├── train.py            # Training loop + ONNX export
+│   ├── inference.py        # Real-time inference (simulation)
+│   ├── inference_realcar.py# Real-time inference (physical car)
+│   ├── depth_to_rays.py    # OAK-D Lite depth map → virtual raycasts
+│   ├── vesc_interface.py   # Native VESC protocol (Python 3.6+)
+│   ├── data_collector.py   # Human driving data collection
+│   ├── calibrate_servo.py  # Servo calibration (run first on Jetson)
+│   ├── calibrate_ray_stats.py # Z-score calibration for OAK-D
+│   └── evaluate.py         # MAE / RMSE / R² metrics
+├── tests/                  # Hardware & integration tests
+├── docs/                   # Technical documentation
+│   ├── ONBOARDING_LEANDRE.md   # Team onboarding guide
+│   ├── GUIDE_COMPLET.md        # In-depth technical guide
+│   └── HARDWARE_REALCAR.md     # Physical car hardware reference
+├── configs/                # Configuration files
+│   └── config.json         # Simulator config (nbRay=20, fov=180)
+├── data/                   # Collected CSV datasets (gitignored)
+├── models/                 # Trained models
+│   ├── v18/best.onnx       # Active model — 24s lap record
+│   └── ray_stats.json      # Z-score normalization stats
+├── notebooks/              # EDA and exploration
+├── requirements.txt        # Python deps (simulation)
+├── requirements_jetson.txt # Python deps (Jetson Nano)
+├── deploy_to_jetson.sh     # Deploy to Jetson via SSH
+└── setup_jetson.sh         # Jetson initial setup
 ```
 
 ---
@@ -110,21 +125,20 @@ pip install -r requirements.txt
 
 # 1. Launch the simulator (Unity build)
 ./BuildLinux/RacingSimulator.x86_64 --mlagents-port 5005 \
-  --config-path config.json
+  --config-path configs/config.json
 
 # 2. Collect driving data (human)
 python src/data_collector.py collect --output data/run_01.csv
 
 # 3. Train
-python src/train.py --data data/run_01.csv --arch spatial \
-  --no-action-cond --no-delta --no-sampler \
-  --temporal-split \
-  --epochs 150 --steer-weight 0.88 --accel-weight 0.12 \
-  --output models/v_new
+python src/train.py --data data/ --arch cnn --epochs 100 --loss huber
 
 # 4. Run inference
-python src/inference.py --model models/v_new/best.pth
+python src/inference.py --model models/v18/best.onnx
 ```
+
+> New to the project? Read [docs/ONBOARDING_LEANDRE.md](docs/ONBOARDING_LEANDRE.md) first.
+> Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

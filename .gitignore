@@ -59,6 +59,11 @@ vesc_autoconfig.sh
 # Historiques training racine models/
 models/training_history.json
 
+# Mask Generator — données générées (volumineuses)
+data/masks_auto/
+data/masks_preview/
+data/256_128/
+
 # Garder les dossiers vides
 !data/.gitkeep
 !models/.gitkeep

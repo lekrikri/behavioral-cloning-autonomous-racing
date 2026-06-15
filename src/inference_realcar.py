@@ -179,6 +179,8 @@ class RealCarInference:
             return
         if self.perception_mode == "visual":
             self._perception_visual()
+        elif self.perception_mode == "fusion":
+            self._perception_fusion()
         else:
             self._perception_depth()
 
@@ -224,6 +226,73 @@ class RealCarInference:
                 rays = self.visual_bridge(msg.getCvFrame())
                 with self._lock:
                     self._latest_rays  = rays
+                    self._last_frame_t = time.time()
+                time.sleep(0.005)
+
+    def _perception_fusion(self):
+        """
+        Fusion depth + visual : np.minimum(rays_depth, rays_visual)
+        → conserve le signal le plus contraignant (obstacle le plus proche).
+        Depth détecte les murs/obstacles en volume.
+        Visual détecte les bords de piste (lignes blanches au sol).
+        """
+        device_info = None
+        for d in dai.Device.getAllConnectedDevices():
+            device_info = d
+            break
+        if device_info is None:
+            print("[Perception] Aucun device OAK-D trouvé")
+            return
+
+        import depthai as dai as dai_mod
+        # Pipeline couleur + depth sur le même device
+        with dai_mod.Device(device_info) as device:
+            # Couleur
+            pipeline_color, q_color = create_color_pipeline_v3(device)
+
+            # Depth (ajout au même pipeline)
+            mono_l = pipeline_color.create(dai_mod.node.MonoCamera)
+            mono_r = pipeline_color.create(dai_mod.node.MonoCamera)
+            stereo  = pipeline_color.create(dai_mod.node.StereoDepth)
+            xout_d  = pipeline_color.create(dai_mod.node.XLinkOut)
+            mono_l.setBoardSocket(dai_mod.CameraBoardSocket.CAM_B)
+            mono_r.setBoardSocket(dai_mod.CameraBoardSocket.CAM_C)
+            mono_l.setResolution(dai_mod.MonoCameraProperties.SensorResolution.THE_400_P)
+            mono_r.setResolution(dai_mod.MonoCameraProperties.SensorResolution.THE_400_P)
+            stereo.setDefaultProfilePreset(dai_mod.node.StereoDepth.PresetMode.HIGH_DENSITY)
+            stereo.setLeftRightCheck(True)
+            stereo.setMedianFilter(dai_mod.MedianFilter.KERNEL_7x7)
+            mono_l.out.link(stereo.left)
+            mono_r.out.link(stereo.right)
+            stereo.depth.link(xout_d.input)
+            xout_d.setStreamName("depth")
+            q_depth = device.getOutputQueue("depth", maxSize=1, blocking=False)
+
+            pipeline_color.start()
+            print("[Perception] OAK-D connectée — flux FUSION (depth + masque) démarré")
+            with self._lock:
+                self._last_frame_t     = time.time()
+                self._perception_ready = True
+
+            while self._running:
+                bgr_msg   = q_color.get()
+                depth_msg = q_depth.tryGet()
+
+                rays_visual = self.visual_bridge(bgr_msg.getCvFrame())
+
+                if depth_msg is not None:
+                    frame = depth_msg.getFrame()
+                    if frame.max() >= 200:
+                        rays_depth = self.depth_bridge(frame)
+                        # Fusion : minimum → le signal le plus contraignant
+                        rays_fused = np.minimum(rays_depth, rays_visual)
+                    else:
+                        rays_fused = rays_visual   # fallback si depth KO
+                else:
+                    rays_fused = rays_visual       # fallback si pas de frame depth
+
+                with self._lock:
+                    self._latest_rays  = rays_fused
                     self._last_frame_t = time.time()
                 time.sleep(0.005)
 
@@ -352,7 +421,7 @@ def main():
     parser.add_argument("--servo-range",  type=float, default=0.35)
     parser.add_argument("--invert-steer", action="store_true")
     parser.add_argument("--no-log",          action="store_true")
-    parser.add_argument("--perception-mode", choices=["depth", "visual"], default="depth",
+    parser.add_argument("--perception-mode", choices=["depth", "visual", "fusion"], default="depth",
                         help="depth=depth map stéreo | visual=masque HSV/Canny couleur")
     parser.add_argument("--mask-mode",       choices=["hsv", "canny"], default="hsv",
                         help="Mode masque (si --perception-mode visual)")

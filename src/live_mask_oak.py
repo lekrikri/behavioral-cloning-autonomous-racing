@@ -36,29 +36,41 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--out",    default=str(pathlib.Path(__file__).parent.parent / "data" / "raw_cam"))
 parser.add_argument("--width",  type=int, default=512)
 parser.add_argument("--height", type=int, default=256)
+parser.add_argument("--mode",   choices=["hsv", "canny"], default="hsv",
+                    help="hsv=seuil couleur (eclairage homogene) | canny=bords (eclairage variable)")
+parser.add_argument("--canny-low",  type=int, default=50,  help="Seuil bas Canny")
+parser.add_argument("--canny-high", type=int, default=150, help="Seuil haut Canny")
 args = parser.parse_args()
 
 W, H = args.width, args.height
 out  = pathlib.Path(args.out)
 out.mkdir(parents=True, exist_ok=True)
+MODE = args.mode
 
 # ── Parametres masque blanc ────────────────────────────────────────────────────
 HSV_LOW  = np.array([  0,   0, 180])
 HSV_HIGH = np.array([180,  50, 255])
 ROI_TOP  = H // 2
 MORPH_K  = 3
+CANNY_LOW  = args.canny_low
+CANNY_HIGH = args.canny_high
 
 DEPTHAI_VERSION = tuple(int(x) for x in dai.__version__.split(".")[:2])
 IS_V3 = DEPTHAI_VERSION[0] >= 3
 
-# ── Masque HSV ─────────────────────────────────────────────────────────────────
+# ── Masque (HSV ou Canny selon --mode) ────────────────────────────────────────
 def make_mask(bgr):
-    hsv  = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, HSV_LOW, HSV_HIGH)
+    k = np.ones((MORPH_K, MORPH_K), np.uint8)
+    if MODE == "canny":
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        mask = cv2.Canny(gray, CANNY_LOW, CANNY_HIGH)
+        mask = cv2.dilate(mask, k, iterations=2)  # epaissir les bords
+    else:
+        hsv  = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, HSV_LOW, HSV_HIGH)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  k)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
     mask[:ROI_TOP, :] = 0
-    k    = np.ones((MORPH_K, MORPH_K), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  k)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
     return mask
 
 def find_line_center(mask):
@@ -111,7 +123,8 @@ def run(device):
     except Exception as e:
         print(f"Calibration : {e}")
     print(f"Capture -> {out}")
-    print("SPACE=sauver | M=masque | +/-=seuil | Q=quitter")
+    print(f"Mode : {MODE.upper()}")
+    print("SPACE=sauver | M=masque | +/-=seuil (HSV) | Q=quitter")
     print("=" * 50)
 
     if IS_V3:

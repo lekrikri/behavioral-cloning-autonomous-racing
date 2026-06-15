@@ -48,6 +48,7 @@ except ImportError:
     print("[WARNING] depthai non installé")
 
 from src.depth_to_rays import DepthToRays, create_depthai_pipeline
+from src.visual_rays   import VisualRays, create_color_pipeline_v3
 from src.vesc_interface import VESCInterface
 
 # ─── Configuration ────────────────────────────────────────────────────────────
@@ -55,8 +56,8 @@ MODEL_PATH          = "models/v18/best.onnx"
 STATS_PATH          = "models/real_ray_stats.json"
 FALLBACK_STATS_PATH = "models/ray_stats.json"
 VESC_PORT           = "/dev/ttyACM0"
-DUTY_MAX            = 0.15
-WATCHDOG_S          = 0.25   # renforcé : 250ms (recommandation Gemini)
+CURRENT_MAX         = 5.0    # A — courant max moteur (8A normal, 5A conservateur 1er test)
+WATCHDOG_S          = 0.50   # 500ms — tolérance OAK-D démarrage
 CONTROL_HZ          = 30
 
 
@@ -93,7 +94,7 @@ class RealCarInference:
         model_path: str   = MODEL_PATH,
         stats_path: str   = STATS_PATH,
         vesc_port: str    = VESC_PORT,
-        duty_max: float   = DUTY_MAX,
+        current_max: float = CURRENT_MAX,
         servo_center: float = 0.50,
         servo_range: float  = 0.35,
         invert_steer: bool  = False,
@@ -132,24 +133,27 @@ class RealCarInference:
         self.ray_mu    = np.array(stats["mean"], dtype=np.float32)
         self.ray_sigma = np.array(stats["std"],  dtype=np.float32)
 
-        self.depth_bridge = DepthToRays()
+        self.perception_mode = kwargs.get("perception_mode", "depth")
+        self.depth_bridge    = DepthToRays()
+        self.visual_bridge   = VisualRays(mode=kwargs.get("mask_mode", "hsv"))
 
         # ── VESC avec params calibrés ─────────────────────────────────────────
         self.vesc = VESCInterface(
             port=vesc_port,
-            duty_max=duty_max,
+            max_erpm=current_max,   # current_max réutilisé comme max_erpm (ex: 8000 ERPM)
             servo_center=servo_center,
             servo_range=servo_range,
             invert_steer=invert_steer,
         )
-        print(f"[RealCar] servo_center={servo_center:.3f} | range=±{servo_range:.3f} | invert={invert_steer}")
+        print(f"[RealCar] servo_center={servo_center:.3f} | range=±{servo_range:.3f} | invert={invert_steer} | max_erpm={int(current_max)}")
 
         self.smoother = SmoothingFilter()
 
-        self._lock         = threading.Lock()
+        self._lock              = threading.Lock()
         self._latest_rays: Optional[np.ndarray] = None
-        self._last_frame_t = time.time()
-        self._running      = False
+        self._last_frame_t      = time.time()
+        self._perception_ready  = False   # True quand OAK-D envoie des frames
+        self._running           = False
         self._step         = 0
         self._fps_times    = deque(maxlen=50)
         self._start_time   = None
@@ -166,22 +170,29 @@ class RealCarInference:
             self._csv_writer.writerow(["t", "steer", "accel", "front_raw", "min_ray", "fps"])
             print(f"[RealCar] Log CSV → {log_path}")
 
-        print(f"[RealCar] DUTY_MAX = {duty_max*100:.0f}% | WATCHDOG = {WATCHDOG_S*1000:.0f}ms")
+        print(f"[RealCar] CURRENT_MAX = {current_max:.1f}A | WATCHDOG = {WATCHDOG_S*1000:.0f}ms")
         print("[RealCar] ✅ Prêt. Lance run() pour démarrer.\n")
 
     def _perception_thread(self):
         if not _DAI_AVAILABLE:
             print("[Perception] depthai non disponible")
             return
+        if self.perception_mode == "visual":
+            self._perception_visual()
+        else:
+            self._perception_depth()
 
+    def _perception_depth(self):
         pipeline = create_depthai_pipeline()
         with dai.Device(pipeline) as device:
             q = device.getOutputQueue("depth", maxSize=1, blocking=False)
-            print("[Perception] OAK-D connectée — flux depth démarré")
+            print("[Perception] OAK-D connectée — flux DEPTH démarré")
+            with self._lock:
+                self._last_frame_t     = time.time()
+                self._perception_ready = True
             while self._running:
                 msg = q.tryGet()
                 if msg is not None:
-                    # Watchdog depth : frame toute noire = perte de disparité
                     frame = msg.getFrame()
                     if frame.max() < 200:
                         print("\n[Perception] ⚠️  Depth map nulle — perte OAK-D !")
@@ -191,6 +202,29 @@ class RealCarInference:
                         with self._lock:
                             self._latest_rays  = rays
                             self._last_frame_t = time.time()
+                time.sleep(0.005)
+
+    def _perception_visual(self):
+        device_info = None
+        for d in dai.Device.getAllConnectedDevices():
+            device_info = d
+            break
+        if device_info is None:
+            print("[Perception] Aucun device OAK-D trouvé")
+            return
+        with dai.Device(device_info) as device:
+            pipeline, q = create_color_pipeline_v3(device)
+            pipeline.start()
+            print("[Perception] OAK-D connectée — flux VISUAL (masque) démarré")
+            with self._lock:
+                self._last_frame_t     = time.time()
+                self._perception_ready = True
+            while self._running:
+                msg = q.get()
+                rays = self.visual_bridge(msg.getCvFrame())
+                with self._lock:
+                    self._latest_rays  = rays
+                    self._last_frame_t = time.time()
                 time.sleep(0.005)
 
     def _control_thread(self):
@@ -204,7 +238,11 @@ class RealCarInference:
                 rays       = self._latest_rays
                 last_frame = self._last_frame_t
 
-            # ── Watchdog renforcé 250ms ────────────────────────────────────
+            # ── Watchdog : inactif tant que OAK-D pas prête ───────────────
+            if not self._perception_ready:
+                time.sleep(0.05)
+                continue
+
             if time.time() - last_frame > WATCHDOG_S:
                 self.vesc.stop()
                 time.sleep(0.1)
@@ -243,7 +281,7 @@ class RealCarInference:
             front_cap = 1.0 if front_raw >= 0.65 else (0.45 + 0.70 * front_raw)
             # Sécurité virage (recommandation Grok) : réduire accel si steer élevé
             corner_damp = 1.0 - 0.5 * abs(steering)
-            acceleration = float(np.clip(min(geo_base, front_cap) * corner_damp, 0.35, 0.95))
+            acceleration = float(np.clip(min(geo_base, front_cap) * corner_damp, 0.50, 0.95))
 
             # ── Envoi VESC ────────────────────────────────────────────────
             self.vesc.send(steering, acceleration)
@@ -308,22 +346,29 @@ def main():
     parser.add_argument("--model",        default=MODEL_PATH)
     parser.add_argument("--stats",        default=STATS_PATH)
     parser.add_argument("--port",         default=VESC_PORT)
-    parser.add_argument("--duty-max",     type=float, default=DUTY_MAX)
+    parser.add_argument("--current-max",  type=float, default=CURRENT_MAX,
+                        help="Courant max moteur en A (defaut 5A pour 1er test, 8A normal)")
     parser.add_argument("--servo-center", type=float, default=0.50)
     parser.add_argument("--servo-range",  type=float, default=0.35)
     parser.add_argument("--invert-steer", action="store_true")
-    parser.add_argument("--no-log",       action="store_true")
+    parser.add_argument("--no-log",          action="store_true")
+    parser.add_argument("--perception-mode", choices=["depth", "visual"], default="depth",
+                        help="depth=depth map stéreo | visual=masque HSV/Canny couleur")
+    parser.add_argument("--mask-mode",       choices=["hsv", "canny"], default="hsv",
+                        help="Mode masque (si --perception-mode visual)")
     args = parser.parse_args()
 
     RealCarInference(
         model_path   = args.model,
         stats_path   = args.stats,
         vesc_port    = args.port,
-        duty_max     = args.duty_max,
+        current_max  = args.current_max,
         servo_center = args.servo_center,
         servo_range  = args.servo_range,
-        invert_steer = args.invert_steer,
-        log_csv      = not args.no_log,
+        invert_steer     = args.invert_steer,
+        log_csv          = not args.no_log,
+        perception_mode  = args.perception_mode,
+        mask_mode        = args.mask_mode,
     ).run()
 
 

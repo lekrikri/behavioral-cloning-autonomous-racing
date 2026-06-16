@@ -10,6 +10,8 @@
 ```
 Batterie LiPo
       ↓
+[Flipsky Anti-Spark Switch Smart 13S]   ← interrupteur principal (anti-étincelle + MOSFET)
+      ↓                                     ⚠️ auto-off 20 min — voir HARDWARE_DIAGNOSTICS.md
 [Carte puissance centrale + grand radiateur]
       ├──→ [Matek Systems UBEC Duo]
       │         └── 5V → Jetson Nano (alimentation)

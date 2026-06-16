@@ -69,10 +69,11 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--port", default="/dev/ttyACM0")
     p.add_argument("--max-current", type=float, default=3.0, help="A — |current| cap (low!)")
-    p.add_argument("--level", type=float, default=0.2, help="throttle fraction [0..1] for motor phases")
+    p.add_argument("--level", type=float, default=0.5, help="throttle fraction [0..1] for motor phases (~1.5A at max 3)")
     p.add_argument("--servo-center", type=float, default=0.5)
     p.add_argument("--servo-range", type=float, default=0.40)
     p.add_argument("--invert-steer", action="store_true")
+    p.add_argument("--no-invert-motor", action="store_true", help="disable motor direction inversion (default: inverted)")
     p.add_argument("--steer-only", action="store_true", help="skip motor phases 3-6")
     p.add_argument("--yes", action="store_true", help="skip confirmation prompts")
     args = p.parse_args()
@@ -91,6 +92,7 @@ def main():
         servo_range=args.servo_range,
         current_max=args.max_current,
         invert_steer=args.invert_steer,
+        invert_motor=not args.no_invert_motor,
     )
     if vesc._sim_mode:
         print("  ⚠️  VESC non connecté — mode SIMULATION (aucune commande réelle).")

@@ -98,7 +98,7 @@ class VESCInterface:
         port: str = "/dev/ttyACM0",
         baudrate: int = 115200,
         servo_center: float = 0.5,
-        servo_range: float = 0.35,
+        servo_range: float = 0.40,   # calibrated 2026-06-16: 0.10/0.90 extremes reach lock, no strain
         current_max: float = 8.0,
         invert_steer: bool = False,
     ):

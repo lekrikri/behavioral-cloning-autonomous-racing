@@ -71,7 +71,7 @@ def main():
     p.add_argument("--max-current", type=float, default=3.0, help="A — |current| cap (low!)")
     p.add_argument("--level", type=float, default=0.2, help="throttle fraction [0..1] for motor phases")
     p.add_argument("--servo-center", type=float, default=0.5)
-    p.add_argument("--servo-range", type=float, default=0.35)
+    p.add_argument("--servo-range", type=float, default=0.40)
     p.add_argument("--invert-steer", action="store_true")
     p.add_argument("--steer-only", action="store_true", help="skip motor phases 3-6")
     p.add_argument("--yes", action="store_true", help="skip confirmation prompts")

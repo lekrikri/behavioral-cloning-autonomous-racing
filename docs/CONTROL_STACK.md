@@ -83,9 +83,14 @@ Le VESC communique en trames binaires. Pour un payload < 256 octets :
 | `COMM_SET_DUTY` | 5 | duty cycle | ×100000 | int32 |
 | `COMM_SET_CURRENT` | 6 | courant (A) | ×1000 (mA) | int32 |
 | `COMM_SET_RPM` | 8 | eRPM | ×1 | int32 |
-| `COMM_SET_SERVO_POS` | 11 | position [0..1] | ×1000 | int16 |
+| `COMM_SET_SERVO_POS` | 12 | position [0..1] | ×1000 | int16 |
 | `COMM_GET_VALUES` | 4 | (requête) | — | — |
 | `COMM_ALIVE` | 30 | heartbeat | — | — |
+
+> ⚠️ **Piège vécu** : l'ID du servo est **12**, pas 11. L'ID **11 = `COMM_SET_DETECT`** (un
+> no-op silencieux pour le servo). Le code de l'équipe précédente utilisait 11 → sur notre
+> firmware **6.05** le servo ne bougeait jamais. Les IDs ont évolué entre versions : toujours
+> les vérifier contre le `datatypes.h` de la version de firmware réellement flashée.
 
 ### Heartbeat obligatoire
 Le VESC a un **watchdog** : sans trame récente il coupe le moteur. On envoie `COMM_ALIVE`
@@ -134,6 +139,51 @@ change, et tous les CRC deviennent faux. C'est exactement ce qui piégeait l'anc
 
 ---
 
+## 6. Moteur — Traxxas BL-2s 3300
+
+Le moteur de traction est un **Traxxas BL-2s 3300** (réf. TRA3384) :
+
+| Caractéristique | Valeur |
+|---|---|
+| Type | brushless **sensorless** |
+| kV | **3300** (rpm par volt) |
+| Tension prévue | **2S uniquement** (≈ 7,4–8,4 V) selon Traxxas |
+| Bobinage / can | 16 AWG / 37 mm, ventilateur intégré |
+
+### « Faut-il vraiment monter autant en ampères ? » → non, 5 A c'est très peu
+Ce moteur encaisse des **dizaines d'ampères** en continu. Le comportement « tourne très
+lentement, par à-coups, même à 5 A » observé au banc n'est **pas** un problème d'ampérage. Causes :
+
+1. **`set_current` pilote le COUPLE, pas la vitesse.** Sur une roue libre (sans charge), un
+   couple modéré accélère lentement ; nos impulsions courtes ne laissent pas monter le régime.
+   Pour faire tourner *vite* au banc → piloter en **duty cycle** (tension), pas en courant.
+2. **Sensorless à basse vitesse = saccadé** : sans capteur de position, la commutation est faite
+   à l'aveugle sous un certain régime (zone « openloop ») → à-coups. **Sous charge** (au sol),
+   l'amorçage est généralement plus net.
+
+### ⚠️ Survolt : moteur 2S alimenté en 4S
+La batterie lit **16,0 V (4S)** alors que le moteur est donné **2S**. À plein duty :
+`3300 kV × 16 V ≈ 52 800 rpm` à vide → c'est ce qui explique la VMax ~90 km/h, **mais** c'est ~2×
+la tension nominale : risque d'échauffement / démagnétisation si plein gaz soutenu. **Ne pas
+maintenir plein gaz au banc.**
+
+### ⚠️ Sens de rotation inversé
+Sous courant **positif** (sens « avant » par convention), les roues tournent **en arrière**
+(confirmé visuellement + `rpm` négatifs lus sous courant positif). Il faut **inverser le sens
+moteur** : flag `invert_motor` côté logiciel (négation du courant), ou échange de 2 phases côté
+câblage. Sans ça, `accel > 0` ferait **reculer** la voiture.
+
+### Calibration validée (2026-06-16)
+| Paramètre | Valeur | Note |
+|---|---|---|
+| `servo_center` | 0.50 | roues droites au centre |
+| `servo_range` | 0.40 | extrêmes 0.10/0.90 atteignent la butée sans forcer |
+| `invert_motor` | **True** | courant positif = avant (corrige le sens inversé) |
+| seuil démarrage | ~1 A | en dessous (0.6 A) le moteur ne bouge pas |
+
+---
+
 ## Références
+- Traxxas BL-2s 3300 (TRA3384) — <https://traxxas.com/products/parts/3384>
 - VESC firmware (datatypes / `commands.c`) — <https://github.com/vedderb/bldc>
 - CRC-16/XMODEM — poly 0x1021, init 0x0000 (RevEng catalogue)

@@ -161,11 +161,33 @@ lentement, par à-coups, même à 5 A » observé au banc n'est **pas** un probl
    à l'aveugle sous un certain régime (zone « openloop ») → à-coups. **Sous charge** (au sol),
    l'amorçage est généralement plus net.
 
+### Ce que dit (et ne dit pas) la fiche Traxxas
+La page produit officielle donne **kV=3300** et « sensorless » mais **aucune valeur d'ampérage**
+ni de tension/cellules (c'est dans le PDF d'install). Le « 2S » vient du **système BL-2s**
+(moteur + ESC Traxxas 2S). Il n'y a donc **pas de "courant max" officiel** pour le moteur nu :
+la **limite de courant est fixée par NOTRE config VESC** (l'équipe précédente détectait ~8 A).
+
 ### ⚠️ Survolt : moteur 2S alimenté en 4S
-La batterie lit **16,0 V (4S)** alors que le moteur est donné **2S**. À plein duty :
-`3300 kV × 16 V ≈ 52 800 rpm` à vide → c'est ce qui explique la VMax ~90 km/h, **mais** c'est ~2×
-la tension nominale : risque d'échauffement / démagnétisation si plein gaz soutenu. **Ne pas
-maintenir plein gaz au banc.**
+La batterie lit **16,0 V (4S)** alors que le moteur est un **système 2S**. Les enroulements
+craignent le **courant** (chauffe), pas directement la tension — mais 4S double la **vitesse** à
+duty donné. À plein duty : `3300 kV × 16 V ≈ 52 800 rpm` à vide → explique la VMax ~90 km/h,
+**mais** ~2× le régime nominal → risques de **survitesse** (roulements, aimants) et surtout
+**thermiques** (pertes fer ↑ → chauffe → **démagnétisation** permanente).
+⚠️ **Aggravant** : `temp_motor` lit du bruit → **pas de sonde température moteur** → le VESC ne
+protège **que ses FET**, pas le moteur. **Aucun filet thermique côté moteur.** Règles : limiter le
+duty max, **jamais de plein gaz soutenu**, surveiller la chaleur du moteur à la main. À nos
+niveaux de test (duty 0.08, ≤ 3 A) → aucun risque.
+
+### Duty (tension/vitesse) vs Courant (couple) — mesuré au banc (roue libre)
+| Mode | Commande | rpm relevé | Comportement |
+|---|---|---|---|
+| **DUTY** | `set_duty(0.08)` | ~680 erpm **stable** | régime régulier, lisse |
+| **COURANT** | `set_current(3 A)` | 9→424→39→301 **erratique** | à-coups, observateur perdu |
+
+Leçon : à basse vitesse, un sensorless est lisse en **duty** (on impose la tension) mais saccadé
+en **courant** (couple faible + observateur qui ne s'accroche pas). Le courant ne devient propre
+qu'une fois lancé ou **sous charge**. Pour l'inférence/teleop on pilotera quand même en courant
+(c'est le couple/traction qui compte), en acceptant cette rugosité de démarrage.
 
 ### ⚠️ Sens de rotation inversé
 Sous courant **positif** (sens « avant » par convention), les roues tournent **en arrière**

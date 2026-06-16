@@ -102,12 +102,16 @@ class VESCInterface:
         current_max: float = 8.0,
         invert_steer: bool = False,
         invert_motor: bool = True,   # this car: positive current spins wheels backward -> invert
+        throttle_mode: str = "current",  # "current" (torque, for driving) or "duty" (voltage/speed)
+        max_duty: float = 0.5,           # safety cap on |duty| in duty mode (0.5 = 50%)
     ):
         self.servo_center = servo_center
         self.servo_range  = servo_range
         self.current_max  = current_max
         self.invert_steer = invert_steer
         self.invert_motor = invert_motor
+        self.throttle_mode = throttle_mode
+        self.max_duty     = max_duty
         self._sim_mode    = False
         self._alive_running = False
         self.ser = None
@@ -164,19 +168,27 @@ class VESCInterface:
         return self.servo_center + self.servo_range * _clamp(s, -1.0, 1.0)
 
     def set_throttle(self, throttle: float) -> None:
-        """throttle in [-1,1] -> current in [-current_max, +current_max] (neg = reverse).
+        """throttle in [-1,1] -> motor command (neg = reverse).
 
-        invert_motor flips the sign so that throttle > 0 drives the car forward."""
+        invert_motor flips the sign so throttle > 0 drives the car forward.
+        Mode "current": throttle scales current_max (torque — best for driving/traction).
+        Mode "duty":    throttle scales max_duty   (voltage/speed — smoother at low speed)."""
         sign = -1.0 if self.invert_motor else 1.0
-        self.set_current(sign * _clamp(throttle, -1.0, 1.0) * self.current_max)
+        t = sign * _clamp(throttle, -1.0, 1.0)
+        if self.throttle_mode == "duty":
+            self.set_duty(t * self.max_duty)
+        else:
+            self.set_current(t * self.current_max)
 
     def drive(self, steering: float, throttle: float) -> None:
         """Full command: steering in [-1,1], throttle in [-1,1] (signed)."""
         if self._sim_mode:
-            print("\r[VESC SIM] steer=%+.2f -> servo=%.3f | thr=%+.2f -> %+.2fA   "
-                  % (steering, _clamp(self._steer_to_servo(steering), 0.10, 0.90),
-                     throttle, (-1.0 if self.invert_motor else 1.0)
-                     * _clamp(throttle, -1, 1) * self.current_max),
+            sign = -1.0 if self.invert_motor else 1.0
+            t = sign * _clamp(throttle, -1, 1)
+            eff = ("duty=%+.2f" % (t * self.max_duty)) if self.throttle_mode == "duty" \
+                else ("%+.2fA" % (t * self.current_max))
+            print("\r[VESC SIM] steer=%+.2f -> servo=%.3f | thr=%+.2f -> %s   "
+                  % (steering, _clamp(self._steer_to_servo(steering), 0.10, 0.90), throttle, eff),
                   end="", flush=True)
             return
         self.set_servo(self._steer_to_servo(steering))

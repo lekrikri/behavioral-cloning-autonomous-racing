@@ -15,13 +15,16 @@ Runs 6 scripted sequences:
 !!! THIS CAR CAN REACH ~90 km/h !!!
   - Always run with the WHEELS OFF THE GROUND (car on a stand).
   - The motor phases (3-6) are gated behind a confirmation prompt.
-  - Throttle magnitude is capped low by default (--max-current / --level).
+  - DEFAULT mode is "duty" (voltage/speed): the wheel spins FAST and smooth, up to
+    --max-duty (50%). On 4S that is a high free-running rpm — keep phases short.
+  - Mode "current" (torque) is gentler/jerky at low speed: --mode current.
   - Ctrl-C at any time triggers an emergency stop.
 
 Usage:
-  OPENBLAS_CORETYPE=ARMV8 .venv/bin/python src/bench_vesc.py           # full test
+  OPENBLAS_CORETYPE=ARMV8 .venv/bin/python src/bench_vesc.py           # duty 50%, full test
   .venv/bin/python src/bench_vesc.py --steer-only                     # no motor
-  .venv/bin/python src/bench_vesc.py --max-current 2 --level 0.15     # gentler
+  .venv/bin/python src/bench_vesc.py --max-duty 0.3                   # gentler top speed (30%)
+  .venv/bin/python src/bench_vesc.py --mode current --max-current 3   # torque mode
   .venv/bin/python src/bench_vesc.py --yes                            # skip prompts
 """
 
@@ -68,8 +71,11 @@ def confirm(msg, auto_yes):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--port", default="/dev/ttyACM0")
-    p.add_argument("--max-current", type=float, default=3.0, help="A — |current| cap (low!)")
-    p.add_argument("--level", type=float, default=0.5, help="throttle fraction [0..1] for motor phases (~1.5A at max 3)")
+    p.add_argument("--mode", choices=["duty", "current"], default="duty",
+                   help="duty = voltage/speed (smooth, default); current = torque")
+    p.add_argument("--max-current", type=float, default=3.0, help="A — |current| cap (current mode)")
+    p.add_argument("--max-duty", type=float, default=0.5, help="duty cap (duty mode); 0.5 = 50%%")
+    p.add_argument("--level", type=float, default=1.0, help="peak throttle fraction [0..1] of the mode cap")
     p.add_argument("--servo-center", type=float, default=0.5)
     p.add_argument("--servo-range", type=float, default=0.40)
     p.add_argument("--invert-steer", action="store_true")
@@ -79,11 +85,17 @@ def main():
     args = p.parse_args()
 
     lvl = max(0.0, min(1.0, args.level))
+    # pk_pct = effective peak shown in prints: duty% in duty mode, throttle-fraction% in current mode
+    pk_pct = lvl * (args.max_duty if args.mode == "duty" else 1.0) * 100
 
     print("═" * 56)
     print("  VESC BENCH TEST — G-CAR-000")
     print("  ⚠️  VMax ~90 km/h — ROUES EN L'AIR OBLIGATOIRE")
-    print("  current_max = %.1f A | throttle level = %.0f%%" % (args.max_current, lvl * 100))
+    if args.mode == "duty":
+        print("  mode=DUTY (vitesse) | peak = %.0f%% duty (cap %.0f%%) — tourne VITE"
+              % (pk_pct, args.max_duty * 100))
+    else:
+        print("  mode=CURRENT (couple) | peak = %.1f A (cap %.1f A)" % (lvl * args.max_current, args.max_current))
     print("═" * 56)
 
     vesc = VESCInterface(
@@ -93,6 +105,8 @@ def main():
         current_max=args.max_current,
         invert_steer=args.invert_steer,
         invert_motor=not args.no_invert_motor,
+        throttle_mode=args.mode,
+        max_duty=args.max_duty,
     )
     if vesc._sim_mode:
         print("  ⚠️  VESC non connecté — mode SIMULATION (aucune commande réelle).")
@@ -116,7 +130,7 @@ def main():
 
         # ── Garde-fou avant les phases moteur ─────────────────────────────────
         print("\n" + "!" * 56)
-        print("  PHASES MOTEUR — la roue va tourner (jusqu'à %.0f%% throttle)." % (lvl * 100))
+        print("  PHASES MOTEUR — la roue va tourner (jusqu'à %.0f%% throttle)." % (pk_pct))
         print("  Vérifie que les ROUES NE TOUCHENT PAS LE SOL.")
         print("!" * 56)
         if not confirm("Roues en l'air, prêt à lancer le moteur ?", args.yes):
@@ -125,21 +139,21 @@ def main():
 
         # ── Phase 3 : accélère puis stop ──────────────────────────────────────
         phase(3, "Moteur : ACCÉLÈRE puis STOP")
-        print("  ramp 0 → +%.0f%%…" % (lvl * 100)); ramp(vesc, 0, 0, 0.0, +lvl, 0.8)
+        print("  ramp 0 → +%.0f%%…" % (pk_pct)); ramp(vesc, 0, 0, 0.0, +lvl, 0.8)
         print("  maintien…");                        hold(vesc, 0, +lvl, 0.7)
         print("  ramp → 0…");                        ramp(vesc, 0, 0, +lvl, 0.0, 0.5)
         vesc.set_throttle(0.0); time.sleep(0.6)
 
         # ── Phase 4 : marche arrière puis stop ────────────────────────────────
         phase(4, "Moteur : MARCHE ARRIÈRE puis STOP")
-        print("  ramp 0 → -%.0f%%…" % (lvl * 100)); ramp(vesc, 0, 0, 0.0, -lvl, 0.8)
+        print("  ramp 0 → -%.0f%%…" % (pk_pct)); ramp(vesc, 0, 0, 0.0, -lvl, 0.8)
         print("  maintien…");                        hold(vesc, 0, -lvl, 0.7)
         print("  ramp → 0…");                        ramp(vesc, 0, 0, -lvl, 0.0, 0.5)
         vesc.set_throttle(0.0); time.sleep(0.6)
 
         # ── Phase 5 : accélère → marche arrière progressivement ───────────────
         phase(5, "Moteur : ACCÉLÈRE → MARCHE ARRIÈRE progressivement")
-        print("  ramp +%.0f%% → -%.0f%%…" % (lvl * 100, lvl * 100))
+        print("  ramp +%.0f%% → -%.0f%%…" % (pk_pct, pk_pct))
         ramp(vesc, 0, 0, +lvl, -lvl, 3.0)
         vesc.set_throttle(0.0); time.sleep(0.6)
 

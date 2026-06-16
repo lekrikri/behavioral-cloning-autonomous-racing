@@ -9,7 +9,7 @@ deps beyond `pyserial`. This keeps the control stack lightweight and portable
 across Python 3.6 (Jetson) and any dev machine. See docs/CONTROL_STACK.md.
 
 Command mapping (high level):
-  steering in [-1, 1] -> servo position [0.0, 1.0]   (COMM_SET_SERVO_POS, id 11)
+  steering in [-1, 1] -> servo position [0.0, 1.0]   (COMM_SET_SERVO_POS, id 12)
   throttle in [-1, 1] -> motor current [-imax, +imax] A  (COMM_SET_CURRENT, id 6)
                          (negative = reverse / brake)
 
@@ -35,7 +35,7 @@ COMM_GET_VALUES    = 4
 COMM_SET_DUTY      = 5
 COMM_SET_CURRENT   = 6
 COMM_SET_RPM       = 8
-COMM_SET_SERVO_POS = 11
+COMM_SET_SERVO_POS = 12   # NB: id 11 is COMM_SET_DETECT — using 11 silently no-ops the servo
 COMM_ALIVE         = 30
 
 

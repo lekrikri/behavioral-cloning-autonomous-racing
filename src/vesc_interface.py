@@ -115,6 +115,7 @@ class VESCInterface:
         self._sim_mode    = False
         self._alive_running = False
         self.ser = None
+        self._lock = threading.Lock()   # serialize writes: alive thread vs control loop
 
         try:
             import serial
@@ -139,7 +140,8 @@ class VESCInterface:
         while self._alive_running:
             try:
                 if self.ser and self.ser.is_open:
-                    self.ser.write(_ALIVE_FRAME)
+                    with self._lock:
+                        self.ser.write(_ALIVE_FRAME)
             except Exception:
                 pass
             time.sleep(0.3)
@@ -148,7 +150,8 @@ class VESCInterface:
     def _write(self, data: bytes) -> None:
         if self._sim_mode or not self.ser or not self.ser.is_open:
             return
-        self.ser.write(data)
+        with self._lock:
+            self.ser.write(data)
 
     def set_servo(self, pos: float) -> None:
         """Set raw servo position [0,1] (clamped for mechanical safety)."""
@@ -213,10 +216,11 @@ class VESCInterface:
         if self._sim_mode or not self.ser or not self.ser.is_open:
             return 0.0
         try:
-            self.ser.reset_input_buffer()
-            self.ser.write(_GET_VALUES_FRAME)
-            time.sleep(0.01)
-            payload = self._unframe(self.ser.read(80))
+            with self._lock:
+                self.ser.reset_input_buffer()
+                self.ser.write(_GET_VALUES_FRAME)
+                time.sleep(0.01)
+                payload = self._unframe(self.ser.read(80))
             if payload and payload[0] == COMM_GET_VALUES and len(payload) >= 27:
                 # fw 3.x layout: id, temp_fet(2), temp_motor(2), motor_i(4),
                 # input_i(4), id(4), iq(4), duty(2), rpm(4) -> rpm at offset 23

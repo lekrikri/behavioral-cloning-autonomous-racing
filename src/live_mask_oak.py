@@ -185,5 +185,5 @@ def run(device):
     cv2.destroyAllWindows()
     print(f"Termine — {counter} images dans {out}")
 
-with dai.Device(device_info, usb2Mode=True) as device:
+with dai.Device(device_info, dai.UsbSpeed.HIGH) as device:
     run(device)

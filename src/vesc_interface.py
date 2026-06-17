@@ -74,6 +74,10 @@ def _duty_payload(duty: float) -> bytes:
     return struct.pack(">Bi", COMM_SET_DUTY, int(round(duty * 100000.0)))    # int32, x1e5
 
 
+def _rpm_payload(erpm: float) -> bytes:
+    return struct.pack(">Bi", COMM_SET_RPM, int(round(erpm)))                # int32, eRPM (scale 1)
+
+
 _ALIVE_FRAME = frame(bytes([COMM_ALIVE]))
 _GET_VALUES_FRAME = frame(bytes([COMM_GET_VALUES]))
 
@@ -102,8 +106,9 @@ class VESCInterface:
         current_max: float = 8.0,
         invert_steer: bool = False,
         invert_motor: bool = True,   # this car: positive current spins wheels backward -> invert
-        throttle_mode: str = "current",  # "current" (torque, for driving) or "duty" (voltage/speed)
+        throttle_mode: str = "current",  # "current" (torque), "duty" (voltage/speed), "erpm" (closed-loop speed)
         max_duty: float = 0.5,           # safety cap on |duty| in duty mode (0.5 = 50%)
+        max_erpm: float = 6000.0,        # full-scale eRPM in erpm mode
     ):
         self.servo_center = servo_center
         self.servo_range  = servo_range
@@ -112,6 +117,7 @@ class VESCInterface:
         self.invert_motor = invert_motor
         self.throttle_mode = throttle_mode
         self.max_duty     = max_duty
+        self.max_erpm     = max_erpm
         self._sim_mode    = False
         self._alive_running = False
         self.ser = None
@@ -165,6 +171,10 @@ class VESCInterface:
         """Set motor duty cycle (signed [-1,1]); prefer set_current for smoothness."""
         self._write(frame(_duty_payload(_clamp(duty, -1.0, 1.0))))
 
+    def set_rpm(self, erpm: float) -> None:
+        """Closed-loop speed control: target eRPM (clamped to +/- max_erpm)."""
+        self._write(frame(_rpm_payload(_clamp(erpm, -self.max_erpm, self.max_erpm))))
+
     # ── mapping helpers ───────────────────────────────────────────────────────
     def _steer_to_servo(self, steering: float) -> float:
         s = -steering if self.invert_steer else steering
@@ -180,6 +190,8 @@ class VESCInterface:
         t = sign * _clamp(throttle, -1.0, 1.0)
         if self.throttle_mode == "duty":
             self.set_duty(t * self.max_duty)
+        elif self.throttle_mode == "erpm":
+            self.set_rpm(t * self.max_erpm)
         else:
             self.set_current(t * self.current_max)
 

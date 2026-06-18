@@ -43,9 +43,11 @@ except ImportError:
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--dst-ip",   default="255.255.255.255",
-                   help="IP du PC récepteur (ou broadcast)")
+                   help="IP du PC récepteur (ou broadcast) — ignoré en mode --serve")
     p.add_argument("--dst-port", type=int, default=5600,
-                   help="Port UDP destination (VLC/GStreamer)")
+                   help="Port UDP destination / port TCP serveur")
+    p.add_argument("--serve",    action="store_true",
+                   help="Mode serveur TCP : VLC se connecte à tcp://JETSON_IP:PORT (traverse les firewalls)")
     p.add_argument("--width",    type=int, default=1280)
     p.add_argument("--height",   type=int, default=720)
     p.add_argument("--fps",      type=int, default=30)
@@ -96,7 +98,7 @@ def build_pipeline(args):
 
 
 def gst_sink(dst_ip, dst_port):
-    """Lance un processus GStreamer en pipe pour envoyer le flux RTP."""
+    """Mode push UDP RTP vers le PC récepteur."""
     cmd = [
         "gst-launch-1.0", "-q",
         "fdsrc",
@@ -108,13 +110,30 @@ def gst_sink(dst_ip, dst_port):
         "sync=false",
     ]
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return proc
+        return subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except FileNotFoundError:
+        return None
+
+
+def gst_server(port):
+    """Mode serveur TCP — VLC se connecte à tcp://JETSON_IP:PORT.
+    Traverse tous les firewalls (connexion sortante depuis le PC).
+    """
+    cmd = [
+        "gst-launch-1.0", "-q",
+        "fdsrc",
+        "!", "h264parse",
+        "!", "mpegtsmux",
+        "!", "tcpserversink",
+        "host=0.0.0.0",
+        "port=%d" % port,
+        "sync=false",
+        "recover-policy=keyframe",
+    ]
+    try:
+        return subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except FileNotFoundError:
         return None
 
@@ -124,11 +143,15 @@ def run(args):
 
     print("[camera_stream] %dx%d @ %dfps | H.264 %dkbps" %
           (args.width, args.height, args.fps, args.bitrate))
-    print("[camera_stream] Destination RTP : udp://%s:%d" %
-          (args.dst_ip, args.dst_port))
-    print("[camera_stream] VLC récepteur   : vlc rtp://@:%d" % args.dst_port)
 
-    gst_proc = gst_sink(args.dst_ip, args.dst_port)
+    if args.serve:
+        print("[camera_stream] Mode SERVEUR TCP port %d" % args.dst_port)
+        print("[camera_stream] VLC : ouvrir tcp://192.168.0.100:%d (remplace IP Jetson)" % args.dst_port)
+        gst_proc = gst_server(args.dst_port)
+    else:
+        print("[camera_stream] Destination RTP : udp://%s:%d" % (args.dst_ip, args.dst_port))
+        print("[camera_stream] VLC récepteur   : vlc rtp://@:%d" % args.dst_port)
+        gst_proc = gst_sink(args.dst_ip, args.dst_port)
     if gst_proc is None:
         print("[camera_stream] ERREUR: gst-launch-1.0 introuvable.")
         print("  -> Installer GStreamer : sudo apt install gstreamer1.0-tools "

@@ -2,7 +2,8 @@
 
 > Journal vivant des problèmes matériels rencontrés sur la voiture réelle (Jetson Nano)
 > et de leur résolution. On complète ce document au fur et à mesure de l'avancement.
-> Voir aussi : [`HARDWARE_REALCAR.md`](HARDWARE_REALCAR.md) (référence matérielle),
+> Voir aussi : [`hardware/MONTAGE.md`](hardware/MONTAGE.md) (montage + fiches par composant),
+> [`HARDWARE_REALCAR.md`](HARDWARE_REALCAR.md) (référence matérielle),
 > [`VESC_DIAGNOSTIC_RESUME.md`](VESC_DIAGNOSTIC_RESUME.md).
 
 ## Chaîne d'alimentation (rappel)
@@ -26,7 +27,7 @@ La voiture s'éteint et redémarre seule, à intervalle régulier (~15–20 min)
 l'arrêt / sur l'établi**, jamais observé en roulant. Sessions SSH coupées net.
 
 ### Cause racine
-Le **Flipsky Anti-Spark Switch Smart (13S / 150 A)**, câblé entre la batterie et l'UBEC,
+Le **Flipsky Anti-Spark Switch Smart (13S / 60 V, 60 A continu, 800 A crête)**, câblé entre la batterie et l'UBEC,
 possède un **minuteur d'auto-extinction de 20 minutes** non désactivable. Citation de la
 documentation Flipsky :
 
@@ -59,9 +60,12 @@ surchauffe, UBEC sous-dimensionné en courant.
 L'auto-off de 20 min est une sécurité firmware **figée** (pas de réglage pour la désactiver).
 Solution = **ne pas faire passer l'alimentation de la Jetson par le Flipsky** :
 
-1. **★ Recommandé** — alimenter l'**UBEC directement sur la batterie** (avec un **XT90-AS
-   passif** pour conserver l'anti-étincelle au branchement). Réserver le Flipsky à la **ligne
-   moteur/ESC**, où le courant varie naturellement → son minuteur ne se déclenche jamais.
+1. **★ Recommandé** — alimenter l'**UBEC directement sur la batterie**, en **XT60 standard**.
+   Réserver le Flipsky à la **ligne moteur/ESC**, où le courant varie naturellement → son
+   minuteur ne se déclenche jamais. Pas besoin d'antispark sur la ligne UBEC : l'inrush vient
+   des condensateurs du VESC (déjà couverts par le Flipsky), pas de l'UBEC dont la capacité
+   d'entrée est minime. Un connecteur antispark passif n'existe de toute façon pas en XT60
+   (le XT90-S/AS oui, mais la voiture est câblée en XT60).
 2. Palliatif de validation : maintenir une charge qui perturbe le rail ≥ 500 mV / 3 s (sale).
 3. Appui sur le bouton du switch = réarme le minuteur (inutilisable en autonome).
 

@@ -118,7 +118,10 @@ def main():
         pad = Gamepad(args.js)
     except OSError as e:
         print("[teleop] cannot open %s: %s" % (args.js, e))
-        print("         is the F710 dongle plugged and in XInput (X) mode?")
+        print("         checklist:")
+        print("           1. F710 dongle plugged in (lsusb | grep 046d) and pad ON")
+        print("           2. switch on the back set to 'X' (XInput), not 'D'")
+        print("           3. if still no js0:  sudo modprobe joydev  (then replug)")
         return
 
     print("═" * 56)

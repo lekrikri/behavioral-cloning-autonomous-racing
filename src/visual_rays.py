@@ -12,6 +12,9 @@ Remplacement direct de DepthToRays dans inference_realcar.py :
   --perception-mode visual
 """
 
+import os
+os.environ.setdefault("OPENBLAS_CORETYPE", "ARMV8")  # Jetson Nano: évite le SIGILL numpy/OpenBLAS — doit précéder l'import numpy
+
 import numpy as np
 import cv2
 

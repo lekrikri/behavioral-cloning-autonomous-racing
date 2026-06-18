@@ -21,6 +21,9 @@ Installation Windows:
   - pip install depthai opencv-python numpy
 """
 
+import os
+os.environ.setdefault("OPENBLAS_CORETYPE", "ARMV8")  # Jetson Nano: évite le SIGILL numpy/OpenBLAS — doit précéder l'import numpy
+
 import sys, pathlib, argparse
 import cv2
 import numpy as np

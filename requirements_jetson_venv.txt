@@ -1,0 +1,20 @@
+# Jetson Nano (L4T R32.7.6, Python 3.6.9) — venv ISOLÉE pour robocar-Paris-lecrabe
+#
+# Créer la venv avec virtualenv — PAS `python3 -m venv` (ensurepip est cassé sur cette carte) :
+#   cd ~/robocar-Paris-lecrabe
+#   rm -rf .venv && virtualenv .venv && source .venv/bin/activate
+#   pip install -r requirements_jetson_venv.txt
+#
+# Versions épinglées pour la dispo des wheels cp36/aarch64 (vérifié 2026-06-18) :
+#   - numpy plafonné à 1.19.5 = dernière version compatible Python 3.6
+#   - onnxruntime CPU suffit pour le modèle v18 (minuscule) → pas besoin du wheel GPU NVIDIA
+#   - torch absent : utile seulement à l'entraînement (sur PC), pas sur la voiture
+#
+# Au runtime, OPENBLAS_CORETYPE=ARMV8 est requis (numpy SIGILL sinon) — déjà posé
+# en code dans les points d'entrée (live_mask_oak.py, visual_rays.py).
+
+numpy==1.19.5
+opencv-python==4.6.0.66
+depthai==2.26.0.0
+onnxruntime==1.10.0
+pyserial==3.5

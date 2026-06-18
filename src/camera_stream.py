@@ -143,19 +143,19 @@ def gst_server(port, codec):
     common_sink = [
         "tcpserversink", "host=0.0.0.0", "port=%d" % port,
         "sync=false", "async=false", "recover-policy=keyframe",
-        "max-bytes=131072",  # 128KB buffer max → réduit la latence vs défaut 4MB
+        "buffers-max=2", "buffers-soft-max=1",  # drop vieilles frames → latence réduite
     ]
     if codec == "mjpeg":
         cmd = ["gst-launch-1.0", "-q", "fdsrc",
                "!", "jpegparse",
                "!"] + leaky_queue + [
-               "!", "mpegtsmux", "latency=0",
+               "!", "mpegtsmux",
                "!"] + common_sink
     else:
         cmd = ["gst-launch-1.0", "-q", "fdsrc",
                "!", "h264parse",
                "!"] + leaky_queue + [
-               "!", "mpegtsmux", "latency=0",
+               "!", "mpegtsmux",
                "!"] + common_sink
     return _gst_proc(cmd)
 

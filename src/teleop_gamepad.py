@@ -17,15 +17,15 @@ instant you let go, so the motor returns to 0 on release — no separate button.
 
 SAFETY (90 km/h car):
     - Forward/reverse magnitude capped by --max-current x --max-throttle / --max-reverse.
+      Defaults (25 A, full range) are tuned for this car and within the VESC's limits.
     - Trigger rest value is auto-calibrated at startup so an untouched trigger
       reads 0, never a phantom mid-throttle.
     - Emergency stop on quit / Ctrl-C / exit / gamepad unplug.
-    - First runs: car on a stand or clear space, low --max-current.
+    - First runs: keep the car on a stand or clear space until you trust the mapping.
 
 Usage:
-    OPENBLAS_CORETYPE=ARMV8 .venv/bin/python src/teleop_gamepad.py
-    .venv/bin/python src/teleop_gamepad.py --max-current 4 --max-throttle 0.3
-    .venv/bin/python src/teleop_gamepad.py --debug   # live axis/button map to verify your pad
+    .venv/bin/python src/teleop_gamepad.py            # tuned defaults, no flags needed
+    .venv/bin/python src/teleop_gamepad.py --debug    # live axis/button map to verify your pad
 """
 
 import argparse
@@ -43,9 +43,10 @@ _TYPE_BUTTON = 0x01
 _TYPE_AXIS = 0x02
 _TYPE_INIT = 0x80
 
-# F710 (XInput) default mapping under the xpad js driver — override on the CLI
-# if --debug shows different numbers.
-AXIS_STEER = 6      # left stick X on this F710 (axis 0 is the usual default — verify with --debug)
+# F710 (XInput) mapping under the xpad js driver, confirmed on this car. This file is
+# the source of truth for the js0 teleop; src/input_manager.py is a separate pygame path
+# (used by data_collector) with its own mapping — don't assume the two match.
+AXIS_STEER = 6      # left stick X (confirmed analog on this F710)
 AXIS_ACCEL = 5      # R2 / right trigger
 AXIS_BRAKE = 2      # L2 / left trigger
 BTN_QUIT = 7        # START
@@ -167,7 +168,7 @@ def main():
             pad.close()
         return
 
-    print("  Left stick=direction | R2=avance | L2=marche arrière | START=quit")
+    print("  Left stick=steer | R2=forward | L2=reverse | START=quit")
     print("  max_current=%.1f A | fwd=%.0f%% | rev=%.0f%%"
           % (args.max_current, args.max_throttle * 100, args.max_reverse * 100))
     print("  Calibrating triggers — don't touch R2/L2...")
@@ -181,6 +182,7 @@ def main():
         servo_range=args.servo_range,
         current_max=args.max_current,
         invert_steer=args.invert_steer,
+        # this car drives forward with invert OFF — overrides VESCInterface's default (True)
         invert_motor=args.invert_motor,
         throttle_mode=args.throttle_mode,
     )

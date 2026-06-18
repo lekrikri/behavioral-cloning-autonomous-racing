@@ -86,6 +86,66 @@ Laisser tourner à vide et observer la **LED du Flipsky** au moment du reset :
 
 ---
 
+## 2026-06-18 — OAK-D Lite crashe en streaming (X_LINK_ERROR) 🔬 EN COURS
+
+### Symptôme
+Le stream caméra s'interrompt toutes les 10-60 secondes avec :
+```
+[host] [warning] Device crashed, but no crash dump could be extracted.
+RuntimeError: X_LINK_ERROR — Couldn't read data from stream: 'encoded'
+```
+La reconnexion automatique reprend le stream, mais VLC voit la connexion TCP couper.
+
+### Cause racine
+**Brownout USB** : le Jetson Nano fournit 900mA max sur son hub USB interne,
+partagé entre 4 périphériques :
+
+```
+OAK-D Lite    → ~500-900mA (encodage VPU Myriad X)
+FSESC VESC    → ~100mA
+TP-Link WiFi  → ~400mA
+Clavier Logi  → ~100mA  ← débranché 2026-06-18
+```
+
+Pic de consommation OAK-D au démarrage de l'encodage > 900mA disponibles
+→ tension bus USB chute → brownout → crash OAK-D.
+
+### Preuves
+- Crashs systématiques quelques secondes après début d'encodage
+- Débrancher le clavier réduit légèrement la fréquence
+- `Device crashed, but no crash dump` = coupure brutale (pas arrêt logiciel)
+- Jamais de crash quand OAK-D est en mode preview seul (moins de charge VPU)
+
+### Correctifs
+
+**Fix définitif (non encore appliqué)** — Hub USB alimenté :
+- Brancher l'OAK-D sur un hub USB alimenté (5V ≥ 2A) → alimentation indépendante du Jetson
+- Coût : ~15-20€ (Anker, UGREEN, etc.)
+
+**Fix software appliqué** — Reconnexion auto + usb2Mode :
+- `usb2Mode=True` dans le constructeur `dai.Device(pipeline, True)` → réduit pic courant
+- Reconnexion automatique avec backoff exponentiel (5s, 10s... max 30s)
+- Config validée stable : 640x360 @ 15fps H.264 2000kbps
+
+**À éviter (aggrave les crashs)** :
+- `pipeline.setXLinkChunkSize(0)` → plus de petits transferts USB = plus de ripple
+- `xout.setFpsLimit(N)` → interruptions USB plus fréquentes
+- MJPEG codec → bande passante USB x10-50 vs H.264
+
+### Statut
+- [x] Cause identifiée et documentée
+- [x] Fix software : reconnexion auto + usb2Mode=True
+- [x] Débranché le clavier (libère ~100mA)
+- [ ] **Hub USB alimenté à acheter et câbler** (fix définitif)
+- [ ] Valider stabilité > 5 min après ajout hub USB
+
+### Références
+- [`docs/OAK_CAMERA_STREAM.md`](OAK_CAMERA_STREAM.md) — doc complète streaming
+- [Luxonis — USB Deployment Guide](https://docs.luxonis.com/hardware/platform/deploy/usb-deployment-guide)
+- [depthai 2.x usb2Mode API](https://oak-web.readthedocs.io/en/stable/components/device/)
+
+---
+
 <!--
 Modèle pour une nouvelle entrée :
 

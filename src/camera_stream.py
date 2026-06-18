@@ -224,4 +224,16 @@ def run(args):
 
 if __name__ == "__main__":
     args = parse_args()
-    run(args)
+    while True:
+        try:
+            run(args)
+            break  # sortie propre (Ctrl+C)
+        except KeyboardInterrupt:
+            print("\n[camera_stream] Arrêt demandé.")
+            break
+        except RuntimeError as e:
+            if "X_LINK_ERROR" in str(e) or "Device crashed" in str(e):
+                print("[camera_stream] OAK-D crash détecté — reconnexion dans 3s...")
+                time.sleep(3)
+            else:
+                raise

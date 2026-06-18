@@ -4,24 +4,28 @@ teleop_gamepad.py — Manual teleop of the car with a Logitech F710 (XInput mode
 Custom, dependency-free joystick reader: it parses the Linux joystick API
 (/dev/input/js0) directly, no pygame/SDL. Each js event is 8 bytes:
     uint32 time_ms | int16 value | uint8 type | uint8 number
-type: 0x01 = button, 0x02 = axis, bit 0x80 = synthetic "init" event (ignored).
+type: 0x01 = button, 0x02 = axis, bit 0x80 = synthetic "init" event.
 
-Controls (F710, XInput / mode switch X):
-    Left stick X   -> steering
-    Left stick Y   -> throttle (up = forward)   [held RB = deadman, see below]
-    RB (hold)      -> DEADMAN: throttle only applies while held; release = coast to 0
-    START          -> quit (also Ctrl-C)
+Controls (F710, XInput / mode switch on 'X'):
+    Right stick X   -> steering
+    R2 (RT)         -> forward throttle   (analog, fine speed control)
+    L2 (LT)         -> reverse throttle    (analog)
+    START           -> quit (also Ctrl-C)
+
+The analog triggers double as a natural dead-man: they spring back to rest the
+instant you let go, so the motor returns to 0 on release — no separate button.
 
 SAFETY (90 km/h car):
-    - Throttle is gated by a deadman button: release it and the motor goes to 0.
-    - Throttle magnitude capped by --max-current and --max-throttle.
-    - On exit / signal / gamepad unplug -> emergency stop.
-    - First runs: keep the car on a stand or in a clear space, low --max-current.
+    - Forward/reverse magnitude capped by --max-current x --max-throttle / --max-reverse.
+    - Trigger rest value is auto-calibrated at startup so an untouched trigger
+      reads 0, never a phantom mid-throttle.
+    - Emergency stop on quit / Ctrl-C / exit / gamepad unplug.
+    - First runs: car on a stand or clear space, low --max-current.
 
 Usage:
     OPENBLAS_CORETYPE=ARMV8 .venv/bin/python src/teleop_gamepad.py
     .venv/bin/python src/teleop_gamepad.py --max-current 4 --max-throttle 0.3
-    .venv/bin/python src/teleop_gamepad.py --debug      # print raw js events to map your pad
+    .venv/bin/python src/teleop_gamepad.py --debug   # live axis/button map to verify your pad
 """
 
 import argparse
@@ -39,10 +43,11 @@ _TYPE_BUTTON = 0x01
 _TYPE_AXIS = 0x02
 _TYPE_INIT = 0x80
 
-# F710 (XInput) default mapping — override on the CLI if your pad differs (use --debug).
-AXIS_STEER = 0      # left stick X
-AXIS_THROTTLE = 1   # left stick Y (up = negative raw -> forward after negation)
-BTN_DEADMAN = 5     # RB
+# F710 (XInput) default mapping under the xpad js driver — override on the CLI
+# if --debug shows different numbers.
+AXIS_STEER = 3      # right stick X
+AXIS_ACCEL = 5      # R2 / right trigger
+AXIS_BRAKE = 2      # L2 / left trigger
 BTN_QUIT = 7        # START
 
 
@@ -88,11 +93,30 @@ class Gamepad:
             pass
 
 
-def deadzone(x, dz=0.08):
+def deadzone(x, dz):
     """Remove stick jitter near centre, rescale the rest to keep full range."""
     if abs(x) < dz:
         return 0.0
-    return (x - dz * (1 if x > 0 else -1)) / (1.0 - dz)
+    return (x - dz * (1.0 if x > 0 else -1.0)) / (1.0 - dz)
+
+
+def calibrate_trigger_rest(pad, axes, window_s=0.4):
+    """Sample untouched triggers to learn their rest value (xpad rests at -1).
+
+    The press fraction (raw - rest) / (1 - rest) is then 0 while released,
+    so a never-touched trigger can't command a phantom mid-throttle at startup."""
+    t_end = time.time() + window_s
+    while time.time() < t_end:
+        pad.poll()
+        time.sleep(0.02)
+    return {a: pad.axis(a) for a in axes}
+
+
+def trigger_fraction(pad, axis, rest):
+    """Map a trigger axis to [0,1]: 0 = released, 1 = fully pressed."""
+    raw = pad.axis(axis)
+    frac = (raw - rest) / (1.0 - rest) if rest < 1.0 else 0.0
+    return max(0.0, min(1.0, frac))
 
 
 def main():
@@ -100,17 +124,19 @@ def main():
     p.add_argument("--port", default="/dev/ttyACM0")
     p.add_argument("--js", default="/dev/input/js0")
     p.add_argument("--max-current", type=float, default=5.0, help="A — |current| cap")
-    p.add_argument("--max-throttle", type=float, default=0.35, help="scale on stick throttle [0..1]")
+    p.add_argument("--max-throttle", type=float, default=0.35, help="forward scale on RT [0..1]")
+    p.add_argument("--max-reverse", type=float, default=0.25, help="reverse scale on LT [0..1]")
     p.add_argument("--servo-center", type=float, default=0.5)
     p.add_argument("--servo-range", type=float, default=0.40)
     p.add_argument("--invert-steer", action="store_true")
     p.add_argument("--no-invert-motor", action="store_true")
-    p.add_argument("--no-deadman", action="store_true", help="DANGER: throttle without holding RB")
+    p.add_argument("--throttle-mode", choices=["current", "duty", "erpm"], default="current")
+    p.add_argument("--deadzone", type=float, default=0.08)
     p.add_argument("--hz", type=float, default=50.0)
-    p.add_argument("--debug", action="store_true", help="print raw js events and exit-less mapping aid")
+    p.add_argument("--debug", action="store_true", help="print raw js events to map your pad")
     p.add_argument("--axis-steer", type=int, default=AXIS_STEER)
-    p.add_argument("--axis-throttle", type=int, default=AXIS_THROTTLE)
-    p.add_argument("--btn-deadman", type=int, default=BTN_DEADMAN)
+    p.add_argument("--axis-accel", type=int, default=AXIS_ACCEL)
+    p.add_argument("--axis-brake", type=int, default=AXIS_BRAKE)
     p.add_argument("--btn-quit", type=int, default=BTN_QUIT)
     args = p.parse_args()
 
@@ -124,16 +150,12 @@ def main():
         print("           3. if still no js0:  sudo modprobe joydev  (then replug)")
         return
 
-    print("═" * 56)
+    print("═" * 60)
     print("  TELEOP F710 — G-CAR-000")
-    print("  max_current=%.1f A | max_throttle=%.0f%% | deadman=%s"
-          % (args.max_current, args.max_throttle * 100,
-             "OFF (!)" if args.no_deadman else "hold RB (btn %d)" % args.btn_deadman))
-    print("  Left stick: X=direction, Y=gaz | START=quitter | Ctrl-C=stop")
-    print("═" * 56)
 
     if args.debug:
-        print("[debug] move sticks / press buttons to see their numbers. Ctrl-C to stop.")
+        print("  [debug] move sticks / squeeze triggers to read indices. Ctrl-C to stop.")
+        print("═" * 60)
         try:
             while True:
                 pad.poll(debug=True)
@@ -144,6 +166,14 @@ def main():
             pad.close()
         return
 
+    print("  Right stick=direction | R2=avance | L2=marche arrière | START=quit")
+    print("  max_current=%.1f A | fwd=%.0f%% | rev=%.0f%%"
+          % (args.max_current, args.max_throttle * 100, args.max_reverse * 100))
+    print("  Calibrating triggers — don't touch R2/L2...")
+    rest = calibrate_trigger_rest(pad, [args.axis_accel, args.axis_brake])
+    print("  rest: R2=%.2f L2=%.2f" % (rest[args.axis_accel], rest[args.axis_brake]))
+    print("═" * 60)
+
     vesc = VESCInterface(
         port=args.port,
         servo_center=args.servo_center,
@@ -151,6 +181,7 @@ def main():
         current_max=args.max_current,
         invert_steer=args.invert_steer,
         invert_motor=not args.no_invert_motor,
+        throttle_mode=args.throttle_mode,
     )
 
     dt = 1.0 / args.hz
@@ -158,25 +189,29 @@ def main():
         while True:
             pad.poll()
             if pad.button(args.btn_quit):
-                print("\n[teleop] START pressed -> quit")
+                print("\n[teleop] START -> quit")
                 break
 
-            steer = deadzone(pad.axis(args.axis_steer))
-            # stick up = negative raw on Y -> negate so up = forward throttle
-            throttle = -deadzone(pad.axis(args.axis_throttle)) * args.max_throttle
-
-            armed = args.no_deadman or pad.button(args.btn_deadman)
-            if not armed:
-                throttle = 0.0
+            steer = deadzone(pad.axis(args.axis_steer), args.deadzone)
+            rt = trigger_fraction(pad, args.axis_accel, rest[args.axis_accel])
+            lt = trigger_fraction(pad, args.axis_brake, rest[args.axis_brake])
+            throttle = rt * args.max_throttle - lt * args.max_reverse
 
             vesc.drive(steer, throttle)
-            print("\r steer=%+.2f thr=%+.2f %s   "
-                  % (steer, throttle, "ARMED" if armed else "idle "),
-                  end="", flush=True)
+
+            if rt > lt:
+                tag = "FWD"
+            elif lt > rt:
+                tag = "REV"
+            else:
+                tag = "idle"
+            print("\r steer=%+.2f thr=%+.2f [R2=%.2f L2=%.2f] %s   "
+                  % (steer, throttle, rt, lt, tag), end="", flush=True)
             time.sleep(dt)
     except KeyboardInterrupt:
         print("\n[teleop] Ctrl-C -> stop")
     finally:
+        vesc.stop()
         vesc.close()
         pad.close()
 

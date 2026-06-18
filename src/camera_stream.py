@@ -123,19 +123,19 @@ def gst_sink(dst_ip, dst_port, codec):
 
 def gst_server(port, codec):
     """Mode serveur TCP — VLC se connecte a tcp://JETSON_IP:PORT."""
+    # buffers-max=30 buffers-soft-max=10 : drop vieilles frames si VLC trop lent
+    # → evite backpressure qui fait chuter le FPS et geler l'image
+    sink = ["tcpserversink", "host=0.0.0.0", "port=%d" % port,
+            "sync=false", "recover-policy=keyframe",
+            "buffers-max=30", "buffers-soft-max=10"]
     if codec == "mjpeg":
-        # matroskamux supporte image/jpeg (mpegtsmux ne le supporte pas)
         cmd = ["gst-launch-1.0", "-q", "fdsrc",
                "!", "jpegparse",
-               "!", "matroskamux",
-               "!", "tcpserversink", "host=0.0.0.0", "port=%d" % port,
-               "sync=false", "recover-policy=keyframe"]
+               "!", "matroskamux", "!"] + sink
     else:
         cmd = ["gst-launch-1.0", "-q", "fdsrc",
                "!", "h264parse",
-               "!", "mpegtsmux",
-               "!", "tcpserversink", "host=0.0.0.0", "port=%d" % port,
-               "sync=false", "recover-policy=keyframe"]
+               "!", "mpegtsmux", "!"] + sink
     return _gst_proc(cmd)
 
 

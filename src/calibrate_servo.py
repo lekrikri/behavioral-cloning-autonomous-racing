@@ -19,14 +19,15 @@ sys.path.insert(0, "src")
 from vesc_interface import VESCInterface
 
 def send_servo_only(vesc, servo_pos: float):
-    """Envoie uniquement la position servo, moteur à 0."""
-    import pyvesc
+    """Envoie uniquement la position servo, moteur à 0 (protocole natif)."""
+    from vesc_interface import _cmd_set_servo, _cmd_set_current
     servo_pos = float(np.clip(servo_pos, 0.10, 0.90))
     try:
-        vesc.ser.write(pyvesc.encode(pyvesc.SetDutyCycle(0)))
-        vesc.ser.write(pyvesc.encode(pyvesc.SetServoPos(servo_pos)))
+        vesc.ser.write(_cmd_set_current(0.0))
+        vesc.ser.write(_cmd_set_servo(servo_pos))
+        vesc.ser.flush()
     except Exception as e:
-        print(f"  [!] Erreur: {e}")
+        print("  [!] Erreur: {}".format(e))
 
 def wait(msg="Appuie sur Entrée pour continuer..."):
     input(f"\n  >>> {msg}")

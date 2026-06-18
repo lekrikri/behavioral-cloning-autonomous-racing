@@ -25,6 +25,7 @@ Protocol (short packet, payload < 256 bytes):
   crc = CRC-16/XMODEM (poly 0x1021, init 0x0000) over payload only.
 """
 
+import os
 import struct
 import threading
 import time
@@ -86,6 +87,16 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     return lo if x < lo else hi if x > hi else x
 
 
+def _apply_usb_low_latency(port: str) -> None:
+    """Réduit la latence USB CDC ACM de 16ms → 1ms sur Jetson Nano."""
+    device = port.replace("/dev/", "")
+    sysfs = "/sys/bus/usb-serial/devices/{}/latency_timer".format(device)
+    os.system("echo 1 | sudo tee {} > /dev/null 2>&1".format(sysfs))
+    os.system("sudo stty -F {} low_latency 2>/dev/null || true".format(port))
+
+
+# ── Interface haut niveau ─────────────────────────────────────────────────────
+
 class VESCInterface:
     """
     Lightweight VESC interface for the Flipsky FSESC Mini V6.7 Pro.
@@ -110,17 +121,17 @@ class VESCInterface:
         max_duty: float = 0.5,           # safety cap on |duty| in duty mode (0.5 = 50%)
         max_erpm: float = 6000.0,        # full-scale eRPM in erpm mode
     ):
-        self.servo_center = servo_center
-        self.servo_range  = servo_range
-        self.current_max  = current_max
-        self.invert_steer = invert_steer
-        self.invert_motor = invert_motor
+        self.servo_center  = servo_center
+        self.servo_range   = servo_range
+        self.current_max   = current_max
+        self.invert_steer  = invert_steer
+        self.invert_motor  = invert_motor
         self.throttle_mode = throttle_mode
-        self.max_duty     = max_duty
-        self.max_erpm     = max_erpm
-        self._sim_mode    = False
+        self.max_duty      = max_duty
+        self.max_erpm      = max_erpm
+        self._sim_mode     = False
         self._alive_running = False
-        self.ser = None
+        self.ser  = None
         self._lock = threading.Lock()   # serialize writes: alive thread vs control loop
 
         try:
@@ -131,12 +142,13 @@ class VESCInterface:
             return
 
         try:
+            _apply_usb_low_latency(port)
             self.ser = serial.Serial(port, baudrate=baudrate, timeout=0.05)
             print("[VESC] connected on %s" % port)
             self._alive_running = True
             self._alive_thread = threading.Thread(target=self._alive_loop, daemon=True)
             self._alive_thread.start()
-        except serial.SerialException as e:
+        except Exception as e:
             print("[VESC] cannot open %s: %s -> simulation mode" % (port, e))
             self._sim_mode = True
 
@@ -258,7 +270,7 @@ class VESCInterface:
     def close(self) -> None:
         self._alive_running = False
         self.stop()
-        if getattr(self, "ser", None) and self.ser.is_open:
+        if self.ser and self.ser.is_open:
             self.ser.close()
         print("[VESC] connection closed.")
 

@@ -155,10 +155,7 @@ class RobocarEnv:
         for i, agent_id in enumerate(decision_steps.agent_id):
             raw_obs = decision_steps.obs[0][i]
             n = self._n_rays
-            # obs layout: [dist_0..dist_n-1, tag_flags...] — distances en unités Unity
-            # Normalise les distances en [0, 1]
             rays = (raw_obs[:n] / self._ray_max_dist).clip(0.0, 1.0).astype(np.float32)
-            # La vitesse n'est pas dans le vecteur d'obs de ce simulateur
             speed = 0.0
             observations.append(Observation(rays=rays, speed=speed, agent_id=int(agent_id)))
 

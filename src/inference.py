@@ -122,6 +122,8 @@ class PerformanceTracker:
         )
 
 
+
+
 def run_inference_pytorch(
     model_path: str,
     config_path: str = "config.json",
@@ -129,6 +131,7 @@ def run_inference_pytorch(
     smoothing_alpha: float = 0.7,
     max_steps: int = 0,
     deadzone: float = 0.06,
+    simulator_path: Optional[str] = None,
 ):
     """Inférence avec modèle PyTorch."""
     import torch
@@ -162,7 +165,7 @@ def run_inference_pytorch(
     input_size = getattr(model, "input_size", 23)
     obs_buffer = deque([np.zeros(input_size, dtype=np.float32)] * seq_len, maxlen=seq_len)
 
-    with RobocarEnv(config_path=config_path, port=port) as env:
+    with RobocarEnv(config_path=config_path, port=port, simulator_path=simulator_path) as env:
         observations = env.reset()
         smoother.reset()
         prev_rays = None
@@ -372,6 +375,7 @@ def run_inference_onnx(
 
 
 def main():
+    from src.client import SIMULATOR_PATH
     parser = argparse.ArgumentParser(description="Inférence Robocar v2")
     parser.add_argument("--model", required=True, help=".pth ou .onnx")
     parser.add_argument("--config", default="config.json")
@@ -380,13 +384,16 @@ def main():
     parser.add_argument("--deadzone", type=float, default=0.06, help="Deadzone steering (supprime micro-zigzag)")
     parser.add_argument("--max-steps", type=int, default=0)
     parser.add_argument("--onnx", action="store_true")
+    parser.add_argument("--launch", action="store_true", help="Lance le simulateur automatiquement (sinon, le lancer manuellement sur port 5004)")
     args = parser.parse_args()
+
+    sim_path = SIMULATOR_PATH if args.launch else None
 
     use_onnx = args.onnx or args.model.endswith(".onnx")
     if use_onnx:
         run_inference_onnx(args.model, args.config, args.port, args.smoothing)
     else:
-        run_inference_pytorch(args.model, args.config, args.port, args.smoothing, args.max_steps, args.deadzone)
+        run_inference_pytorch(args.model, args.config, args.port, args.smoothing, args.max_steps, args.deadzone, sim_path)
 
 
 if __name__ == "__main__":

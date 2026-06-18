@@ -129,7 +129,8 @@ def main():
     p.add_argument("--servo-center", type=float, default=0.5)
     p.add_argument("--servo-range", type=float, default=0.40)
     p.add_argument("--invert-steer", action="store_true")
-    p.add_argument("--no-invert-motor", action="store_true")
+    p.add_argument("--invert-motor", action="store_true",
+                   help="flip motor direction (default off: R2=forward on this car)")
     p.add_argument("--throttle-mode", choices=["current", "duty", "erpm"], default="current")
     p.add_argument("--deadzone", type=float, default=0.08)
     p.add_argument("--hz", type=float, default=50.0)
@@ -180,7 +181,7 @@ def main():
         servo_range=args.servo_range,
         current_max=args.max_current,
         invert_steer=args.invert_steer,
-        invert_motor=not args.no_invert_motor,
+        invert_motor=args.invert_motor,
         throttle_mode=args.throttle_mode,
     )
 

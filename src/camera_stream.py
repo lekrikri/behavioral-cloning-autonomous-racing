@@ -2,7 +2,7 @@
 camera_stream.py — Streaming MJPEG/H.264 depuis le Jetson Nano (depthai 2.x)
 
 Usage recommandé (Jetson Nano) :
-  OPENBLAS_CORETYPE=ARMV8 python3 src/camera_stream.py --serve --dst-port 5600
+  OPENBLAS_CORETYPE=ARMV8 python3 -u src/camera_stream.py --serve --dst-port 5600
 
 Usage VLC (Windows/Linux) :
   ouvrir "tcp://192.168.0.100:5600" dans VLC (Média > Ouvrir un flux réseau)
@@ -11,22 +11,22 @@ Options :
   --serve        : mode serveur TCP (VLC se connecte à tcp://JETSON_IP:PORT)
   --dst-ip       : IP du PC récepteur en mode UDP (défaut: broadcast)
   --dst-port     : Port (défaut: 5600)
-  --codec        : mjpeg (défaut, faible latence) | h264 (meilleure compression)
-  --width/height : Résolution (défaut: 416x312)
-  --fps          : FPS (défaut: 30)
-  --bitrate      : Bitrate H.264 kbps (défaut: 8000)
+  --codec        : h264 (défaut, compatible VLC) | mjpeg (faible latence)
+  --width/height : Résolution (défaut: 640x360)
+  --fps          : FPS (défaut: 15)
+  --bitrate      : Bitrate H.264 kbps (défaut: 2000)
   --record       : Enregistrement local (ex: /tmp/cam.h264)
   --preview      : Preview local (nécessite écran)
 
 Notes :
-  - USB2 forcé (maxUsbSpeed=HIGH) pour stabilité alimentation OAK-D sur Jetson Nano
+  - usb2Mode=True forcé (API depthai 2.x) — réduit consommation OAK-D sur Jetson Nano
   - Reconnexion auto exponentielle si X_LINK_ERROR (crash alimentation USB)
+  - Fix définitif instabilité OAK-D : hub USB alimenté 5V 2A+
 """
 
 import argparse
 import subprocess
 import sys
-import threading
 import time
 
 try:
@@ -39,32 +39,28 @@ except ImportError:
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--dst-ip",   default="255.255.255.255",
-                   help="IP du PC récepteur (ou broadcast) — ignoré en mode --serve")
+                   help="IP du PC recepteur (ou broadcast) — ignore en mode --serve")
     p.add_argument("--dst-port", type=int, default=5600,
                    help="Port UDP destination / port TCP serveur")
     p.add_argument("--serve",    action="store_true",
-                   help="Mode serveur TCP : VLC se connecte à tcp://JETSON_IP:PORT (traverse les firewalls)")
-    p.add_argument("--width",    type=int, default=416)
-    p.add_argument("--height",   type=int, default=312)
-    p.add_argument("--fps",      type=int, default=20,
-                   help="FPS (défaut: 20 — réduit pour stabilité alimentation USB)")
-    p.add_argument("--bitrate",  type=int, default=8000,
-                   help="Bitrate kbps (H.264 ou MJPEG)")
-    p.add_argument("--codec",    choices=["h264", "mjpeg"], default="mjpeg",
-                   help="mjpeg = faible latence (recommandé) | h264 = meilleure compression")
+                   help="Mode serveur TCP : VLC se connecte a tcp://JETSON_IP:PORT")
+    p.add_argument("--width",    type=int, default=640)
+    p.add_argument("--height",   type=int, default=360)
+    p.add_argument("--fps",      type=int, default=15)
+    p.add_argument("--bitrate",  type=int, default=2000,
+                   help="Bitrate kbps H.264 (defaut: 2000)")
+    p.add_argument("--codec",    choices=["h264", "mjpeg"], default="h264",
+                   help="h264 = compatible VLC via TCP | mjpeg = faible latence UDP")
     p.add_argument("--record",   default=None,
                    help="Chemin fichier enregistrement local (ex: /tmp/cam.h264)")
     p.add_argument("--preview",  action="store_true",
-                   help="Affichage preview local (nécessite display)")
+                   help="Affichage preview local (necessite display)")
     return p.parse_args()
 
 
 def build_pipeline(args):
     pipeline = dai.Pipeline()
-    # Réduit la taille des chunks XLink → latence USB plus basse
-    pipeline.setXLinkChunkSize(0)
 
-    # Caméra couleur
     cam = pipeline.create(dai.node.ColorCamera)
     cam.setPreviewSize(args.width, args.height)
     cam.setVideoSize(args.width, args.height)
@@ -72,36 +68,31 @@ def build_pipeline(args):
     cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
     cam.setFps(args.fps)
 
-    # Encodeur (MJPEG par défaut = faible latence, ou H.264)
     encoder = pipeline.create(dai.node.VideoEncoder)
     if args.codec == "mjpeg":
         encoder.setDefaultProfilePreset(
             args.fps,
             dai.VideoEncoderProperties.Profile.MJPEG,
         )
-        encoder.setQuality(80)  # 80 = bon compromis taille/qualité
+        encoder.setQuality(85)
     else:
         encoder.setDefaultProfilePreset(
             args.fps,
             dai.VideoEncoderProperties.Profile.H264_MAIN,
         )
         encoder.setBitrateKbps(args.bitrate)
-        encoder.setKeyframeFrequency(args.fps)  # keyframe chaque seconde
+        encoder.setKeyframeFrequency(args.fps * 2)
 
     cam.video.link(encoder.input)
 
-    # Output encodé — limite débit XLink pour soulager l'alimentation USB
     xout = pipeline.create(dai.node.XLinkOut)
     xout.setStreamName("encoded")
-    xout.setFpsLimit(args.fps)
     encoder.bitstream.link(xout.input)
 
-    # Preview optionnel (non encodé)
     xout_preview = None
     if args.preview:
         xout_preview = pipeline.create(dai.node.XLinkOut)
         xout_preview.setStreamName("preview")
-        xout_preview.setFpsLimit(10)  # preview basse fréquence
         cam.preview.link(xout_preview.input)
 
     return pipeline, xout_preview is not None
@@ -116,44 +107,35 @@ def _gst_proc(cmd):
 
 
 def gst_sink(dst_ip, dst_port, codec):
-    """Mode push UDP/RTP vers le PC récepteur (faible latence, pas de retransmission)."""
-    # queue leaky : si le débit est trop lent on jette les vieilles frames
-    leaky_queue = ["queue", "max-size-buffers=1", "leaky=downstream"]
+    """Mode push UDP/RTP vers le PC recepteur."""
     if codec == "mjpeg":
         cmd = ["gst-launch-1.0", "-q", "fdsrc",
                "!", "jpegparse",
-               "!"] + leaky_queue + [
                "!", "rtpjpegpay", "pt=26",
-               "!", "udpsink", "host=%s" % dst_ip, "port=%d" % dst_port,
-               "sync=false", "async=false"]
+               "!", "udpsink", "host=%s" % dst_ip, "port=%d" % dst_port, "sync=false"]
     else:
         cmd = ["gst-launch-1.0", "-q", "fdsrc",
                "!", "h264parse",
-               "!"] + leaky_queue + [
                "!", "rtph264pay", "config-interval=1", "pt=96",
-               "!", "udpsink", "host=%s" % dst_ip, "port=%d" % dst_port,
-               "sync=false", "async=false"]
+               "!", "udpsink", "host=%s" % dst_ip, "port=%d" % dst_port, "sync=false"]
     return _gst_proc(cmd)
 
 
 def gst_server(port, codec):
-    """Mode serveur TCP — VLC se connecte à tcp://JETSON_IP:PORT."""
-    sink = [
-        "!", "queue", "max-size-buffers=2", "leaky=downstream",
-        "!", "tcpserversink", "host=0.0.0.0", "port=%d" % port,
-        "sync=false", "async=false", "recover-policy=keyframe",
-        "buffers-max=2", "buffers-soft-max=1",
-    ]
+    """Mode serveur TCP — VLC se connecte a tcp://JETSON_IP:PORT."""
     if codec == "mjpeg":
         # matroskamux supporte image/jpeg (mpegtsmux ne le supporte pas)
         cmd = ["gst-launch-1.0", "-q", "fdsrc",
                "!", "jpegparse",
-               "!", "matroskamux"] + sink
+               "!", "matroskamux",
+               "!", "tcpserversink", "host=0.0.0.0", "port=%d" % port,
+               "sync=false", "recover-policy=keyframe"]
     else:
-        # H.264 → mpegtsmux (format standard, compatible VLC)
         cmd = ["gst-launch-1.0", "-q", "fdsrc",
                "!", "h264parse",
-               "!", "mpegtsmux"] + sink
+               "!", "mpegtsmux",
+               "!", "tcpserversink", "host=0.0.0.0", "port=%d" % port,
+               "sync=false", "recover-policy=keyframe"]
     return _gst_proc(cmd)
 
 
@@ -189,11 +171,12 @@ def run(args):
         cv2 = None
 
     try:
-        with dai.Device(pipeline, maxUsbSpeed=dai.UsbSpeed.HIGH) as device:
-            q_enc  = device.getOutputQueue("encoded", maxSize=4, blocking=False)
+        # usb2Mode=True : API depthai 2.x — force USB2 (reduit pic courant OAK-D)
+        with dai.Device(pipeline, True) as device:
+            q_enc  = device.getOutputQueue("encoded", maxSize=8, blocking=False)
             q_prev = device.getOutputQueue("preview", maxSize=4, blocking=False) if has_preview else None
 
-            print("[camera_stream] Streaming... Ctrl+C pour arrêter")
+            print("[camera_stream] Streaming... Ctrl+C pour arreter")
 
             while True:
                 pkt  = q_enc.get()
@@ -203,7 +186,7 @@ def run(args):
                     gst_proc.stdin.write(data.tobytes())
                     gst_proc.stdin.flush()
                 except BrokenPipeError:
-                    print("\n[camera_stream] GStreamer pipe fermé — arrêt")
+                    print("\n[camera_stream] GStreamer pipe ferme — arret")
                     break
 
                 if record_file:
@@ -234,7 +217,7 @@ def run(args):
                 cv2.destroyAllWindows()
             except Exception:
                 pass
-        print("[camera_stream] Terminé — %d frames envoyées" % frame_count)
+        print("[camera_stream] Termine — %d frames envoyees" % frame_count)
 
 
 if __name__ == "__main__":
@@ -246,13 +229,13 @@ if __name__ == "__main__":
             if attempt > 1:
                 print("[camera_stream] Tentative %d..." % attempt)
             run(args)
-            break  # sortie propre (Ctrl+C)
+            break
         except KeyboardInterrupt:
-            print("\n[camera_stream] Arrêt demandé.")
+            print("\n[camera_stream] Arret demande.")
             break
         except RuntimeError as e:
             if "X_LINK_ERROR" in str(e) or "Device crashed" in str(e) or "Couldn't read" in str(e):
-                delay = min(5 * attempt, 30)  # 5s, 10s, 15s... max 30s
+                delay = min(5 * attempt, 30)
                 print("[camera_stream] OAK-D crash — reconnexion dans %ds..." % delay)
                 time.sleep(delay)
             else:

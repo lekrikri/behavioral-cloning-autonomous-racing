@@ -81,7 +81,7 @@ def build_pipeline(args):
             dai.VideoEncoderProperties.Profile.H264_MAIN,
         )
         encoder.setBitrateKbps(args.bitrate)
-        encoder.setKeyframeFrequency(args.fps * 2)
+        encoder.setKeyframeFrequency(5)  # keyframe toutes les 5 frames (~333ms) → VLC decode vite
 
     cam.video.link(encoder.input)
 
@@ -123,11 +123,11 @@ def gst_sink(dst_ip, dst_port, codec):
 
 def gst_server(port, codec):
     """Mode serveur TCP — VLC se connecte a tcp://JETSON_IP:PORT."""
-    # buffers-max=30 buffers-soft-max=10 : drop vieilles frames si VLC trop lent
-    # → evite backpressure qui fait chuter le FPS et geler l'image
+    # sync-method=2 : nouveau client recoit depuis le dernier keyframe → pas de noir
+    # buffers-max=60 buffers-soft-max=30 : drop si VLC trop lent (evite backpressure)
     sink = ["tcpserversink", "host=0.0.0.0", "port=%d" % port,
-            "sync=false", "recover-policy=keyframe",
-            "buffers-max=30", "buffers-soft-max=10"]
+            "sync=false", "recover-policy=keyframe", "sync-method=2",
+            "buffers-max=60", "buffers-soft-max=30"]
     if codec == "mjpeg":
         cmd = ["gst-launch-1.0", "-q", "fdsrc",
                "!", "jpegparse",

@@ -7,7 +7,7 @@ Custom, dependency-free joystick reader: it parses the Linux joystick API
 type: 0x01 = button, 0x02 = axis, bit 0x80 = synthetic "init" event.
 
 Controls (F710, XInput / mode switch on 'X'):
-    Right stick X   -> steering
+    Left stick X    -> steering
     R2 (RT)         -> forward throttle   (analog, fine speed control)
     L2 (LT)         -> reverse throttle    (analog)
     START           -> quit (also Ctrl-C)
@@ -45,7 +45,7 @@ _TYPE_INIT = 0x80
 
 # F710 (XInput) default mapping under the xpad js driver — override on the CLI
 # if --debug shows different numbers.
-AXIS_STEER = 3      # right stick X
+AXIS_STEER = 6      # left stick X on this F710 (axis 0 is the usual default — verify with --debug)
 AXIS_ACCEL = 5      # R2 / right trigger
 AXIS_BRAKE = 2      # L2 / left trigger
 BTN_QUIT = 7        # START
@@ -123,8 +123,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--port", default="/dev/ttyACM0")
     p.add_argument("--js", default="/dev/input/js0")
-    p.add_argument("--max-current", type=float, default=5.0, help="A — |current| cap")
-    p.add_argument("--max-throttle", type=float, default=0.35, help="forward scale on RT [0..1]")
+    p.add_argument("--max-current", type=float, default=10.0, help="A — |current| cap")
+    p.add_argument("--max-throttle", type=float, default=1.0, help="forward scale on RT [0..1]")
     p.add_argument("--max-reverse", type=float, default=0.25, help="reverse scale on LT [0..1]")
     p.add_argument("--servo-center", type=float, default=0.5)
     p.add_argument("--servo-range", type=float, default=0.40)
@@ -166,7 +166,7 @@ def main():
             pad.close()
         return
 
-    print("  Right stick=direction | R2=avance | L2=marche arrière | START=quit")
+    print("  Left stick=direction | R2=avance | L2=marche arrière | START=quit")
     print("  max_current=%.1f A | fwd=%.0f%% | rev=%.0f%%"
           % (args.max_current, args.max_throttle * 100, args.max_reverse * 100))
     print("  Calibrating triggers — don't touch R2/L2...")

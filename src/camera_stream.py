@@ -48,11 +48,13 @@ def parse_args():
                    help="Port UDP destination / port TCP serveur")
     p.add_argument("--serve",    action="store_true",
                    help="Mode serveur TCP : VLC se connecte à tcp://JETSON_IP:PORT (traverse les firewalls)")
-    p.add_argument("--width",    type=int, default=1280)
-    p.add_argument("--height",   type=int, default=720)
+    p.add_argument("--width",    type=int, default=416)
+    p.add_argument("--height",   type=int, default=312)
     p.add_argument("--fps",      type=int, default=30)
-    p.add_argument("--bitrate",  type=int, default=4000,
-                   help="Bitrate H.264 en kbps")
+    p.add_argument("--bitrate",  type=int, default=8000,
+                   help="Bitrate kbps (H.264 ou MJPEG)")
+    p.add_argument("--codec",    choices=["h264", "mjpeg"], default="mjpeg",
+                   help="mjpeg = faible latence (recommandé) | h264 = meilleure compression")
     p.add_argument("--record",   default=None,
                    help="Chemin fichier enregistrement local (ex: /tmp/cam.h264)")
     p.add_argument("--preview",  action="store_true",
@@ -71,20 +73,27 @@ def build_pipeline(args):
     cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
     cam.setFps(args.fps)
 
-    # Encodeur H.264
+    # Encodeur (MJPEG par défaut = faible latence, ou H.264)
     encoder = pipeline.create(dai.node.VideoEncoder)
-    encoder.setDefaultProfilePreset(
-        args.fps,
-        dai.VideoEncoderProperties.Profile.H264_MAIN,
-    )
-    encoder.setBitrateKbps(args.bitrate)
-    encoder.setKeyframeFrequency(args.fps * 2)  # I-frame toutes les 2s
+    if args.codec == "mjpeg":
+        encoder.setDefaultProfilePreset(
+            args.fps,
+            dai.VideoEncoderProperties.Profile.MJPEG,
+        )
+        encoder.setQuality(85)  # qualité MJPEG 0-100
+    else:
+        encoder.setDefaultProfilePreset(
+            args.fps,
+            dai.VideoEncoderProperties.Profile.H264_MAIN,
+        )
+        encoder.setBitrateKbps(args.bitrate)
+        encoder.setKeyframeFrequency(args.fps * 2)
 
     cam.video.link(encoder.input)
 
-    # Output encodé (bitstream H.264)
+    # Output encodé
     xout = pipeline.create(dai.node.XLinkOut)
-    xout.setStreamName("h264")
+    xout.setStreamName("encoded")
     encoder.bitstream.link(xout.input)
 
     # Preview optionnel (non encodé)
@@ -97,18 +106,7 @@ def build_pipeline(args):
     return pipeline, xout_preview is not None
 
 
-def gst_sink(dst_ip, dst_port):
-    """Mode push UDP RTP vers le PC récepteur."""
-    cmd = [
-        "gst-launch-1.0", "-q",
-        "fdsrc",
-        "!", "h264parse",
-        "!", "rtph264pay", "config-interval=1", "pt=96",
-        "!", "udpsink",
-        "host=%s" % dst_ip,
-        "port=%d" % dst_port,
-        "sync=false",
-    ]
+def _gst_proc(cmd):
     try:
         return subprocess.Popen(cmd, stdin=subprocess.PIPE,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -116,46 +114,56 @@ def gst_sink(dst_ip, dst_port):
         return None
 
 
-def gst_server(port):
-    """Mode serveur TCP — VLC se connecte à tcp://JETSON_IP:PORT.
-    Traverse tous les firewalls (connexion sortante depuis le PC).
-    """
-    cmd = [
-        "gst-launch-1.0", "-q",
-        "fdsrc",
-        "!", "h264parse",
-        "!", "mpegtsmux",
-        "!", "tcpserversink",
-        "host=0.0.0.0",
-        "port=%d" % port,
-        "sync=false",
-        "recover-policy=keyframe",
-    ]
-    try:
-        return subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except FileNotFoundError:
-        return None
+def gst_sink(dst_ip, dst_port, codec):
+    """Mode push UDP/RTP vers le PC récepteur."""
+    if codec == "mjpeg":
+        cmd = ["gst-launch-1.0", "-q", "fdsrc",
+               "!", "jpegparse",
+               "!", "rtpjpegpay", "pt=26",
+               "!", "udpsink", "host=%s" % dst_ip, "port=%d" % dst_port, "sync=false"]
+    else:
+        cmd = ["gst-launch-1.0", "-q", "fdsrc",
+               "!", "h264parse",
+               "!", "rtph264pay", "config-interval=1", "pt=96",
+               "!", "udpsink", "host=%s" % dst_ip, "port=%d" % dst_port, "sync=false"]
+    return _gst_proc(cmd)
+
+
+def gst_server(port, codec):
+    """Mode serveur TCP — VLC se connecte à tcp://JETSON_IP:PORT."""
+    if codec == "mjpeg":
+        # MJPEG multipart HTTP-like via MPEG-TS
+        cmd = ["gst-launch-1.0", "-q", "fdsrc",
+               "!", "jpegparse",
+               "!", "mpegtsmux",
+               "!", "tcpserversink", "host=0.0.0.0", "port=%d" % port,
+               "sync=false", "recover-policy=keyframe"]
+    else:
+        cmd = ["gst-launch-1.0", "-q", "fdsrc",
+               "!", "h264parse",
+               "!", "mpegtsmux",
+               "!", "tcpserversink", "host=0.0.0.0", "port=%d" % port,
+               "sync=false", "recover-policy=keyframe"]
+    return _gst_proc(cmd)
 
 
 def run(args):
     pipeline, has_preview = build_pipeline(args)
 
-    print("[camera_stream] %dx%d @ %dfps | H.264 %dkbps" %
-          (args.width, args.height, args.fps, args.bitrate))
+    codec_info = "MJPEG q=85" if args.codec == "mjpeg" else "H.264 %dkbps" % args.bitrate
+    print("[camera_stream] %dx%d @ %dfps | %s" %
+          (args.width, args.height, args.fps, codec_info))
 
     if args.serve:
         print("[camera_stream] Mode SERVEUR TCP port %d" % args.dst_port)
-        print("[camera_stream] VLC : ouvrir tcp://192.168.0.100:%d (remplace IP Jetson)" % args.dst_port)
-        gst_proc = gst_server(args.dst_port)
+        print("[camera_stream] VLC : ouvrir tcp://192.168.0.100:%d" % args.dst_port)
+        gst_proc = gst_server(args.dst_port, args.codec)
     else:
         print("[camera_stream] Destination RTP : udp://%s:%d" % (args.dst_ip, args.dst_port))
-        print("[camera_stream] VLC récepteur   : vlc rtp://@:%d" % args.dst_port)
-        gst_proc = gst_sink(args.dst_ip, args.dst_port)
+        gst_proc = gst_sink(args.dst_ip, args.dst_port, args.codec)
+
     if gst_proc is None:
         print("[camera_stream] ERREUR: gst-launch-1.0 introuvable.")
-        print("  -> Installer GStreamer : sudo apt install gstreamer1.0-tools "
-              "gstreamer1.0-plugins-good gstreamer1.0-plugins-bad libgstreamer1.0-dev")
         sys.exit(1)
 
     record_file = open(args.record, "wb") if args.record else None
@@ -170,70 +178,72 @@ def run(args):
     except ImportError:
         cv2 = None
 
-    with dai.Device(pipeline) as device:
-        q_h264 = device.getOutputQueue("h264", maxSize=10, blocking=False)
-        q_prev = device.getOutputQueue("preview", maxSize=4, blocking=False) if has_preview else None
+    try:
+        with dai.Device(pipeline) as device:
+            q_enc  = device.getOutputQueue("encoded", maxSize=10, blocking=False)
+            q_prev = device.getOutputQueue("preview", maxSize=4, blocking=False) if has_preview else None
 
-        print("[camera_stream] Streaming... Ctrl+C pour arrêter")
+            print("[camera_stream] Streaming... Ctrl+C pour arrêter")
 
-        while True:
-            # Flux H.264 → GStreamer → RTP/UDP
-            pkt = q_h264.get()
-            data = pkt.getData()
+            while True:
+                pkt  = q_enc.get()
+                data = pkt.getData()
 
-            # Envoyer au pipe GStreamer
+                try:
+                    gst_proc.stdin.write(data.tobytes())
+                    gst_proc.stdin.flush()
+                except BrokenPipeError:
+                    print("\n[camera_stream] GStreamer pipe fermé — arrêt")
+                    break
+
+                if record_file:
+                    record_file.write(data.tobytes())
+
+                frame_count += 1
+                if frame_count % (args.fps * 5) == 0:
+                    elapsed = time.time() - t0
+                    print("[camera_stream] %d frames | %.1f fps" % (
+                        frame_count, frame_count / elapsed))
+
+                if q_prev and cv2:
+                    prev_msg = q_prev.tryGet()
+                    if prev_msg is not None:
+                        bgr = prev_msg.getCvFrame()
+                        cv2.imshow("Camera Stream (local)", bgr)
+                        if cv2.waitKey(1) & 0xFF in (ord('q'), 27):
+                            break
+    finally:
+        if gst_proc and gst_proc.poll() is None:
+            gst_proc.stdin.close()
+            gst_proc.terminate()
+            gst_proc.wait()
+        if record_file:
+            record_file.close()
+        if cv2:
             try:
-                gst_proc.stdin.write(data.tobytes())
-                gst_proc.stdin.flush()
-            except BrokenPipeError:
-                print("\n[camera_stream] GStreamer pipe fermé — arrêt")
-                break
-
-            # Enregistrement local optionnel
-            if record_file:
-                record_file.write(data.tobytes())
-
-            frame_count += 1
-            if frame_count % (args.fps * 5) == 0:
-                elapsed = time.time() - t0
-                print("[camera_stream] %d frames | %.1f fps" % (
-                    frame_count, frame_count / elapsed))
-
-            # Preview local optionnel
-            if q_prev and cv2:
-                prev_msg = q_prev.tryGet()
-                if prev_msg is not None:
-                    bgr = prev_msg.getCvFrame()
-                    cv2.imshow("Camera Stream (local)", bgr)
-                    if cv2.waitKey(1) & 0xFF in (ord('q'), 27):
-                        break
-
-    if gst_proc and gst_proc.poll() is None:
-        gst_proc.stdin.close()
-        gst_proc.terminate()
-    if record_file:
-        record_file.close()
-    if cv2:
-        try:
-            cv2.destroyAllWindows()
-        except Exception:
-            pass
-
-    print("[camera_stream] Terminé — %d frames envoyées" % frame_count)
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
+        print("[camera_stream] Terminé — %d frames envoyées" % frame_count)
 
 
 if __name__ == "__main__":
     args = parse_args()
+    attempt = 0
     while True:
         try:
+            attempt += 1
+            if attempt > 1:
+                print("[camera_stream] Tentative %d..." % attempt)
             run(args)
             break  # sortie propre (Ctrl+C)
         except KeyboardInterrupt:
             print("\n[camera_stream] Arrêt demandé.")
             break
         except RuntimeError as e:
-            if "X_LINK_ERROR" in str(e) or "Device crashed" in str(e):
-                print("[camera_stream] OAK-D crash détecté — reconnexion dans 3s...")
-                time.sleep(3)
+            if "X_LINK_ERROR" in str(e) or "Device crashed" in str(e) or "Couldn't read" in str(e):
+                delay = min(5 * attempt, 30)  # 5s, 10s, 15s... max 30s
+                print("[camera_stream] OAK-D crash — reconnexion dans %ds..." % delay)
+                time.sleep(delay)
             else:
                 raise

@@ -25,6 +25,8 @@ import sys, pathlib, argparse
 import cv2
 import numpy as np
 
+from visual_rays import white_line_mask  # source unique du masquage
+
 try:
     import depthai as dai
 except ImportError:
@@ -60,17 +62,11 @@ IS_V3 = DEPTHAI_VERSION[0] >= 3
 
 # ── Masque (HSV ou Canny selon --mode) ────────────────────────────────────────
 def make_mask(bgr):
-    k = np.ones((MORPH_K, MORPH_K), np.uint8)
-    if MODE == "canny":
-        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-        mask = cv2.Canny(gray, CANNY_LOW, CANNY_HIGH)
-        mask = cv2.dilate(mask, k, iterations=2)  # epaissir les bords
-    else:
-        hsv  = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, HSV_LOW, HSV_HIGH)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  k)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
-    mask[:ROI_TOP, :] = 0
+    mask = white_line_mask(
+        bgr, mode=MODE, hsv_low=HSV_LOW, hsv_high=HSV_HIGH,
+        canny_low=CANNY_LOW, canny_high=CANNY_HIGH, morph_k=MORPH_K,
+    )
+    mask[:ROI_TOP, :] = 0  # l'outil de dev masque toute la moitié haute
     return mask
 
 def find_line_center(mask):
@@ -151,7 +147,15 @@ def run(device):
     print("En attente du premier frame...")
 
     while True:
-        raw   = q.get()
+        try:
+            raw = q.get()
+        except RuntimeError as e:
+            # X_LINK_ERROR : le lien USB a lâché (souvent alim/câble). Sortie propre
+            # plutôt qu'un stacktrace. Fix robuste (reconnexion) à voir plus tard.
+            print(f"\n[OAK-D] Lien USB perdu : {e}")
+            print("  -> Cause probable : alimentation/câble. Essayer un câble USB3 data "
+                  "+ alim externe (câble Y), ou forcer l'USB2.")
+            break
         bgr   = raw.getCvFrame()
         seq   = raw.getSequenceNum()
         mask  = make_mask(bgr)

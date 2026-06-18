@@ -16,6 +16,33 @@ import numpy as np
 import cv2
 
 
+def white_line_mask(
+    bgr: np.ndarray,
+    mode:       str = "hsv",
+    hsv_low:    tuple = (0,   0, 180),
+    hsv_high:   tuple = (180, 50, 255),
+    canny_low:  int = 50,
+    canny_high: int = 150,
+    morph_k:    int = 3,
+) -> np.ndarray:
+    """Masque binaire des lignes blanches (uint8, 0/255), sans ROI.
+
+    Source unique du masquage, partagée par VisualRays (production) et
+    live_mask_oak.py (outil de dev) — ne pas dupliquer ailleurs.
+    """
+    kernel = np.ones((morph_k, morph_k), np.uint8)
+    if mode == "canny":
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        m    = cv2.Canny(gray, canny_low, canny_high)
+        m    = cv2.dilate(m, kernel, iterations=2)
+    else:
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        m   = cv2.inRange(hsv, np.asarray(hsv_low, np.uint8), np.asarray(hsv_high, np.uint8))
+        m   = cv2.morphologyEx(m, cv2.MORPH_OPEN,  kernel)
+        m   = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
+    return m
+
+
 class VisualRays:
     """
     Convertit une image BGR (caméra couleur OAK-D) en vecteur de raycasts [0,1]
@@ -65,20 +92,12 @@ class VisualRays:
             0, img_width - 1,
         )
 
-        self._morph_kernel = np.ones((morph_k, morph_k), np.uint8)
-
     # ── Masque binaire ─────────────────────────────────────────────────────────
     def _mask(self, bgr: np.ndarray) -> np.ndarray:
-        if self.mode == "canny":
-            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-            m    = cv2.Canny(gray, self.canny_low, self.canny_high)
-            m    = cv2.dilate(m, self._morph_kernel, iterations=2)
-        else:
-            hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-            m   = cv2.inRange(hsv, self.hsv_low, self.hsv_high)
-            m   = cv2.morphologyEx(m, cv2.MORPH_OPEN,  self._morph_kernel)
-            m   = cv2.morphologyEx(m, cv2.MORPH_CLOSE, self._morph_kernel)
-        return m  # uint8, 0 ou 255
+        return white_line_mask(
+            bgr, mode=self.mode, hsv_low=self.hsv_low, hsv_high=self.hsv_high,
+            canny_low=self.canny_low, canny_high=self.canny_high, morph_k=self.morph_k,
+        )
 
     # ── Conversion principale ──────────────────────────────────────────────────
     def __call__(self, bgr_frame: np.ndarray) -> np.ndarray:

@@ -359,7 +359,10 @@ stereo.depth.link(xout_depth.input) # setFpsLimit(5) sur xout_depth
 - [x] Mode UDP/RTP disponible (`--codec mjpeg` sans `--serve`)
 - [x] `usb2Mode=True` (réduit pic courant OAK-D, API depthai 2.x correcte)
 - [x] `src/camera_stream_nvenc.py` — NVENC Jetson, décharge VPU Myriad X
-- [ ] **Valider test A/B** : camera_stream.py vs camera_stream_nvenc.py (crashs/heure)
+- [x] **Test A/B validé** (2026-06-18) : NVENC ne réduit PAS les crashs — NV12 brut
+  (345KB/frame) génère PLUS de trafic USB que H.264 Myriad (~16KB/frame).
+  L'encodeur Myriad X compense son coût VPU par la réduction massive de trafic USB.
+  → Garder `camera_stream.py` avec VideoEncoder OAK-D comme solution principale.
 - [ ] **Hub USB alimenté** → fix définitif crashs (hardware ~15-20€)
 - [ ] Intégration dans `inference_realcar.py` (stream + depth + inférence simultanés)
 - [ ] Réduire latence TCP (RTSP avec `gst-rtsp-server` → ~200ms vs ~1-2s TCP)

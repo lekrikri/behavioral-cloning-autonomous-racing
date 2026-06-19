@@ -8,6 +8,7 @@ Usage:
 Touches:
   ESPACE → sauvegarde image brute + masque (256x128)
   M      → toggle affichage masque
+  R      → toggle raycasts visuels
   +/-    → ajuster seuil de blanc (V min HSV)
   Q/Esc  → quitter
 
@@ -25,7 +26,7 @@ import sys, pathlib, argparse
 import cv2
 import numpy as np
 
-from visual_rays import white_line_mask  # source unique du masquage
+from visual_rays import white_line_mask, VisualRays  # source unique du masquage
 
 try:
     import depthai as dai
@@ -50,10 +51,10 @@ out.mkdir(parents=True, exist_ok=True)
 MODE = args.mode
 
 # ── Parametres masque blanc ────────────────────────────────────────────────────
-HSV_LOW  = np.array([  0,   0, 180])
-HSV_HIGH = np.array([180,  50, 255])
-ROI_TOP  = H // 2
-MORPH_K  = 3
+HSV_LOW  = np.array([  0,   0, 200])   # V min 200 (180 trop permissif en labo)
+HSV_HIGH = np.array([180,  40, 255])   # S max 40 (moins de surfaces colorées claires)
+ROI_TOP  = int(H * 0.6)               # ignorer 60% du haut (fond/plafond/décor)
+MORPH_K  = 5                           # kernel plus grand → moins de bruit
 CANNY_LOW  = args.canny_low
 CANNY_HIGH = args.canny_high
 
@@ -120,7 +121,7 @@ def run(device):
         print(f"Calibration : {e}")
     print(f"Capture -> {out}")
     print(f"Mode : {MODE.upper()}")
-    print("SPACE=sauver | M=masque | +/-=seuil (HSV) | Q=quitter")
+    print("SPACE=sauver | M=masque | R=raycasts | +/-=seuil V (HSV) | Q=quitter")
     print("=" * 50)
 
     if IS_V3:
@@ -142,8 +143,17 @@ def run(device):
         device.startPipeline(pipeline)
         q = device.getOutputQueue("rgb", maxSize=4, blocking=False)
 
-    show_mask = True
-    counter   = 0
+    vr = VisualRays(
+        img_width=W, img_height=H,
+        mode=MODE,
+        hsv_low=tuple(HSV_LOW), hsv_high=tuple(HSV_HIGH),
+        morph_k=MORPH_K,
+        row_band=(ROI_TOP / H, 1.0),
+    )
+
+    show_mask  = True
+    show_rays  = True
+    counter    = 0
     print("En attente du premier frame...")
 
     while True:
@@ -161,7 +171,15 @@ def run(device):
         mask  = make_mask(bgr)
         vis, center = overlay(bgr, mask)
 
-        info = f"seq={seq} | {W}x{H} | blanc={int(mask.sum()/255)}px"
+        # Raycasts visuels (vert=libre, rouge=bord proche)
+        if show_rays:
+            rays = vr(bgr)
+            for col, ray in zip(vr.cols, rays):
+                r = int(255 * (1.0 - ray)); g = int(255 * ray)
+                y_top = int(H - ray * H * 0.4)
+                cv2.line(vis, (col, H), (col, y_top), (0, g, r), 1)
+
+        info = f"seq={seq} | {W}x{H} | blanc={int(mask.sum()/255)}px | V>={HSV_LOW[2]}"
         cv2.putText(vis, info, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 0), 1)
 
         display = np.hstack([vis, cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)]) if show_mask else vis
@@ -172,6 +190,9 @@ def run(device):
             break
         elif key == ord('m'):
             show_mask = not show_mask
+        elif key == ord('r'):
+            show_rays = not show_rays
+            print(f"Raycasts : {'ON' if show_rays else 'OFF'}")
         elif key == ord('+'):
             HSV_LOW[2] = min(255, HSV_LOW[2] + 5)
             print(f"Seuil V min : {HSV_LOW[2]}")

@@ -256,8 +256,10 @@ def push_frame(bgr, mask, info):
             info["state"], corner_flag, info["n_blobs"],
             info.get("ray_asym", 0.0)),
         (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
-    # masque pleine taille (même dimensions que la vue caméra)
-    panel = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    # vue droite : caméra masquée (seuls les pixels détectés visibles, reste noir)
+    mask_bool = (mask > 0)
+    panel = bgr.copy()
+    panel[~mask_bool] = 0
     display = np.hstack([vis, panel])
     _, jpg = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 65])
     with _stream_lock:

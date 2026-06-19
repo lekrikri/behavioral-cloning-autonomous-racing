@@ -31,9 +31,38 @@ try:
 except ImportError:
     VescInterface = None
 
-def _usb_reset_oak():
-    """Reset software USB de la OAK-D via ioctl USBDEVFS_RESET.
-    Évite le rebanchement physique après un crash caméra."""
+def _usb_power_cycle_oak():
+    """Power cycle USB OAK-D via sysfs authorize (désactive + réactive le port).
+    Équivalent logiciel du débranchement physique — ne nécessite pas uhubctl."""
+    try:
+        for vendor_path in glob.glob('/sys/bus/usb/devices/*/idVendor'):
+            try:
+                with open(vendor_path) as f:
+                    if f.read().strip() != '03e7':
+                        continue
+            except Exception:
+                continue
+            dir_path = os.path.dirname(vendor_path)
+            auth_path = os.path.join(dir_path, 'authorized')
+            if not os.path.exists(auth_path):
+                continue
+            try:
+                # Désactiver le device (équivalent débranchement)
+                with open(auth_path, 'w') as f:
+                    f.write('0')
+                print("[ctrl] OAK-D désactivé via sysfs")
+                time.sleep(3)
+                # Réactiver (équivalent rebranchement)
+                with open(auth_path, 'w') as f:
+                    f.write('1')
+                print("[ctrl] OAK-D réactivé via sysfs")
+                time.sleep(4)
+                return True
+            except Exception as e2:
+                print("[ctrl] sysfs power cycle err: {}".format(e2))
+    except Exception as e:
+        print("[ctrl] USB scan err: {}".format(e))
+    # Fallback : ioctl reset classique
     USBDEVFS_RESET = 0x5514
     try:
         for vendor_path in glob.glob('/sys/bus/usb/devices/*/idVendor'):
@@ -55,14 +84,18 @@ def _usb_reset_oak():
             try:
                 with open(dev_path, 'wb') as fd:
                     fcntl.ioctl(fd, USBDEVFS_RESET, 0)
-                print("[ctrl] USB reset OAK-D OK: {}".format(dev_path))
+                print("[ctrl] USB ioctl reset OAK-D: {}".format(dev_path))
                 time.sleep(3)
                 return True
             except Exception as e2:
-                print("[ctrl] USB reset err ({}): {}".format(dev_path, e2))
+                print("[ctrl] ioctl reset err: {}".format(e2))
     except Exception as e:
-        print("[ctrl] USB reset scan err: {}".format(e))
+        print("[ctrl] ioctl scan err: {}".format(e))
     return False
+
+
+def _usb_reset_oak():
+    return _usb_power_cycle_oak()
 
 
 try:
@@ -694,7 +727,7 @@ def run(args):
                 except: pass
             print("[ctrl] Erreur ({}) — reset USB + reconnexion".format(type(e).__name__))
             _usb_reset_oak()
-            delay = min(3 * attempt, 15)
+            delay = max(5, min(5 * attempt, 30))
             print("[ctrl] Reconnexion dans {}s...".format(delay))
             time.sleep(delay)
 

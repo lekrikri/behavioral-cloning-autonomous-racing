@@ -94,17 +94,33 @@ class MJPEGHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def _send_text(self, body):
+        data = body.encode("utf-8") if isinstance(body, str) else body
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(data)
+        self.wfile.flush()
+
     def do_GET(self):
         global _drive_enabled
-        if self.path == "/stop":
+        path = self.path.split("?")[0].rstrip("/") or "/"
+        if path == "/stop":
             _drive_enabled = False
-            self.send_response(200); self.send_header("Content-Type", "text/plain"); self.end_headers()
-            self.wfile.write(b"STOPPED"); print("[ctrl] /stop recu"); return
-        if self.path == "/go":
+            self._send_text("STOPPED")
+            print("[ctrl] /stop recu")
+            return
+        if path == "/go":
             _drive_enabled = True
-            self.send_response(200); self.send_header("Content-Type", "text/plain"); self.end_headers()
-            self.wfile.write(b"RUNNING"); print("[ctrl] /go recu"); return
-        if self.path not in ("/", "/stream"):
+            self._send_text("RUNNING")
+            print("[ctrl] /go recu")
+            return
+        if path == "/status":
+            self._send_text("running" if _drive_enabled else "stopped")
+            return
+        if path not in ("/", "/stream"):
             self.send_response(404); self.end_headers(); return
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")

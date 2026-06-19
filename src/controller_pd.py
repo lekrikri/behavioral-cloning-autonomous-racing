@@ -12,7 +12,7 @@ Usage (Jetson Nano) :
   --stream-port  : port HTTP stream MJPEG (défaut : 5601, 0 = désactivé)
 """
 
-import sys, time, argparse, os, threading, struct, socket
+import sys, time, argparse, os, threading, struct, socket, csv
 import numpy as np
 import cv2
 
@@ -350,11 +350,46 @@ def parse_args():
                    help="Vitesse constante [0-1] — bypass machine a etats (calibration)")
     p.add_argument("--stream-port",  type=int, default=5601,
                    help="Port stream MJPEG (0 = desactive)")
+    p.add_argument("--record",       default=None, metavar="FILE",
+                   help="Enregistre la piste dans un CSV (ex: /tmp/track.csv)")
+    p.add_argument("--replay",       default=None, metavar="FILE",
+                   help="Rejoue un CSV enregistré comme feedforward de trajectoire")
+    p.add_argument("--replay-weight", type=float, default=0.70,
+                   help="Poids du feedforward replay [0-1] (défaut: 0.70)")
     return p.parse_args()
+
+
+def load_replay(path):
+    data = []
+    with open(path, "r") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            data.append({
+                "steering": float(row["steering"]),
+                "throttle": float(row["throttle"]),
+                "err":      float(row["err"]) if row["err"] != "None" else 0.0,
+            })
+    print("[replay] {} frames chargees depuis {}".format(len(data), path))
+    return data
 
 
 def run(args):
     ctrl = PDController(level=args.level, fixed_speed=args.fixed_speed)
+
+    # Mode replay : charge le CSV de piste enregistrée
+    replay_data = None
+    if args.replay:
+        replay_data = load_replay(args.replay)
+
+    # Mode record : ouvre le CSV en écriture
+    record_file = None
+    record_writer = None
+    if args.record:
+        record_file = open(args.record, "w", newline="")
+        record_writer = csv.DictWriter(record_file,
+            fieldnames=["frame", "t", "err", "steering", "throttle", "state", "blobs"])
+        record_writer.writeheader()
+        print("[record] Enregistrement → {}".format(args.record))
 
     if args.stream_port > 0:
         start_stream_server(args.stream_port)
@@ -406,11 +441,33 @@ def run(args):
 
                     steering, throttle, info = ctrl.compute(mask, bgr)
 
+                    # ── MODE REPLAY : feedforward + correction PD ──────────────
+                    if replay_data is not None:
+                        idx = frame_n % len(replay_data)
+                        ref = replay_data[idx]
+                        w = args.replay_weight
+                        # Feedforward (trajectoire mémorisée) + feedback (PD actuel)
+                        steering = w * ref["steering"] + (1.0 - w) * steering
+                        steering = max(-STEERING_MAX, min(STEERING_MAX, steering))
+                        info["state"] = "REPLAY"
+
+                    # ── MODE RECORD : enregistre la frame ─────────────────────
+                    if record_writer is not None:
+                        record_writer.writerow({
+                            "frame":    frame_n,
+                            "t":        round(time.time() - t0, 3),
+                            "err":      info["err"],
+                            "steering": round(steering, 4),
+                            "throttle": round(throttle, 4),
+                            "state":    info["state"],
+                            "blobs":    info["n_blobs"],
+                        })
+
                     if vesc is not None:
                         if _drive_enabled:
                             vesc.drive(steering, throttle)
                         else:
-                            vesc.stop()  # arrêt doux via /stop HTTP
+                            vesc.stop()
 
                     if args.stream_port > 0:
                         push_frame(bgr, mask, info)
@@ -423,13 +480,16 @@ def run(args):
                         lefts  = [x for x in cx_list if x < mid]
                         rights = [x for x in cx_list if x >= mid]
                         tw = str(min(rights) - max(lefts)) if lefts and rights else "?"
+                        rec_str = " [REC {}f]".format(frame_n) if record_writer else ""
+                        rep_str = " [REPLAY {}/{}]".format(frame_n % len(replay_data) if replay_data else 0,
+                                                            len(replay_data) if replay_data else 0) if replay_data else ""
                         print("[ctrl] {:.0f}fps | err={} | steer={:.3f} | "
-                              "thr={:.2f} | {} | blobs={} | cx={} | tw={}px".format(
+                              "thr={:.2f} | {} | blobs={} | cx={} | tw={}px{}{}".format(
                                   fps,
                                   int(info["err"]) if info["err"] is not None else "N/A",
-                                  info["steering"], info["throttle"],
+                                  steering, throttle,
                                   info["state"], info["n_blobs"],
-                                  cx_list, tw))
+                                  cx_list, tw, rec_str, rep_str))
 
         except KeyboardInterrupt:
             print("[ctrl] Arret."); break
@@ -444,6 +504,9 @@ def run(args):
     if vesc:
         try: vesc.stop(); vesc.close()
         except: pass
+    if record_file:
+        record_file.flush(); record_file.close()
+        print("[record] Sauvegarde terminee → {}".format(args.record))
 
 
 if __name__ == "__main__":

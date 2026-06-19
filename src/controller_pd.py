@@ -440,11 +440,16 @@ class PDController:
         self.prev_err     = 0.0
         self.d_filtered   = 0.0
         self.state        = "STOP"
-        self.err_history  = []   # dernières 6 erreurs pour tendance virage
+        self.err_history      = []    # dernières 6 erreurs pour tendance virage
         # ── Machine à états coin L ───────────────────────────────────────────
-        self.corner_mode  = False   # True = on est en train de prendre un virage
-        self.corner_dir   = 0.0    # +1.0 droite, -1.0 gauche
-        self.corner_count = 0      # frames restantes en mode CORNER
+        self.corner_mode      = False
+        self.corner_dir       = 0.0
+        self.corner_count     = 0
+        # ── Priorité 4 : mémoire de direction (IA suggestion) ────────────────
+        self.last_turn_dir    = 0.0   # dernière direction forte mémorisée
+        self.turn_memory_ctr  = 0     # frames restantes de mémoire
+        # ── Dynamic track width : médiane des 20 dernières largeurs connues ───
+        self.track_widths     = []    # largeurs réelles mesurées (n_blobs=2)
         self.vr           = VisualRays(
             img_width=CAM_W, img_height=CAM_H,
             row_band=(ROI_FAR, ROI_BOTTOM), morph_k=5,
@@ -511,35 +516,68 @@ class PDController:
             if self.corner_count <= 0:
                 self.corner_mode = False
                 print("[ctrl] CORNER termine")
-            # Injecter erreur forte dans la direction du virage
             err = self.corner_dir * 200.0
             self.state = "CORNER"
         else:
+            # ── Priorité 1 : signal turn_signal depuis raycasts (IA suggestion) ──
+            # ray_asym = right_open - left_open (déjà calculé)
+            # Si espace libre très asymétrique → virage probable, signal fort
+            turn_signal = ray_asym  # >0=virage droite, <0=virage gauche
+            turn_boost = 0.0
+            if abs(turn_signal) > 0.25:
+                # Injecter proportionnellement en px d'erreur supplémentaire
+                turn_boost = turn_signal * 80.0  # 80px max de boost
+                self.last_turn_dir = 1.0 if turn_signal > 0 else -1.0
+                self.turn_memory_ctr = 15  # mémoriser 15 frames
+
             # ── Méthode principale : deux lignes séparées (gauche/droite) ──
             if self.level >= 3 and n_blobs >= 2:
-                err, _ = err_from_two_lines(blobs)
+                err_lines, tw = err_from_two_lines(blobs)
+                # Dynamic track width (Priorité 4 IA)
+                if tw is not None and tw != TRACK_WIDTH_EST_PX and tw > 100:
+                    self.track_widths.append(tw)
+                    if len(self.track_widths) > 20:
+                        self.track_widths.pop(0)
+                err = err_lines
             # ── Fallback : centroïde global du masque (point rouge) ────────
             if err is None:
                 err = err_from_mask(mask)
             if err is None and n_blobs == 0:
                 err = err_from_mask(m_wide)
 
-            # Mémoire de tendance : si vision perdue en virage, on maintient la direction
+            # Mémoire de tendance : maintient la direction si vision perdue
             if err is not None:
                 self.err_history.append(float(err))
                 if len(self.err_history) > 6:
                     self.err_history.pop(0)
+                if abs(err) > 60:
+                    self.last_turn_dir = 1.0 if err > 0 else -1.0
+                    self.turn_memory_ctr = 15
             trend = sum(self.err_history) / len(self.err_history) if self.err_history else 0.0
             if err is None or abs(err) < 25:
                 err = trend * 0.6
 
-        # ── Vitesse ────────────────────────────────────────────────────────
+            # Priorité 4 IA : mémoire de direction quand n_blobs <= 1
+            if n_blobs <= 1 and self.turn_memory_ctr > 0:
+                self.turn_memory_ctr -= 1
+                if err is None or abs(err) < 30:
+                    err = (err or 0.0) + self.last_turn_dir * 50.0
+
+            # Priorité 1 IA : ajouter le boost turn_signal à l'erreur finale
+            if err is not None:
+                err = err + turn_boost
+
+        # ── Vitesse adaptative selon courbure (Priorité 3 IA) ─────────────
+        curvature = float(np.std(rays))  # std des rays = indicateur de courbure
         if self.fixed_speed is not None:
             if self.corner_mode:
-                throttle = self.fixed_speed * 0.75
+                throttle = self.fixed_speed * 0.60   # ralentir fort en virage
             elif n_blobs == 0:
-                throttle = V_STOP   # BLIND → arrêt complet, ne jamais avancer sans vision
+                throttle = V_STOP
                 self.state = "BLIND"
+            elif curvature > 0.30 or (err is not None and abs(err) > 80):
+                throttle = self.fixed_speed * 0.75   # courbe détectée → ralentir
+                self.state = "FIXED"
             else:
                 throttle = self.fixed_speed
                 self.state = "FIXED"

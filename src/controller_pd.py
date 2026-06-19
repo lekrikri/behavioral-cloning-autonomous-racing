@@ -312,10 +312,10 @@ def push_frame(bgr, mask, info):
 def get_blobs(mask):
     """Retourne les blobs de lignes de piste (filtre chaises, tapis, logos)."""
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cy_min  = int(CAM_H * 0.35)   # exclut le haut (plafond, arrière-plan)
-    cy_max  = int(CAM_H * 0.97)   # exclut la bordure basse
-    h_max   = 80                   # pieds de chaises h>90px, lignes de piste h<75px
-    w_min   = 18                   # une ligne de piste a au moins 18px de large
+    cy_min     = int(CAM_H * 0.40)  # filtre le haut (pieds de chaises ont cy plus haut)
+    cy_max     = int(CAM_H * 0.97)  # exclut la bordure basse
+    aspect_min = 0.8                 # pieds de chaises aspect~0.05-0.3, lignes>=0.8
+    w_min      = 18                  # une ligne de piste a au moins 18px de large
     blobs = []
     for i in range(1, n):
         area   = stats[i, cv2.CC_STAT_AREA]
@@ -328,8 +328,8 @@ def get_blobs(mask):
             continue  # hors zone piste verticalement
         if area < MIN_BLOB_AREA:
             continue
-        if h > h_max:
-            continue  # objet vertical trop haut = pied de chaise / barre
+        if aspect < aspect_min:
+            continue  # objet vertical (pied de chaise aspect~0.1, poteau, barre)
         if w < w_min:
             continue  # trop fin horizontalement
         # Blobs compacts de grande taille = flèche/logo au sol
@@ -511,8 +511,8 @@ class PDController:
                 self.corner_count = CORNER_DURATION
                 print("[ctrl] CORNER-L cx={} asp={} dir={:+.0f}".format(
                     corner_blob["cx"], corner_blob["aspect"], self.corner_dir))
-            elif abs(ray_asym) > 0.40 and n_blobs <= 1:
-                # Raycasts très asymétriques + peu de lignes → virage probable
+            elif abs(ray_asym) > 0.40 and n_blobs == 1:
+                # Raycasts très asymétriques + exactement 1 ligne → virage probable (pas si b=0)
                 self.corner_dir   = 1.0 if ray_asym > 0 else -1.0
                 self.corner_mode  = True
                 self.corner_count = CORNER_DURATION // 2

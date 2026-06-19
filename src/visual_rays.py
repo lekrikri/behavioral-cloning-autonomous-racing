@@ -26,6 +26,7 @@ def white_line_mask(
     morph_k:    int = 5,
     blur_k:     int = 3,
     use_clahe:  bool = False,
+    min_area:   int = 400,
 ) -> np.ndarray:
     """Masque binaire des lignes blanches (uint8, 0/255), sans ROI.
 
@@ -34,6 +35,7 @@ def white_line_mask(
 
     blur_k    : taille kernel Gaussian blur avant HSV (0 = désactivé)
     use_clahe : normalisation CLAHE du channel V (éclairage variable)
+    min_area  : surface minimale (px) d'un blob pour être gardé (filtre bruit)
     """
     if blur_k > 1:
         bgr = cv2.GaussianBlur(bgr, (blur_k, blur_k), 0)
@@ -53,6 +55,16 @@ def white_line_mask(
         m = cv2.morphologyEx(m, cv2.MORPH_OPEN,  kernel)
         m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
         m = cv2.morphologyEx(m, cv2.MORPH_DILATE, kernel, iterations=1)
+
+    # Filtrer les petits blobs (bruit, reflets, artefacts)
+    if min_area > 0:
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+        filtered = np.zeros_like(m)
+        for i in range(1, n):
+            if stats[i, cv2.CC_STAT_AREA] >= min_area:
+                filtered[labels == i] = 255
+        m = filtered
+
     return m
 
 

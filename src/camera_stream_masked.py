@@ -181,7 +181,7 @@ class MJPEGHandler(BaseHTTPRequestHandler):
 def run_oak(args):
     global _latest_jpeg, _frame_id, _camera_online
 
-    ROI_TOP    = int(args.height * 0.35)
+    ROI_TOP    = int(args.height * 0.45)
     USE_CLAHE  = not args.no_clahe
     vr = VisualRays(
         img_width=args.width, img_height=args.height,
@@ -228,6 +228,7 @@ def run_oak(args):
                         bgr, mode=args.mode,
                         hsv_low=HSV_LOW, hsv_high=HSV_HIGH,
                         morph_k=5, blur_k=3, use_clahe=USE_CLAHE,
+                        min_area=400,
                     )
                     mask[:ROI_TOP, :] = 0
 

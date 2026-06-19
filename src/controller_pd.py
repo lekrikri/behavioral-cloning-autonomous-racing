@@ -211,8 +211,12 @@ def err_from_bands(mask):
 
 def err_from_two_lines(blobs):
     mid_x = CAM_W // 2
-    left_blobs  = [b for b in blobs if b["cx"] < mid_x]
-    right_blobs = [b for b in blobs if b["cx"] >= mid_x]
+    # Zone "clairement gauche" : cx < 180 | "clairement droite" : cx > 332
+    # Entre 180-332 (zone centrale ~150px) → blob ambigu, on ignore l'estimation TRACK_WIDTH
+    CLEAR_LEFT  = mid_x - 76   # 180px
+    CLEAR_RIGHT = mid_x + 76   # 332px
+    left_blobs  = [b for b in blobs if b["cx"] < CLEAR_LEFT]
+    right_blobs = [b for b in blobs if b["cx"] > CLEAR_RIGHT]
     left  = max(left_blobs,  key=lambda b: b["area"]) if left_blobs  else None
     right = max(right_blobs, key=lambda b: b["area"]) if right_blobs else None
     if left and right:
@@ -224,7 +228,8 @@ def err_from_two_lines(blobs):
     if right:
         est_left = right["cx"] - TRACK_WIDTH_EST_PX
         return (est_left + right["cx"]) // 2 - mid_x, TRACK_WIDTH_EST_PX
-    return None, None
+    # Blob ambigu au centre → err=0, voiture continue tout droit
+    return 0, None
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -16,11 +16,13 @@ import sys, time, argparse, os, threading, struct, socket
 import numpy as np
 import cv2
 
+from http.server import BaseHTTPRequestHandler, HTTPServer
 try:
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from http.server import ThreadingHTTPServer
 except ImportError:
-    from BaseHTTPServer import BaseHTTPRequestHandler
-    from SocketServer import ThreadingTCPServer as ThreadingHTTPServer
+    from socketserver import ThreadingMixIn
+    class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
 
 sys.path.insert(0, os.path.dirname(__file__))
 from visual_rays import white_line_mask, VisualRays

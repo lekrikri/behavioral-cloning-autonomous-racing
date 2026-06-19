@@ -148,13 +148,13 @@ except ImportError:
 CAM_W, CAM_H = 512, 256
 CAM_FPS      = 8
 
-HSV_LOW      = np.array([0,   0, 130], dtype=np.uint8)   # V>=130 (compromis intérieur/extérieur)
-HSV_HIGH     = np.array([180, 55, 255], dtype=np.uint8)  # S<=55
+HSV_LOW      = np.array([0,   0, 165], dtype=np.uint8)   # V>=165 (filtre tapis gris V<160)
+HSV_HIGH     = np.array([180, 40, 255], dtype=np.uint8)  # S<=40 (blancheur pure uniquement)
 ROI_FAR      = 0.65
 ROI_MID      = 0.80
 ROI_NEAR     = 0.92
 ROI_BOTTOM   = 1.00
-MIN_BLOB_AREA  = 1200
+MIN_BLOB_AREA  = 800
 MIN_CORNER_AREA = 1500
 CORNER_DURATION = 15   # frames de maintien virage (~1.25s @ 12fps)
 
@@ -310,10 +310,12 @@ def push_frame(bgr, mask, info):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_blobs(mask):
-    """Retourne les blobs de lignes de piste (filtre flèches/logos compacts)."""
+    """Retourne les blobs de lignes de piste (filtre chaises, tapis, logos)."""
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cy_min = int(CAM_H * 0.42)   # filtre le tiers supérieur (meubles, plafond)
-    cy_max = int(CAM_H * 0.97)   # exclut la bordure basse (artéfacts bord)
+    cy_min  = int(CAM_H * 0.35)   # exclut le haut (plafond, arrière-plan)
+    cy_max  = int(CAM_H * 0.97)   # exclut la bordure basse
+    h_max   = 55                   # pieds de chaises h>70px, lignes de piste h<35px
+    w_min   = 18                   # une ligne de piste a au moins 18px de large
     blobs = []
     for i in range(1, n):
         area   = stats[i, cv2.CC_STAT_AREA]
@@ -323,11 +325,13 @@ def get_blobs(mask):
         cx = stats[i, cv2.CC_STAT_LEFT] + w // 2
         cy = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT] // 2
         if cy < cy_min or cy > cy_max:
-            continue  # hors zone piste
+            continue  # hors zone piste verticalement
         if area < MIN_BLOB_AREA:
             continue
-        if aspect < 0.4:
-            continue  # trop fin verticalement (pieds de meubles)
+        if h > h_max:
+            continue  # objet vertical trop haut = pied de chaise / barre
+        if w < w_min:
+            continue  # trop fin horizontalement
         # Blobs compacts de grande taille = flèche/logo au sol
         if area > 3000 and 0.5 < aspect < 2.0:
             continue

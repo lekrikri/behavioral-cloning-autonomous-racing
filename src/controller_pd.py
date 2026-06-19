@@ -492,8 +492,8 @@ class PDController:
 
         # ── Machine à états CORNER (priorité absolue sur PD normal) ───────
         if not self.corner_mode:
-            if corner_blob is not None and n_blobs < 2:
-                # CORNER seulement si < 2 blobs normaux (en ligne droite b>=2 → pas de CORNER)
+            if corner_blob is not None and n_blobs <= 2:
+                # CORNER si blob coin L détecté (même avec b=2 — lignes en tirets en virage)
                 self.corner_dir   = 1.0 if corner_blob["cx"] > CAM_W // 2 else -1.0
                 self.corner_mode  = True
                 self.corner_count = CORNER_DURATION

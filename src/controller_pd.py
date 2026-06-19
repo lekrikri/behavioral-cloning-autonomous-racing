@@ -79,7 +79,7 @@ except ImportError:
 CAM_W, CAM_H = 512, 256
 CAM_FPS      = 12
 
-HSV_LOW      = np.array([0,   0, 200], dtype=np.uint8)   # Blanc pur : V>=200 (sol gris ~170-190)
+HSV_LOW      = np.array([0,   0, 190], dtype=np.uint8)   # 200→190 : voir les lignes peintes
 HSV_HIGH     = np.array([180, 20, 255], dtype=np.uint8)  # S<=20 : blanc peint, sol gris S>20
 ROI_FAR      = 0.65   # ignorer 65% du haut
 ROI_MID      = 0.80   # espacé : 0.75→0.80 pour mieux séparer les 3 bandes
@@ -412,10 +412,12 @@ class PDController:
             if self.level >= 3:
                 err, _ = err_from_two_lines(blobs)
 
-            if n_blobs <= 1:
+            if n_blobs == 0:
+                # Aucun blob → centroïde global (mask_wide)
                 err_global = err_from_mask(m_wide)
                 if err_global is not None:
                     err = err_global
+            # n_blobs==1 : err_from_two_lines a donné l'estimation TRACK_WIDTH → bonne direction
 
             if err is None and self.level >= 2:
                 err_near, err_mid, err_far = err_from_bands(mask)

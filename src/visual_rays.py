@@ -47,7 +47,7 @@ def white_line_mask(
     else:
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
         if use_clahe:
-            clahe       = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+            clahe        = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
             hsv[:, :, 2] = clahe.apply(hsv[:, :, 2])
         m = cv2.inRange(hsv, np.asarray(hsv_low, np.uint8), np.asarray(hsv_high, np.uint8))
         m = cv2.morphologyEx(m, cv2.MORPH_OPEN,  kernel)

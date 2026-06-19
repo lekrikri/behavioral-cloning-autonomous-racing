@@ -69,7 +69,7 @@ def parse_args():
     p.add_argument("--height",    type=int, default=256)
     p.add_argument("--fps",       type=int, default=8)
     p.add_argument("--mode",      choices=["hsv", "canny"], default="hsv")
-    p.add_argument("--hsv-v-min", type=int, default=175,
+    p.add_argument("--hsv-v-min", type=int, default=195,
                    help="Seuil V min HSV (175=permissif, 200=strict)")
     p.add_argument("--no-clahe",  action="store_true",
                    help="Desactiver la normalisation CLAHE")
@@ -105,13 +105,13 @@ def apply_overlay(bgr, mask, vr):
     cv2.putText(vis, "{}x{} | {}px".format(W, H, whites), (4, 14),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 0), 1)
 
-    # Masque miniature en incrustation bas-droite (économise bande passante vs hstack)
-    mH, mW   = H // 2, W // 2
-    mask_small = cv2.resize(mask, (mW, mH))
+    # Masque côté droit en miniature (moitié hauteur, même largeur) → hstack propre
+    mask_small = cv2.resize(mask, (W, H // 2))
     mask_bgr   = cv2.cvtColor(mask_small, cv2.COLOR_GRAY2BGR)
-    cv2.rectangle(mask_bgr, (0, 0), (mW - 1, mH - 1), (180, 180, 180), 1)
-    vis[H - mH:H, W - mW:W] = mask_bgr
-    return vis
+    # Padding vertical pour aligner avec vis (H)
+    pad = np.zeros((H - H // 2, W, 3), dtype=np.uint8)
+    mask_panel = np.vstack([pad, mask_bgr])
+    return np.hstack([vis, mask_panel])
 
 
 # ── Handler MJPEG résilient ───────────────────────────────────────────────────
@@ -189,7 +189,7 @@ def run_oak(args):
         morph_k=5,
     )
     HSV_LOW  = np.array([0,   0, args.hsv_v_min], dtype=np.uint8)
-    HSV_HIGH = np.array([180, 55, 255],            dtype=np.uint8)
+    HSV_HIGH = np.array([180, 40, 255],            dtype=np.uint8)  # S<=40 strict
 
     attempt = 0
     while True:

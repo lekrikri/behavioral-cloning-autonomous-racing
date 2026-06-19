@@ -62,16 +62,17 @@ MIN_BLOB_AREA = 400          # px — filtre petits artefacts
 TRACK_WIDTH_EST_PX = 385   # mesuré en live : cx≈[66,435] → 369-416px selon frame
 
 # ── Contrôleur PD ─────────────────────────────────────────────────────────────
-KP           = 0.004         # gain proportionnel (err px → steering [-1,1])
-KD           = 0.002         # gain dérivé (sur dérivée filtrée)
+KP           = 0.010         # gain proportionnel — augmenté (0.004 insuffisant pour virer)
+KD           = 0.004         # gain dérivé (sur dérivée filtrée)
 ALPHA_D      = 0.7           # lissage dérivée (0=brut, 1=figé) — élimine bruit vision
-STEERING_MAX = 0.8           # saturation steering (protège la mécanique)
+STEERING_MAX = 0.9           # saturation steering
 STEERING_DEADZONE = 0.03     # zone morte (évite micro-oscillations)
+CAMERA_OFFSET_PX = -65       # biais caméra décalée sur la voiture (err moyen en ligne droite)
 
 # ── Vitesse ───────────────────────────────────────────────────────────────────
-V_MAX        = 0.40          # duty cycle ligne droite (→ 20% duty réel avec max_duty=0.50)
-V_TURN       = 0.28          # duty cycle virage      (→ 14% duty réel)
-V_SLOW       = 0.20          # duty cycle récupération (→ 10% duty réel)
+V_MAX        = 0.28          # duty cycle ligne droite (→ 14% duty réel)
+V_TURN       = 0.22          # duty cycle virage      (→ 11% duty réel)
+V_SLOW       = 0.18          # duty cycle récupération (→ 9% duty réel)
 V_STOP       = 0.00          # arrêt d'urgence (0 ligne)
 CURVE_THRESH_HIGH = 0.30     # std(rays) > seuil → virage
 CURVE_THRESH_LOW  = 0.15     # std(rays) < seuil → ligne droite (hystérésis)
@@ -291,7 +292,7 @@ class PDController:
             throttle = V_STOP
             self.state = "STOP"
         else:
-            steering = self._pd(float(err))
+            steering = self._pd(float(err) - CAMERA_OFFSET_PX)
 
         info = {
             "err":               err,

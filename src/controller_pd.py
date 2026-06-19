@@ -55,7 +55,7 @@ MIN_BLOB_AREA = 700          # 300→700 : éliminer faux blobs (fenêtre, mur)
 
 TRACK_WIDTH_EST_PX = 385
 
-KP           = 0.009         # augmenté pour prendre les virages
+KP           = 0.012         # augmenté pour virages plus décisifs
 KD           = 0.003
 ALPHA_D      = 0.7
 STEERING_MAX = 0.85
@@ -249,10 +249,11 @@ def err_from_two_lines(blobs):
 class PDController:
     def __init__(self, level=3, fixed_speed=None):
         self.level        = level
-        self.fixed_speed  = fixed_speed   # None = adaptatif, float = vitesse fixe
+        self.fixed_speed  = fixed_speed
         self.prev_err     = 0.0
         self.d_filtered   = 0.0
         self.state        = "STOP"
+        self.err_history  = []   # dernières 6 erreurs pour tendance virage
         self.vr           = VisualRays(
             img_width=CAM_W, img_height=CAM_H,
             row_band=(ROI_FAR, ROI_BOTTOM), morph_k=5,
@@ -294,6 +295,16 @@ class PDController:
             err = self._combined_err(err_near, err_mid, err_far, rays)
         if err is None:
             err = err_from_mask(mask)
+
+        # Mémoire de tendance : si vision perdue en virage, on maintient la direction
+        if err is not None:
+            self.err_history.append(float(err))
+            if len(self.err_history) > 6:
+                self.err_history.pop(0)
+        trend = sum(self.err_history) / len(self.err_history) if self.err_history else 0.0
+        # Si err proche de 0 mais tendance forte → utiliser la tendance
+        if err is None or abs(err) < 25:
+            err = trend * 0.6
 
         # Vitesse — fixe si --fixed-speed, sinon adaptatif
         # En fixed-speed : ne jamais s'arrêter complètement (garde le cap en virage)

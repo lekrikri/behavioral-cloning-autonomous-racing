@@ -45,14 +45,14 @@ except ImportError:
 CAM_W, CAM_H = 512, 256
 CAM_FPS      = 12
 
-HSV_LOW      = np.array([0,   0, 155], dtype=np.uint8)   # 195→155 : éclairage salle
-HSV_HIGH     = np.array([180, 55, 255], dtype=np.uint8)  # S 40→55 pour capturer lignes ternes
+HSV_LOW      = np.array([0,   0, 170], dtype=np.uint8)   # 155→170 : éviter faux positifs sol gris
+HSV_HIGH     = np.array([180, 45, 255], dtype=np.uint8)  # S 55→45 : sol gris a S > 45
 ROI_FAR      = 0.65   # ignorer 65% du haut
 ROI_MID      = 0.80   # espacé : 0.75→0.80 pour mieux séparer les 3 bandes
 ROI_NEAR     = 0.92   # espacé : 0.87→0.92
 ROI_BOTTOM   = 1.00
-MIN_BLOB_AREA  = 700   # 300→700 : éliminer faux blobs (fenêtre, mur)
-MIN_CORNER_AREA = 1200 # blob compact (coin L) : area > 1200, aspect < 1.8
+MIN_BLOB_AREA  = 1500  # 700→1500 : faux positifs sol gris (petits blobs)
+MIN_CORNER_AREA = 2500 # blob compact (coin L) : area > 2500, aspect < 1.8
 CORNER_DURATION = 15   # frames de maintien virage (~1.25s @ 12fps)
 
 TRACK_WIDTH_EST_PX = 385
@@ -205,18 +205,18 @@ def push_frame(bgr, mask, info):
 # VISION
 # ══════════════════════════════════════════════════════════════════════════════
 
-MIN_ASPECT_RATIO = 1.8   # largeur/hauteur min — lignes sont allongées, coins compacts
-
 def get_blobs(mask):
+    """Retourne les blobs de lignes — plus de filtre aspect ratio car
+    les lignes en perspective sont diagonales (aspect ≈ 1, pas > 1.8)."""
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cy_min = int(CAM_H * 0.60)
+    cy_min = int(CAM_H * 0.50)
     blobs = []
     for i in range(1, n):
         area   = stats[i, cv2.CC_STAT_AREA]
         w      = stats[i, cv2.CC_STAT_WIDTH]
         h      = max(stats[i, cv2.CC_STAT_HEIGHT], 1)
         aspect = w / float(h)
-        if area >= MIN_BLOB_AREA and aspect >= MIN_ASPECT_RATIO:
+        if area >= MIN_BLOB_AREA:
             cx = stats[i, cv2.CC_STAT_LEFT] + w // 2
             cy = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT] // 2
             if cy >= cy_min:
@@ -349,8 +349,8 @@ class PDController:
 
         # ── Machine à états CORNER (priorité absolue sur PD normal) ───────
         if not self.corner_mode:
-            if corner_blob is not None:
-                # Blob L détecté → braquer vers le côté où il est (c'est la ligne de virage)
+            if corner_blob is not None and n_blobs < 2:
+                # CORNER seulement si < 2 blobs normaux (en ligne droite b>=2 → pas de CORNER)
                 self.corner_dir   = 1.0 if corner_blob["cx"] > CAM_W // 2 else -1.0
                 self.corner_mode  = True
                 self.corner_count = CORNER_DURATION

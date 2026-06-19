@@ -51,7 +51,12 @@ def white_line_mask(
         if use_clahe:
             clahe        = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
             hsv[:, :, 2] = clahe.apply(hsv[:, :, 2])
-        m = cv2.inRange(hsv, np.asarray(hsv_low, np.uint8), np.asarray(hsv_high, np.uint8))
+        # Seuil V adaptatif : Otsu sur channel V + garde V_MIN fixe comme plancher
+        v_channel = hsv[:, :, 2]
+        otsu_thresh, _ = cv2.threshold(v_channel, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        v_min_adaptive = max(int(hsv_low[2]), min(int(otsu_thresh), 220))
+        hsv_low_adapted = (hsv_low[0], hsv_low[1], v_min_adaptive)
+        m = cv2.inRange(hsv, np.asarray(hsv_low_adapted, np.uint8), np.asarray(hsv_high, np.uint8))
         m = cv2.morphologyEx(m, cv2.MORPH_OPEN,  kernel)
         m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
         m = cv2.morphologyEx(m, cv2.MORPH_DILATE, kernel, iterations=1)

@@ -112,8 +112,8 @@ except ImportError:
 CAM_W, CAM_H = 512, 256
 CAM_FPS      = 12
 
-HSV_LOW      = np.array([0,   0, 160], dtype=np.uint8)   # V>=160 (extérieur lumière naturelle)
-HSV_HIGH     = np.array([180, 50, 255], dtype=np.uint8)  # S<=50
+HSV_LOW      = np.array([0,   0, 130], dtype=np.uint8)   # V>=130 (compromis intérieur/extérieur)
+HSV_HIGH     = np.array([180, 55, 255], dtype=np.uint8)  # S<=55
 ROI_FAR      = 0.65
 ROI_MID      = 0.80
 ROI_NEAR     = 0.92

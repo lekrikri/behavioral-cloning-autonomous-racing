@@ -146,7 +146,7 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════════════════════
 
 CAM_W, CAM_H = 512, 256
-CAM_FPS      = 12
+CAM_FPS      = 8
 
 HSV_LOW      = np.array([0,   0, 130], dtype=np.uint8)   # V>=130 (compromis intérieur/extérieur)
 HSV_HIGH     = np.array([180, 55, 255], dtype=np.uint8)  # S<=55

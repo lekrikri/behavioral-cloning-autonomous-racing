@@ -335,7 +335,8 @@ def run(args):
         vesc = VescInterface(port=args.port, baudrate=args.baud,
                              current_max=CURRENT_MAX,
                              throttle_mode="duty",
-                             max_duty=0.50)
+                             max_duty=0.50,
+                             invert_motor=False)
         print("[ctrl] VESC connecte sur {}".format(args.port))
     else:
         print("[ctrl] DRY-RUN — VESC non commande")

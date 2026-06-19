@@ -309,6 +309,15 @@ class PDController:
 
         if self.level >= 3:
             err, _ = err_from_two_lines(blobs)
+
+        # blobs=1 : le TRACK_WIDTH estimate neutralise souvent l'erreur au virage.
+        # Le centroïde global (mask entier, incl. coin L) est plus fiable :
+        # le marquage de coin tire le centroïde dans la direction du virage.
+        if n_blobs == 1:
+            err_global = err_from_mask(mask)
+            if err_global is not None:
+                err = err_global  # priorité au centroïde global
+
         if err is None and self.level >= 2:
             err_near, err_mid, err_far = err_from_bands(mask)
             err = self._combined_err(err_near, err_mid, err_far, rays)

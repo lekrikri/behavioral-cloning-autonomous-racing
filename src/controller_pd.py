@@ -80,6 +80,7 @@ _latest_jpeg = None
 _frame_id    = 0
 _stream_lock = threading.Lock()
 _placeholder = None
+_drive_enabled = True   # contrôlé via HTTP /stop et /go
 
 def _make_placeholder():
     img = np.zeros((CAM_H, CAM_W, 3), dtype=np.uint8)
@@ -94,6 +95,15 @@ class MJPEGHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        global _drive_enabled
+        if self.path == "/stop":
+            _drive_enabled = False
+            self.send_response(200); self.send_header("Content-Type", "text/plain"); self.end_headers()
+            self.wfile.write(b"STOPPED"); print("[ctrl] /stop recu"); return
+        if self.path == "/go":
+            _drive_enabled = True
+            self.send_response(200); self.send_header("Content-Type", "text/plain"); self.end_headers()
+            self.wfile.write(b"RUNNING"); print("[ctrl] /go recu"); return
         if self.path not in ("/", "/stream"):
             self.send_response(404); self.end_headers(); return
         self.send_response(200)
@@ -386,7 +396,10 @@ def run(args):
                     steering, throttle, info = ctrl.compute(mask, bgr)
 
                     if vesc is not None:
-                        vesc.drive(steering, throttle)
+                        if _drive_enabled:
+                            vesc.drive(steering, throttle)
+                        else:
+                            vesc.stop()  # arrêt doux via /stop HTTP
 
                     if args.stream_port > 0:
                         push_frame(bgr, mask, info)

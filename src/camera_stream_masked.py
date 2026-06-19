@@ -47,10 +47,10 @@ def apply_overlay(bgr, mask, vr):
     H, W = bgr.shape[:2]
     vis  = bgr.copy()
 
-    # Overlay vert sur les lignes blanches détectées
+    # Overlay vert sur les lignes blanches (alpha fort pour bien voir)
     green          = np.zeros_like(vis)
     green[:, :, 1] = mask
-    vis = cv2.addWeighted(vis, 1.0, green, 0.4, 0)
+    vis = cv2.addWeighted(vis, 1.0, green, 0.6, 0)
 
     # Centre de masse → direction estimée
     M = cv2.moments(mask)
@@ -63,19 +63,22 @@ def apply_overlay(bgr, mask, vr):
         cv2.putText(vis, f"err={err:+d}px", (4, H - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1)
 
-    # 20 raycasts visuels (vert=libre, rouge=bord proche)
+    # Raycasts visuels — petites barres en bas (10% H) pour ne pas écraser le masque
     rays = vr(bgr)
     for col, ray in zip(vr.cols, rays):
         r = int(255 * (1.0 - ray))
         g = int(255 * ray)
-        y_top = int(H - ray * H * 0.4)
+        y_top = int(H - ray * H * 0.10)
         cv2.line(vis, (col, H), (col, y_top), (0, g, r), 1)
 
     # Info
     whites = int(mask.sum() / 255)
     cv2.putText(vis, f"{W}x{H} | {whites}px", (4, 14),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 0), 1)
-    return vis
+
+    # Masque binaire côté droit (comme live_mask_oak.py)
+    mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    return np.hstack([vis, mask_bgr])
 
 
 class MJPEGHandler(BaseHTTPRequestHandler):
@@ -107,13 +110,13 @@ class MJPEGHandler(BaseHTTPRequestHandler):
 def run_oak(args):
     global _latest_frame
 
+    ROI_TOP  = int(args.height * 0.35)   # 35% — lignes de piste visibles dès 35% de haut
     vr = VisualRays(
         img_width=args.width, img_height=args.height,
-        mode=args.mode, row_band=(0.5, 1.0),
+        mode=args.mode, row_band=(0.35, 1.0),  # même bande que ROI_TOP
     )
     HSV_LOW  = np.array([0,   0, 180], dtype=np.uint8)
     HSV_HIGH = np.array([180, 50, 255], dtype=np.uint8)
-    ROI_TOP  = args.height // 2
 
     attempt = 0
     while True:

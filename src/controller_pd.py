@@ -28,7 +28,10 @@ import cv2
 
 sys.path.insert(0, os.path.dirname(__file__))
 from visual_rays import white_line_mask, VisualRays
-from vesc_interface import VescInterface
+try:
+    from vesc_interface import VESCInterface as VescInterface
+except ImportError:
+    VescInterface = None
 
 try:
     import depthai as dai
@@ -326,9 +329,11 @@ def run(args):
 
     vesc = None
     if not args.dry_run:
+        if VescInterface is None:
+            print("[ctrl] ERREUR : vesc_interface non disponible")
+            sys.exit(1)
         vesc = VescInterface(port=args.port, baudrate=args.baud,
                              current_max=CURRENT_MAX)
-        vesc.start()
         print("[ctrl] VESC connecte sur {}".format(args.port))
     else:
         print("[ctrl] DRY-RUN — VESC non commande")
@@ -370,8 +375,7 @@ def run(args):
                     steering, throttle, info = ctrl.compute(mask, bgr)
 
                     if vesc is not None:
-                        vesc.set_steering(steering)
-                        vesc.set_throttle(throttle)
+                        vesc.drive(steering, throttle)
 
                     frame_n += 1
                     if frame_n % (CAM_FPS * 2) == 0:
@@ -417,15 +421,15 @@ def run(args):
             break
         except Exception as e:
             if vesc:
-                vesc.set_throttle(0.0)
+                vesc.stop()
             delay = min(3 * attempt, 15)
             print("[ctrl] Erreur OAK-D ({}) — reconnexion dans {}s".format(
                 type(e).__name__, delay))
             time.sleep(delay)
 
     if vesc:
-        vesc.set_throttle(0.0)
         vesc.stop()
+        vesc.close()
     cv2.destroyAllWindows()
 
 

@@ -79,14 +79,14 @@ except ImportError:
 CAM_W, CAM_H = 512, 256
 CAM_FPS      = 12
 
-HSV_LOW      = np.array([0,   0, 185], dtype=np.uint8)   # V>=185 : lignes peintes blanches
-HSV_HIGH     = np.array([180, 20, 255], dtype=np.uint8)  # S<=20 : blanc pur, sol gris S>20
-ROI_FAR      = 0.65   # ignorer 65% du haut
+HSV_LOW      = np.array([0,   0, 175], dtype=np.uint8)   # V>=175 : lignes peintes (zones d'ombre)
+HSV_HIGH     = np.array([180, 22, 255], dtype=np.uint8)  # S<=22
+ROI_FAR      = 0.65
 ROI_MID      = 0.80
 ROI_NEAR     = 0.92
 ROI_BOTTOM   = 1.00
-MIN_BLOB_AREA  = 800   # 2500→800 : lignes en perspective = petits blobs
-MIN_CORNER_AREA = 2000 # coin L compact
+MIN_BLOB_AREA  = 300   # 800→300 : accepter les fragments de lignes
+MIN_CORNER_AREA = 1500 # coin L compact
 CORNER_DURATION = 15   # frames de maintien virage (~1.25s @ 12fps)
 
 TRACK_WIDTH_EST_PX = 385
@@ -590,7 +590,7 @@ def run(args):
 
                     mask = white_line_mask(
                         bgr, hsv_low=HSV_LOW, hsv_high=HSV_HIGH,
-                        morph_k=5, blur_k=3, use_clahe=False, min_area=MIN_BLOB_AREA,
+                        morph_k=7, blur_k=3, use_clahe=False, min_area=MIN_BLOB_AREA,
                     )
                     # Masque large (ROI 45%) pour détection anticipée des coins
                     mask_wide = mask.copy()

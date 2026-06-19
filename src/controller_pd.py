@@ -12,7 +12,7 @@ Usage (Jetson Nano) :
   --stream-port  : port HTTP stream MJPEG (défaut : 5601, 0 = désactivé)
 """
 
-import sys, time, argparse, os, threading, struct, socket, csv
+import sys, time, argparse, os, threading, struct, socket, csv, glob, fcntl
 import numpy as np
 import cv2
 
@@ -30,6 +30,40 @@ try:
     from vesc_interface import VESCInterface as VescInterface
 except ImportError:
     VescInterface = None
+
+def _usb_reset_oak():
+    """Reset software USB de la OAK-D via ioctl USBDEVFS_RESET.
+    Évite le rebanchement physique après un crash caméra."""
+    USBDEVFS_RESET = 0x5514
+    try:
+        for vendor_path in glob.glob('/sys/bus/usb/devices/*/idVendor'):
+            try:
+                with open(vendor_path) as f:
+                    if f.read().strip() != '03e7':
+                        continue
+            except Exception:
+                continue
+            dir_path = os.path.dirname(vendor_path)
+            try:
+                with open(os.path.join(dir_path, 'busnum')) as f:
+                    bus = int(f.read().strip())
+                with open(os.path.join(dir_path, 'devnum')) as f:
+                    dev = int(f.read().strip())
+            except Exception:
+                continue
+            dev_path = '/dev/bus/usb/{:03d}/{:03d}'.format(bus, dev)
+            try:
+                with open(dev_path, 'wb') as fd:
+                    fcntl.ioctl(fd, USBDEVFS_RESET, 0)
+                print("[ctrl] USB reset OAK-D OK: {}".format(dev_path))
+                time.sleep(3)
+                return True
+            except Exception as e2:
+                print("[ctrl] USB reset err ({}): {}".format(dev_path, e2))
+    except Exception as e:
+        print("[ctrl] USB reset scan err: {}".format(e))
+    return False
+
 
 try:
     import depthai as dai
@@ -621,8 +655,10 @@ def run(args):
             if vesc:
                 try: vesc.stop()
                 except: pass
+            print("[ctrl] Erreur ({}) — reset USB + reconnexion".format(type(e).__name__))
+            _usb_reset_oak()
             delay = min(3 * attempt, 15)
-            print("[ctrl] Erreur ({}) — reconnexion dans {}s".format(type(e).__name__, delay))
+            print("[ctrl] Reconnexion dans {}s...".format(delay))
             time.sleep(delay)
 
     if vesc:

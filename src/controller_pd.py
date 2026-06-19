@@ -47,11 +47,11 @@ CAM_FPS      = 12
 
 HSV_LOW      = np.array([0,   0, 155], dtype=np.uint8)   # 195→155 : éclairage salle
 HSV_HIGH     = np.array([180, 55, 255], dtype=np.uint8)  # S 40→55 pour capturer lignes ternes
-ROI_FAR      = 0.70   # ignorer 70% du haut — caméra trop horizontale
-ROI_MID      = 0.78
+ROI_FAR      = 0.65   # ignorer 65% du haut
+ROI_MID      = 0.75
 ROI_NEAR     = 0.87
 ROI_BOTTOM   = 1.00
-MIN_BLOB_AREA = 300          # 600→300 pour ne pas rater les lignes
+MIN_BLOB_AREA = 700          # 300→700 : éliminer faux blobs (fenêtre, mur)
 
 TRACK_WIDTH_EST_PX = 385
 

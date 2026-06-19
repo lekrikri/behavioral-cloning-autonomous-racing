@@ -1,30 +1,26 @@
 """
-controller_pd.py — Contrôleur autonome PD + lookahead 3 bandes + séparation L/R
-
-Architecture 4 niveaux :
-  Niveau 1 : PD basique sur err_now
-  Niveau 2 : Lookahead 3 bandes dynamiques (near/mid/far pondérées par forward_clearance)
-  Niveau 3 : Séparation ligne gauche / droite (reconstruction si une seule visible)
-  Niveau 4 : Machine à états vitesse (droite / virage / récup / urgence)
-
-Améliorations v2 :
-  - Dérivée filtrée (alpha=0.7) → élimine le bruit vision
-  - 3 bandes lookahead (near/mid/far) au lieu de 2
-  - Lookahead dynamique : poids far augmente avec la visibilité devant (rays centraux)
-  - Séparation L/R par moitiés d'image → reconstruction si une seule ligne visible
-  - Vitesse adaptative via forward_clearance (rays[8:12])
+controller_pd.py — Contrôleur PD + stream MJPEG intégré (port 5601)
 
 Usage (Jetson Nano) :
-  OPENBLAS_CORETYPE=ARMV8 python3 -u src/controller_pd.py --port /dev/ttyACM0
-  OPENBLAS_CORETYPE=ARMV8 python3 -u src/controller_pd.py --port /dev/ttyACM0 --dry-run
+  OPENBLAS_CORETYPE=ARMV8 python3 -u src/controller_pd.py --level 3
+  OPENBLAS_CORETYPE=ARMV8 python3 -u src/controller_pd.py --dry-run
+  OPENBLAS_CORETYPE=ARMV8 python3 -u src/controller_pd.py --fixed-speed 0.22
 
-  --dry-run : vision seule, VESC non commandé (tuning sécurisé)
-  --level N : niveau contrôleur 1-4 (défaut : 2)
+  --dry-run      : vision seule, VESC non commandé
+  --fixed-speed  : vitesse constante (bypass machine à états) — mode calibration
+  --level N      : niveau contrôleur 1-4 (défaut : 3)
+  --stream-port  : port HTTP stream MJPEG (défaut : 5601, 0 = désactivé)
 """
 
-import sys, time, argparse, os
+import sys, time, argparse, os, threading, struct, socket
 import numpy as np
 import cv2
+
+try:
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+except ImportError:
+    from BaseHTTPServer import BaseHTTPRequestHandler
+    from SocketServer import ThreadingTCPServer as ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(__file__))
 from visual_rays import white_line_mask, VisualRays
@@ -41,44 +37,136 @@ except ImportError:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PARAMÈTRES — ajuster pour le tuning
+# PARAMÈTRES
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── Caméra ────────────────────────────────────────────────────────────────────
 CAM_W, CAM_H = 512, 256
 CAM_FPS      = 12
 
-# ── Vision ────────────────────────────────────────────────────────────────────
 HSV_LOW      = np.array([0,   0, 195], dtype=np.uint8)
 HSV_HIGH     = np.array([180, 40, 255], dtype=np.uint8)
-ROI_FAR      = 0.45          # bande haute (loin, lookahead)
-ROI_MID      = 0.55          # bande milieu
-ROI_NEAR     = 0.75          # bande basse proche (nouvelle)
-ROI_BOTTOM   = 1.00          # bas de l'image
-MIN_BLOB_AREA = 400          # px — filtre petits artefacts
+ROI_FAR      = 0.45
+ROI_MID      = 0.55
+ROI_NEAR     = 0.75
+ROI_BOTTOM   = 1.00
+MIN_BLOB_AREA = 600          # augmenté pour réduire faux positifs sur piste
 
-# Largeur de piste estimée en pixels (60-80 cm réels sur 512px de large)
-# Ajuster selon la distance caméra / hauteur de montage
-TRACK_WIDTH_EST_PX = 385   # mesuré en live : cx≈[66,435] → 369-416px selon frame
+TRACK_WIDTH_EST_PX = 385
 
-# ── Contrôleur PD ─────────────────────────────────────────────────────────────
-KP           = 0.010         # gain proportionnel — augmenté (0.004 insuffisant pour virer)
-KD           = 0.004         # gain dérivé (sur dérivée filtrée)
-ALPHA_D      = 0.7           # lissage dérivée (0=brut, 1=figé) — élimine bruit vision
-STEERING_MAX = 0.9           # saturation steering
-STEERING_DEADZONE = 0.03     # zone morte (évite micro-oscillations)
-CAMERA_OFFSET_PX = -65       # biais caméra décalée sur la voiture (err moyen en ligne droite)
+KP           = 0.006         # conservateur — augmenter progressivement
+KD           = 0.003
+ALPHA_D      = 0.7
+STEERING_MAX = 0.85
+STEERING_DEADZONE = 0.03
+CAMERA_OFFSET_PX = 0         # biais caméra — calibrer si la voiture dérive constamment
 
-# ── Vitesse ───────────────────────────────────────────────────────────────────
-V_MAX        = 0.28          # duty cycle ligne droite (→ 14% duty réel)
-V_TURN       = 0.22          # duty cycle virage      (→ 11% duty réel)
-V_SLOW       = 0.18          # duty cycle récupération (→ 9% duty réel)
-V_STOP       = 0.00          # arrêt d'urgence (0 ligne)
-CURVE_THRESH_HIGH = 0.30     # std(rays) > seuil → virage
-CURVE_THRESH_LOW  = 0.15     # std(rays) < seuil → ligne droite (hystérésis)
+V_MAX        = 0.22          # → ~11% duty, assez pour avancer au sol
+V_TURN       = 0.22          # même vitesse en virage (mode calibration)
+V_SLOW       = 0.22          # même vitesse en RECOVER
+V_STOP       = 0.00
 
-# ── VESC ─────────────────────────────────────────────────────────────────────
-CURRENT_MAX  = 5.0           # ampères max (augmenter progressivement)
+CURVE_THRESH_HIGH = 0.30
+CURVE_THRESH_LOW  = 0.15
+
+CURRENT_MAX  = 5.0
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STREAM MJPEG — partagé entre le thread caméra et le HTTP server
+# ══════════════════════════════════════════════════════════════════════════════
+
+_latest_jpeg = None
+_frame_id    = 0
+_stream_lock = threading.Lock()
+_placeholder = None
+
+def _make_placeholder():
+    img = np.zeros((CAM_H, CAM_W, 3), dtype=np.uint8)
+    cv2.putText(img, "En attente camera...", (60, CAM_H // 2),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 2)
+    _, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 60])
+    return jpg.tobytes()
+
+
+class MJPEGHandler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        if self.path not in ("/", "/stream"):
+            self.send_response(404); self.end_headers(); return
+        self.send_response(200)
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.connection.settimeout(10)
+        last_id = -1
+        try:
+            while True:
+                with _stream_lock:
+                    cur_id = _frame_id
+                    jpg    = _latest_jpeg or _placeholder
+                if cur_id == last_id or jpg is None:
+                    time.sleep(0.02)
+                    continue
+                last_id = cur_id
+                try:
+                    self.wfile.write(b"--frame\r\n")
+                    self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                    self.wfile.write("Content-Length: {}\r\n\r\n".format(len(jpg)).encode())
+                    self.wfile.write(jpg)
+                    self.wfile.write(b"\r\n")
+                    self.wfile.flush()
+                except Exception:
+                    break
+        except Exception:
+            pass
+
+
+def start_stream_server(port):
+    global _placeholder
+    _placeholder = _make_placeholder()
+    srv = ThreadingHTTPServer(("0.0.0.0", port), MJPEGHandler)
+    srv.daemon_threads = True
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    print("[stream] http://{}:{}".format(
+        socket.gethostbyname(socket.gethostname()), port))
+
+
+def push_frame(bgr, mask, info):
+    global _latest_jpeg, _frame_id
+    vis = bgr.copy()
+    # overlay masque vert
+    green = np.zeros_like(vis)
+    green[:, :, 1] = mask
+    vis = cv2.addWeighted(vis, 1.0, green, 0.5, 0)
+    # centroïde rouge
+    M = cv2.moments(mask)
+    if M["m00"] > 0:
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+        cv2.circle(vis, (cx, cy), 6, (0, 0, 255), -1)
+        cv2.line(vis, (CAM_W // 2, CAM_H - 1), (cx, cy), (255, 0, 0), 1)
+    # lignes bandes
+    for frac, color in [(ROI_NEAR, (255, 200, 0)), (ROI_MID, (0, 200, 255)), (ROI_FAR, (0, 100, 255))]:
+        cv2.line(vis, (0, int(CAM_H * frac)), (CAM_W, int(CAM_H * frac)), color, 1)
+    # texte
+    err_str = "{:+d}".format(int(info["err"])) if info["err"] is not None else "N/A"
+    cv2.putText(vis,
+        "err={} steer={:.2f} thr={:.2f} {} blobs={}".format(
+            err_str, info["steering"], info["throttle"],
+            info["state"], info["n_blobs"]),
+        (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 255), 1)
+    # miniature masque
+    mini_h = CAM_H // 2
+    mini = cv2.resize(cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR), (CAM_W, mini_h))
+    pad  = np.zeros((CAM_H - mini_h, CAM_W, 3), dtype=np.uint8)
+    panel = np.vstack([mini, pad])
+    display = np.hstack([vis, panel])
+    _, jpg = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 65])
+    with _stream_lock:
+        _latest_jpeg = jpg.tobytes()
+        _frame_id   += 1
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -86,7 +174,6 @@ CURRENT_MAX  = 5.0           # ampères max (augmenter progressivement)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_blobs(mask):
-    """Composantes connexes triées par taille décroissante."""
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     blobs = []
     for i in range(1, n):
@@ -100,7 +187,6 @@ def get_blobs(mask):
 
 
 def err_from_mask(mask):
-    """Erreur latérale depuis le centroïde global (Niveau 1)."""
     M = cv2.moments(mask)
     if M["m00"] < 1:
         return None
@@ -108,59 +194,30 @@ def err_from_mask(mask):
 
 
 def err_from_bands(mask):
-    """
-    Erreur sur 3 bandes verticales : near / mid / far (Niveau 2).
-    Retourne (err_near, err_mid, err_far) — None si pas de ligne dans la bande.
-    """
     row_near = int(CAM_H * ROI_NEAR)
     row_mid  = int(CAM_H * ROI_MID)
     row_far  = int(CAM_H * ROI_FAR)
-
-    mask_near = mask.copy()
-    mask_near[:row_near, :] = 0
-
-    mask_mid = mask.copy()
-    mask_mid[row_near:, :] = 0
-    mask_mid[:row_mid, :]  = 0
-
-    mask_far = mask.copy()
-    mask_far[row_mid:, :] = 0
-    mask_far[:row_far, :] = 0
-
+    mask_near = mask.copy(); mask_near[:row_near, :] = 0
+    mask_mid  = mask.copy(); mask_mid[row_near:, :] = 0; mask_mid[:row_mid, :] = 0
+    mask_far  = mask.copy(); mask_far[row_mid:, :] = 0;  mask_far[:row_far, :] = 0
     return err_from_mask(mask_near), err_from_mask(mask_mid), err_from_mask(mask_far)
 
 
 def err_from_two_lines(blobs):
-    """
-    Centre de piste via ligne gauche + droite (Niveau 3).
-    Séparation par moitié d'image — reconstruction si une seule ligne visible.
-    Retourne (err, track_width) ou (None, None).
-    """
     mid_x = CAM_W // 2
-
     left_blobs  = [b for b in blobs if b["cx"] < mid_x]
     right_blobs = [b for b in blobs if b["cx"] >= mid_x]
-
     left  = max(left_blobs,  key=lambda b: b["area"]) if left_blobs  else None
     right = max(right_blobs, key=lambda b: b["area"]) if right_blobs else None
-
     if left and right:
         center = (left["cx"] + right["cx"]) // 2
-        width  = right["cx"] - left["cx"]
-        return center - mid_x, width
-
+        return center - mid_x, right["cx"] - left["cx"]
     if left:
-        # Reconstruction côté droit depuis la ligne gauche
         est_right = left["cx"] + TRACK_WIDTH_EST_PX
-        center = (left["cx"] + est_right) // 2
-        return center - mid_x, TRACK_WIDTH_EST_PX
-
+        return (left["cx"] + est_right) // 2 - mid_x, TRACK_WIDTH_EST_PX
     if right:
-        # Reconstruction côté gauche depuis la ligne droite
         est_left = right["cx"] - TRACK_WIDTH_EST_PX
-        center = (est_left + right["cx"]) // 2
-        return center - mid_x, TRACK_WIDTH_EST_PX
-
+        return (est_left + right["cx"]) // 2 - mid_x, TRACK_WIDTH_EST_PX
     return None, None
 
 
@@ -169,23 +226,21 @@ def err_from_two_lines(blobs):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class PDController:
-    def __init__(self, level=2):
-        self.level      = level
-        self.prev_err   = 0.0
-        self.d_filtered = 0.0    # dérivée lissée
-        self.state      = "STOP"
-        self.vr         = VisualRays(
+    def __init__(self, level=3, fixed_speed=None):
+        self.level        = level
+        self.fixed_speed  = fixed_speed   # None = adaptatif, float = vitesse fixe
+        self.prev_err     = 0.0
+        self.d_filtered   = 0.0
+        self.state        = "STOP"
+        self.vr           = VisualRays(
             img_width=CAM_W, img_height=CAM_H,
-            row_band=(ROI_FAR, ROI_BOTTOM),
-            morph_k=5,
+            row_band=(ROI_FAR, ROI_BOTTOM), morph_k=5,
         )
 
     def _pd(self, err):
-        """PD avec dérivée filtrée → steering [-1, 1]."""
         d_raw = err - self.prev_err
         self.d_filtered = ALPHA_D * self.d_filtered + (1.0 - ALPHA_D) * d_raw
         self.prev_err = err
-
         raw = KP * err + KD * self.d_filtered
         raw = max(-STEERING_MAX, min(STEERING_MAX, raw))
         if abs(raw) < STEERING_DEADZONE:
@@ -193,118 +248,56 @@ class PDController:
         return raw
 
     def _combined_err(self, err_near, err_mid, err_far, rays):
-        """
-        Combine les 3 bandes avec poids dynamiques.
-        Plus la voie devant est libre (rays centraux élevés), plus on regarde loin.
-        """
-        forward_clearance = float(np.mean(rays[8:12]))
-
-        # w_far : 0.2 (virage serré) → 0.6 (ligne droite)
-        w_far  = 0.2 + 0.4 * forward_clearance
+        fwd = float(np.mean(rays[8:12]))
+        w_far  = 0.2 + 0.4 * fwd
         w_mid  = 0.30
         w_near = max(0.0, 1.0 - w_far - w_mid)
-
-        pairs = [
-            (err_near, w_near),
-            (err_mid,  w_mid),
-            (err_far,  w_far),
-        ]
+        pairs = [(err_near, w_near), (err_mid, w_mid), (err_far, w_far)]
         valid = [(e, w) for e, w in pairs if e is not None]
         if not valid:
             return None
-
         total_w = sum(w for _, w in valid)
         return sum(e * w for e, w in valid) / total_w
 
-    def _update_state(self, rays, n_blobs):
-        """Machine à états vitesse (Niveau 4)."""
-        curvature = float(np.std(rays))
-        if n_blobs == 0:
-            self.state = "STOP"
-        elif n_blobs == 1 and self.state not in ("RECOVER",):
-            self.state = "RECOVER"
-        elif curvature > CURVE_THRESH_HIGH:
-            self.state = "TURN"
-        elif curvature < CURVE_THRESH_LOW and self.state == "TURN":
-            self.state = "STRAIGHT"
-        elif self.state not in ("TURN", "STRAIGHT"):
-            self.state = "STRAIGHT"
-
-    def _speed(self, forward_clearance=None):
-        """Vitesse selon état + visibilité devant."""
-        if self.state == "STOP":
-            return V_STOP
-        if self.state == "RECOVER":
-            return V_SLOW
-        if self.state == "TURN":
-            return V_TURN
-        # STRAIGHT : speed proportionnelle à la visibilité (0.6→1.0 de V_MAX)
-        if forward_clearance is not None:
-            factor = 0.6 + 0.4 * float(np.clip(forward_clearance, 0.0, 1.0))
-            return V_MAX * factor
-        return V_MAX
-
     def compute(self, mask, bgr):
-        """
-        Entrée : masque binaire + frame BGR
-        Sortie : (steering [-1,1], throttle [0,1], info_dict)
-        """
         rays    = self.vr(bgr)
         blobs   = get_blobs(mask)
         n_blobs = len(blobs)
-
         forward_clearance = float(np.mean(rays[8:12]))
         err = None
 
-        # ── Niveau 3 : séparation L/R ────────────────────────────────────────
         if self.level >= 3:
             err, _ = err_from_two_lines(blobs)
-
-        # ── Niveau 2 : lookahead 3 bandes dynamique ──────────────────────────
         if err is None and self.level >= 2:
             err_near, err_mid, err_far = err_from_bands(mask)
             err = self._combined_err(err_near, err_mid, err_far, rays)
-
-        # ── Niveau 1 : centroïde global ───────────────────────────────────────
-        if err is None and self.level >= 1:
+        if err is None:
             err = err_from_mask(mask)
 
-        # ── Vitesse (Niveau 4 ou adaptatif simple) ───────────────────────────
-        if self.level >= 4:
-            self._update_state(rays, n_blobs)
-            throttle = self._speed(forward_clearance)
+        # Vitesse — fixe si --fixed-speed, sinon adaptatif
+        if self.fixed_speed is not None:
+            throttle = self.fixed_speed if n_blobs > 0 else V_STOP
+            self.state = "FIXED" if n_blobs > 0 else "STOP"
         else:
             if n_blobs == 0:
-                self.state = "STOP"
-                throttle = V_STOP
+                throttle = V_STOP; self.state = "STOP"
             elif n_blobs == 1:
-                self.state = "RECOVER"
-                throttle = V_SLOW
+                throttle = V_SLOW; self.state = "RECOVER"
             else:
-                # forward_clearance = mean(rays[8:12]) : 1.0 = droit devant libre
-                # plus fiable que std(rays) qui est toujours élevé (lignes sur les bords)
                 throttle = V_TURN + (V_MAX - V_TURN) * forward_clearance
                 self.state = "TURN" if forward_clearance < 0.5 else "STRAIGHT"
 
-        # ── Steering ──────────────────────────────────────────────────────────
+        # Steering avec correction offset caméra
         if err is None:
-            steering = 0.0
-            throttle = V_STOP
-            self.state = "STOP"
+            steering = 0.0; throttle = V_STOP; self.state = "STOP"
         else:
             steering = self._pd(float(err) - CAMERA_OFFSET_PX)
 
         info = {
-            "err":               err,
-            "steering":          steering,
-            "throttle":          throttle,
-            "state":             self.state,
-            "n_blobs":           n_blobs,
-            "curvature":         float(np.std(rays)),
+            "err": err, "steering": steering, "throttle": throttle,
+            "state": self.state, "n_blobs": n_blobs,
             "forward_clearance": forward_clearance,
-            "d_filtered":        self.d_filtered,
-            "blobs_cx":          [b["cx"] for b in blobs[:4]],
-            "blobs_area":        [b["area"] for b in blobs[:4]],
+            "blobs_cx": [b["cx"] for b in blobs[:4]],
         }
         return steering, throttle, info
 
@@ -315,32 +308,38 @@ class PDController:
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--port",    default="/dev/ttyACM0")
-    p.add_argument("--baud",    type=int, default=115200)
-    p.add_argument("--level",   type=int, default=2, choices=[1, 2, 3, 4])
-    p.add_argument("--dry-run", action="store_true",
-                   help="Vision seule — VESC non commandé")
-    p.add_argument("--show",    action="store_true",
-                   help="Afficher overlay (necessite display)")
+    p.add_argument("--port",         default="/dev/ttyACM0")
+    p.add_argument("--baud",         type=int, default=115200)
+    p.add_argument("--level",        type=int, default=3, choices=[1, 2, 3, 4])
+    p.add_argument("--dry-run",      action="store_true")
+    p.add_argument("--fixed-speed",  type=float, default=None,
+                   help="Vitesse constante [0-1] — bypass machine a etats (calibration)")
+    p.add_argument("--stream-port",  type=int, default=5601,
+                   help="Port stream MJPEG (0 = desactive)")
     return p.parse_args()
 
 
 def run(args):
-    ctrl = PDController(level=args.level)
+    ctrl = PDController(level=args.level, fixed_speed=args.fixed_speed)
+
+    if args.stream_port > 0:
+        start_stream_server(args.stream_port)
 
     vesc = None
     if not args.dry_run:
         if VescInterface is None:
-            print("[ctrl] ERREUR : vesc_interface non disponible")
-            sys.exit(1)
+            print("[ctrl] ERREUR : vesc_interface non disponible"); sys.exit(1)
         vesc = VescInterface(port=args.port, baudrate=args.baud,
                              current_max=CURRENT_MAX,
-                             throttle_mode="duty",
-                             max_duty=0.50,
+                             throttle_mode="duty", max_duty=0.50,
                              invert_motor=False)
         print("[ctrl] VESC connecte sur {}".format(args.port))
     else:
         print("[ctrl] DRY-RUN — VESC non commande")
+
+    speed_str = "fixed={:.2f}".format(args.fixed_speed) if args.fixed_speed else "adaptatif"
+    print("[ctrl] Niveau {} | {} | KP={} | offset={}px".format(
+        args.level, speed_str, KP, CAMERA_OFFSET_PX))
 
     attempt = 0
     while True:
@@ -358,12 +357,8 @@ def run(args):
 
             with dai.Device(pipeline, True) as device:
                 q = device.getOutputQueue("preview", maxSize=1, blocking=False)
-                print("[ctrl] Niveau {} | {}x{} @ {}fps | alpha_d={} | TRACK_W={}px".format(
-                    args.level, CAM_W, CAM_H, CAM_FPS, ALPHA_D, TRACK_WIDTH_EST_PX))
                 attempt = 0
-
-                t0 = time.time()
-                frame_n = 0
+                t0 = time.time(); frame_n = 0
 
                 while True:
                     pkt = q.get()
@@ -373,68 +368,45 @@ def run(args):
                         bgr, hsv_low=HSV_LOW, hsv_high=HSV_HIGH,
                         morph_k=5, blur_k=3, use_clahe=True, min_area=MIN_BLOB_AREA,
                     )
-                    roi_top_px = int(CAM_H * ROI_FAR)
-                    mask[:roi_top_px, :] = 0
+                    mask[:int(CAM_H * ROI_FAR), :] = 0
 
                     steering, throttle, info = ctrl.compute(mask, bgr)
 
                     if vesc is not None:
                         vesc.drive(steering, throttle)
 
+                    if args.stream_port > 0:
+                        push_frame(bgr, mask, info)
+
                     frame_n += 1
-                    if frame_n % (CAM_FPS * 2) == 0:
+                    if frame_n % (CAM_FPS * 3) == 0:
                         fps = frame_n / (time.time() - t0)
-                        # Calcul track width si 2 blobs distincts
-                        cx_list = info["blobs_cx"]
                         mid = CAM_W // 2
+                        cx_list = info["blobs_cx"]
                         lefts  = [x for x in cx_list if x < mid]
                         rights = [x for x in cx_list if x >= mid]
-                        tw_str = "?"
-                        if lefts and rights:
-                            tw_str = str(min(rights) - max(lefts))
+                        tw = str(min(rights) - max(lefts)) if lefts and rights else "?"
                         print("[ctrl] {:.0f}fps | err={} | steer={:.3f} | "
-                              "thr={:.2f} | state={} | blobs={} | fwd={:.2f} | "
-                              "cx={} | track_w={}px".format(
+                              "thr={:.2f} | {} | blobs={} | cx={} | tw={}px".format(
                                   fps,
-                                  info["err"] if info["err"] is not None else "N/A",
+                                  int(info["err"]) if info["err"] is not None else "N/A",
                                   info["steering"], info["throttle"],
                                   info["state"], info["n_blobs"],
-                                  info["forward_clearance"],
-                                  cx_list, tw_str))
-
-                    if args.show:
-                        vis = bgr.copy()
-                        green = np.zeros_like(vis)
-                        green[:, :, 1] = mask
-                        vis = cv2.addWeighted(vis, 1.0, green, 0.6, 0)
-                        # Lignes de bandes
-                        for frac, color in [(ROI_NEAR, (255,200,0)), (ROI_MID, (0,200,255)), (ROI_FAR, (0,100,255))]:
-                            y = int(CAM_H * frac)
-                            cv2.line(vis, (0, y), (CAM_W, y), color, 1)
-                        cv2.putText(vis,
-                            "L{} s={:.2f} t={:.2f} {} fwd={:.2f}".format(
-                                args.level, steering, throttle,
-                                info["state"], info["forward_clearance"]),
-                            (4, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
-                        cv2.imshow("Controller", vis)
-                        if cv2.waitKey(1) & 0xFF in (ord('q'), 27):
-                            raise KeyboardInterrupt
+                                  cx_list, tw))
 
         except KeyboardInterrupt:
-            print("[ctrl] Arret.")
-            break
+            print("[ctrl] Arret."); break
         except Exception as e:
             if vesc:
-                vesc.stop()
+                try: vesc.stop()
+                except: pass
             delay = min(3 * attempt, 15)
-            print("[ctrl] Erreur OAK-D ({}) — reconnexion dans {}s".format(
-                type(e).__name__, delay))
+            print("[ctrl] Erreur ({}) — reconnexion dans {}s".format(type(e).__name__, delay))
             time.sleep(delay)
 
     if vesc:
-        vesc.stop()
-        vesc.close()
-    cv2.destroyAllWindows()
+        try: vesc.stop(); vesc.close()
+        except: pass
 
 
 if __name__ == "__main__":

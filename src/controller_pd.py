@@ -45,8 +45,8 @@ except ImportError:
 CAM_W, CAM_H = 512, 256
 CAM_FPS      = 12
 
-HSV_LOW      = np.array([0,   0, 185], dtype=np.uint8)   # Blanc pur : V>=185
-HSV_HIGH     = np.array([180, 25, 255], dtype=np.uint8)  # S<=25 : blanc pur, sol gris a S>25
+HSV_LOW      = np.array([0,   0, 200], dtype=np.uint8)   # Blanc pur : V>=200 (sol gris ~170-190)
+HSV_HIGH     = np.array([180, 20, 255], dtype=np.uint8)  # S<=20 : blanc peint, sol gris S>20
 ROI_FAR      = 0.65   # ignorer 65% du haut
 ROI_MID      = 0.80   # espacé : 0.75→0.80 pour mieux séparer les 3 bandes
 ROI_NEAR     = 0.92   # espacé : 0.87→0.92
@@ -555,7 +555,7 @@ def run(args):
 
                     mask = white_line_mask(
                         bgr, hsv_low=HSV_LOW, hsv_high=HSV_HIGH,
-                        morph_k=5, blur_k=3, use_clahe=True, min_area=MIN_BLOB_AREA,
+                        morph_k=5, blur_k=3, use_clahe=False, min_area=MIN_BLOB_AREA,
                     )
                     # Masque large (ROI 45%) pour détection anticipée des coins
                     mask_wide = mask.copy()

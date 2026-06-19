@@ -48,10 +48,12 @@ CAM_FPS      = 12
 HSV_LOW      = np.array([0,   0, 155], dtype=np.uint8)   # 195→155 : éclairage salle
 HSV_HIGH     = np.array([180, 55, 255], dtype=np.uint8)  # S 40→55 pour capturer lignes ternes
 ROI_FAR      = 0.65   # ignorer 65% du haut
-ROI_MID      = 0.75
-ROI_NEAR     = 0.87
+ROI_MID      = 0.80   # espacé : 0.75→0.80 pour mieux séparer les 3 bandes
+ROI_NEAR     = 0.92   # espacé : 0.87→0.92
 ROI_BOTTOM   = 1.00
-MIN_BLOB_AREA = 700          # 300→700 : éliminer faux blobs (fenêtre, mur)
+MIN_BLOB_AREA  = 700   # 300→700 : éliminer faux blobs (fenêtre, mur)
+MIN_CORNER_AREA = 1200 # blob compact (coin L) : area > 1200, aspect < 1.8
+CORNER_DURATION = 15   # frames de maintien virage (~1.25s @ 12fps)
 
 TRACK_WIDTH_EST_PX = 385
 
@@ -180,11 +182,13 @@ def push_frame(bgr, mask, info):
         cv2.line(vis, (0, int(CAM_H * frac)), (CAM_W, int(CAM_H * frac)), color, 1)
     # texte
     err_str = "{:+d}".format(int(info["err"])) if info["err"] is not None else "N/A"
+    corner_flag = " [L]" if info.get("corner") else ""
     cv2.putText(vis,
-        "err={} steer={:.2f} thr={:.2f} {} blobs={}".format(
+        "err={} steer={:.2f} thr={:.2f} {}{} b={} ray={:+.2f}".format(
             err_str, info["steering"], info["throttle"],
-            info["state"], info["n_blobs"]),
-        (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 255), 1)
+            info["state"], corner_flag, info["n_blobs"],
+            info.get("ray_asym", 0.0)),
+        (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
     # miniature masque
     mini_h = CAM_H // 2
     mini = cv2.resize(cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR), (CAM_W, mini_h))
@@ -238,6 +242,28 @@ def err_from_bands(mask):
     return err_from_mask(mask_near), err_from_mask(mask_mid), err_from_mask(mask_far)
 
 
+def detect_corner_blob(mask):
+    """Détecte le marqueur de coin L : blob compact (area >= MIN_CORNER_AREA, aspect < 1.8).
+    Appliqué sur mask_wide (ROI 45%) pour voir le L bien avant d'y arriver.
+    Retourne dict {cx, cy, area} ou None.
+    """
+    n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    cy_min = int(CAM_H * 0.55)
+    best = None
+    for i in range(1, n):
+        area = stats[i, cv2.CC_STAT_AREA]
+        w    = stats[i, cv2.CC_STAT_WIDTH]
+        h    = max(stats[i, cv2.CC_STAT_HEIGHT], 1)
+        asp  = w / float(h)
+        cy   = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT] // 2
+        cx   = stats[i, cv2.CC_STAT_LEFT] + w // 2
+        # Blob compact (L) : grande aire, pas allongé
+        if area >= MIN_CORNER_AREA and asp < 1.8 and cy >= cy_min:
+            if best is None or area > best["area"]:
+                best = {"cx": cx, "cy": cy, "area": area, "aspect": round(asp, 1)}
+    return best
+
+
 def err_from_two_lines(blobs):
     mid_x = CAM_W // 2
     # Zone "clairement gauche" : cx < 180 | "clairement droite" : cx > 332
@@ -273,6 +299,10 @@ class PDController:
         self.d_filtered   = 0.0
         self.state        = "STOP"
         self.err_history  = []   # dernières 6 erreurs pour tendance virage
+        # ── Machine à états coin L ───────────────────────────────────────────
+        self.corner_mode  = False   # True = on est en train de prendre un virage
+        self.corner_dir   = 0.0    # +1.0 droite, -1.0 gauche
+        self.corner_count = 0      # frames restantes en mode CORNER
         self.vr           = VisualRays(
             img_width=CAM_W, img_height=CAM_H,
             row_band=(ROI_FAR, ROI_BOTTOM), morph_k=5,
@@ -300,47 +330,82 @@ class PDController:
         total_w = sum(w for _, w in valid)
         return sum(e * w for e, w in valid) / total_w
 
-    def compute(self, mask, bgr):
+    def compute(self, mask, bgr, mask_wide=None):
         rays    = self.vr(bgr)
         blobs   = get_blobs(mask)
         n_blobs = len(blobs)
         forward_clearance = float(np.mean(rays[8:12]))
         err = None
+        corner_blob = None
 
-        if self.level >= 3:
-            err, _ = err_from_two_lines(blobs)
+        # ── Asymétrie raycasts : signal de virage très rapide ─────────────
+        left_open  = float(np.mean(rays[:7]))
+        right_open = float(np.mean(rays[13:]))
+        ray_asym   = right_open - left_open  # >0 espace à droite → virage droite
 
-        # blobs=1 : le TRACK_WIDTH estimate neutralise souvent l'erreur au virage.
-        # Le centroïde global (mask entier, incl. coin L) est plus fiable :
-        # le marquage de coin tire le centroïde dans la direction du virage.
-        if n_blobs == 1:
-            err_global = err_from_mask(mask)
-            if err_global is not None:
-                err = err_global  # priorité au centroïde global
+        # ── Détection coin L dans mask_wide (ROI large 45%) ───────────────
+        m_wide = mask_wide if mask_wide is not None else mask
+        corner_blob = detect_corner_blob(m_wide)
 
-        if err is None and self.level >= 2:
-            err_near, err_mid, err_far = err_from_bands(mask)
-            err = self._combined_err(err_near, err_mid, err_far, rays)
-        if err is None:
-            err = err_from_mask(mask)
+        # ── Machine à états CORNER (priorité absolue sur PD normal) ───────
+        if not self.corner_mode:
+            if corner_blob is not None:
+                # Blob L détecté → braquer vers le côté où il est (c'est la ligne de virage)
+                self.corner_dir   = 1.0 if corner_blob["cx"] > CAM_W // 2 else -1.0
+                self.corner_mode  = True
+                self.corner_count = CORNER_DURATION
+                print("[ctrl] CORNER-L cx={} asp={} dir={:+.0f}".format(
+                    corner_blob["cx"], corner_blob["aspect"], self.corner_dir))
+            elif abs(ray_asym) > 0.40 and n_blobs <= 1:
+                # Raycasts très asymétriques + peu de lignes → virage probable
+                self.corner_dir   = 1.0 if ray_asym > 0 else -1.0
+                self.corner_mode  = True
+                self.corner_count = CORNER_DURATION // 2
+                print("[ctrl] CORNER-ray asym={:.2f} dir={:+.0f}".format(ray_asym, self.corner_dir))
 
-        # Mémoire de tendance : si vision perdue en virage, on maintient la direction
-        if err is not None:
-            self.err_history.append(float(err))
-            if len(self.err_history) > 6:
-                self.err_history.pop(0)
-        trend = sum(self.err_history) / len(self.err_history) if self.err_history else 0.0
-        # Si err proche de 0 mais tendance forte → utiliser la tendance
-        if err is None or abs(err) < 25:
-            err = trend * 0.6
-
-        # Vitesse — fixe si --fixed-speed, sinon adaptatif
-        # En fixed-speed : ne jamais s'arrêter complètement (garde le cap en virage)
-        if self.fixed_speed is not None:
-            throttle = self.fixed_speed   # avance toujours, même sans blob
-            self.state = "FIXED" if n_blobs > 0 else "BLIND"
+        if self.corner_mode:
+            self.corner_count -= 1
+            if self.corner_count <= 0:
+                self.corner_mode = False
+                print("[ctrl] CORNER termine")
+            # Injecter erreur forte dans la direction du virage
+            err = self.corner_dir * 200.0
+            self.state = "CORNER"
         else:
-            if n_blobs == 0:
+            # ── Logique normale de suivi de ligne ─────────────────────────
+            if self.level >= 3:
+                err, _ = err_from_two_lines(blobs)
+
+            if n_blobs <= 1:
+                err_global = err_from_mask(m_wide)
+                if err_global is not None:
+                    err = err_global
+
+            if err is None and self.level >= 2:
+                err_near, err_mid, err_far = err_from_bands(mask)
+                err = self._combined_err(err_near, err_mid, err_far, rays)
+            if err is None:
+                err = err_from_mask(mask)
+
+            # Mémoire de tendance : si vision perdue en virage, on maintient la direction
+            if err is not None:
+                self.err_history.append(float(err))
+                if len(self.err_history) > 6:
+                    self.err_history.pop(0)
+            trend = sum(self.err_history) / len(self.err_history) if self.err_history else 0.0
+            if err is None or abs(err) < 25:
+                err = trend * 0.6
+
+        # ── Vitesse ────────────────────────────────────────────────────────
+        if self.fixed_speed is not None:
+            # En mode CORNER : ralentir légèrement
+            throttle = self.fixed_speed * 0.75 if self.corner_mode else self.fixed_speed
+            if self.state != "CORNER":
+                self.state = "FIXED" if n_blobs > 0 else "BLIND"
+        else:
+            if self.corner_mode:
+                throttle = V_TURN
+            elif n_blobs == 0:
                 throttle = V_STOP; self.state = "STOP"
             elif n_blobs == 1:
                 throttle = V_SLOW; self.state = "RECOVER"
@@ -348,10 +413,9 @@ class PDController:
                 throttle = V_TURN + (V_MAX - V_TURN) * forward_clearance
                 self.state = "TURN" if forward_clearance < 0.5 else "STRAIGHT"
 
-        # Steering avec correction offset caméra
+        # ── Steering ───────────────────────────────────────────────────────
         if err is None:
-            # Pas de ligne visible : garde le dernier steering (inertie)
-            steering = self.prev_err * KP  # steering résiduel depuis dernière erreur
+            steering = self.prev_err * KP
         else:
             steering = self._pd(float(err) - CAMERA_OFFSET_PX)
 
@@ -360,6 +424,8 @@ class PDController:
             "state": self.state, "n_blobs": n_blobs,
             "forward_clearance": forward_clearance,
             "blobs_cx": [b["cx"] for b in blobs[:4]],
+            "corner": corner_blob is not None,
+            "ray_asym": round(ray_asym, 2),
         }
         return steering, throttle, info
 
@@ -465,9 +531,13 @@ def run(args):
                         bgr, hsv_low=HSV_LOW, hsv_high=HSV_HIGH,
                         morph_k=5, blur_k=3, use_clahe=True, min_area=MIN_BLOB_AREA,
                     )
+                    # Masque large (ROI 45%) pour détection anticipée des coins
+                    mask_wide = mask.copy()
+                    mask_wide[:int(CAM_H * 0.45), :] = 0
+                    # Masque normal (ROI 65%) pour lignes sans bruit fond
                     mask[:int(CAM_H * ROI_FAR), :] = 0
 
-                    steering, throttle, info = ctrl.compute(mask, bgr)
+                    steering, throttle, info = ctrl.compute(mask, bgr, mask_wide)
 
                     # ── MODE REPLAY : feedforward + correction PD ──────────────
                     if replay_data is not None:

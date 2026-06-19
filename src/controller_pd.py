@@ -79,13 +79,13 @@ except ImportError:
 CAM_W, CAM_H = 512, 256
 CAM_FPS      = 12
 
-HSV_LOW      = np.array([0,   0, 120], dtype=np.uint8)   # V>=120 (plus permissif pour éclairage intérieur)
-HSV_HIGH     = np.array([180, 60, 255], dtype=np.uint8)  # S<=60
+HSV_LOW      = np.array([0,   0, 150], dtype=np.uint8)   # V>=150 (équilibre extérieur/intérieur)
+HSV_HIGH     = np.array([180, 55, 255], dtype=np.uint8)  # S<=55
 ROI_FAR      = 0.65
 ROI_MID      = 0.80
 ROI_NEAR     = 0.92
 ROI_BOTTOM   = 1.00
-MIN_BLOB_AREA  = 300
+MIN_BLOB_AREA  = 600
 MIN_CORNER_AREA = 1500
 CORNER_DURATION = 15   # frames de maintien virage (~1.25s @ 12fps)
 

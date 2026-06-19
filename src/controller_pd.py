@@ -62,9 +62,9 @@ STEERING_MAX = 0.85
 STEERING_DEADZONE = 0.03
 CAMERA_OFFSET_PX = 0         # biais caméra — calibrer si la voiture dérive constamment
 
-V_MAX        = 0.17          # → ~8.5% duty, très lent
-V_TURN       = 0.17
-V_SLOW       = 0.17
+V_MAX        = 0.14          # → ~7% duty, minimum viable
+V_TURN       = 0.14
+V_SLOW       = 0.14
 V_STOP       = 0.00
 
 CURVE_THRESH_HIGH = 0.30
@@ -281,9 +281,10 @@ class PDController:
             err = err_from_mask(mask)
 
         # Vitesse — fixe si --fixed-speed, sinon adaptatif
+        # En fixed-speed : ne jamais s'arrêter complètement (garde le cap en virage)
         if self.fixed_speed is not None:
-            throttle = self.fixed_speed if n_blobs > 0 else V_STOP
-            self.state = "FIXED" if n_blobs > 0 else "STOP"
+            throttle = self.fixed_speed   # avance toujours, même sans blob
+            self.state = "FIXED" if n_blobs > 0 else "BLIND"
         else:
             if n_blobs == 0:
                 throttle = V_STOP; self.state = "STOP"
@@ -295,7 +296,8 @@ class PDController:
 
         # Steering avec correction offset caméra
         if err is None:
-            steering = 0.0; throttle = V_STOP; self.state = "STOP"
+            # Pas de ligne visible : garde le dernier steering (inertie)
+            steering = self.prev_err * KP  # steering résiduel depuis dernière erreur
         else:
             steering = self._pd(float(err) - CAMERA_OFFSET_PX)
 

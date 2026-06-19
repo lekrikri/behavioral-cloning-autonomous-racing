@@ -79,14 +79,14 @@ except ImportError:
 CAM_W, CAM_H = 512, 256
 CAM_FPS      = 12
 
-HSV_LOW      = np.array([0,   0, 175], dtype=np.uint8)   # V>=175 : lignes peintes (zones d'ombre)
-HSV_HIGH     = np.array([180, 22, 255], dtype=np.uint8)  # S<=22
+HSV_LOW      = np.array([0,   0, 155], dtype=np.uint8)   # V>=155 (valeur orig, fonctionne en intérieur)
+HSV_HIGH     = np.array([180, 45, 255], dtype=np.uint8)  # S<=45
 ROI_FAR      = 0.65
 ROI_MID      = 0.80
 ROI_NEAR     = 0.92
 ROI_BOTTOM   = 1.00
-MIN_BLOB_AREA  = 300   # 800→300 : accepter les fragments de lignes
-MIN_CORNER_AREA = 1500 # coin L compact
+MIN_BLOB_AREA  = 300
+MIN_CORNER_AREA = 1500
 CORNER_DURATION = 15   # frames de maintien virage (~1.25s @ 12fps)
 
 TRACK_WIDTH_EST_PX = 385
@@ -204,13 +204,23 @@ def push_frame(bgr, mask, info):
     green = np.zeros_like(vis)
     green[:, :, 1] = mask
     vis = cv2.addWeighted(vis, 1.0, green, 0.5, 0)
-    # centroïde rouge
-    M = cv2.moments(mask)
-    if M["m00"] > 0:
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
-        cv2.circle(vis, (cx, cy), 6, (0, 0, 255), -1)
-        cv2.line(vis, (CAM_W // 2, CAM_H - 1), (cx, cy), (255, 0, 0), 1)
+    # Points scanlines (magenta) + ligne reliant les centres
+    scan_pts = info.get("scan_pts", [])
+    if scan_pts:
+        prev = None
+        for (cx_s, ry) in scan_pts:
+            cv2.circle(vis, (cx_s, ry), 7, (255, 0, 200), -1)
+            if prev:
+                cv2.line(vis, prev, (cx_s, ry), (200, 100, 255), 1)
+            prev = (cx_s, ry)
+    else:
+        # Fallback : centroïde rouge si pas de scanlines
+        M = cv2.moments(mask)
+        if M["m00"] > 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+            cv2.circle(vis, (cx, cy), 6, (0, 0, 255), -1)
+            cv2.line(vis, (CAM_W // 2, CAM_H - 1), (cx, cy), (255, 0, 0), 1)
     # lignes bandes
     for frac, color in [(ROI_NEAR, (255, 200, 0)), (ROI_MID, (0, 200, 255)), (ROI_FAR, (0, 100, 255))]:
         cv2.line(vis, (0, int(CAM_H * frac)), (CAM_W, int(CAM_H * frac)), color, 1)
@@ -266,6 +276,34 @@ def err_from_mask(mask):
     if M["m00"] < 1:
         return None
     return int(M["m10"] / M["m00"]) - CAM_W // 2
+
+
+def err_from_scanlines(mask):
+    """3 scanlines à FAR/MID/NEAR : cherche pixel blanc le + à gauche et + à droite
+    sur chaque ligne horizontale → centre entre elles → médiane des 3 centres.
+    Robuste aux faux positifs : sol au milieu ignoré (on prend les extrêmes).
+    Retourne (err, scan_points) où scan_points = [(cx, row), ...] pour affichage.
+    """
+    rows = [int(CAM_H * ROI_FAR), int(CAM_H * ROI_MID), int(CAM_H * ROI_NEAR)]
+    centers = []
+    scan_points = []
+    for r in rows:
+        r = min(r, CAM_H - 1)
+        line = mask[r, :]
+        whites = np.where(line > 0)[0]
+        if len(whites) < 5:
+            continue
+        left  = int(whites[0])
+        right = int(whites[-1])
+        if right - left < 20:   # trop étroit = bruit
+            continue
+        center = (left + right) // 2
+        centers.append(center)
+        scan_points.append((center, r))
+    if not centers:
+        return None, []
+    median_c = sorted(centers)[len(centers) // 2]
+    return median_c - CAM_W // 2, scan_points
 
 
 def err_from_bands(mask):
@@ -372,6 +410,7 @@ class PDController:
         forward_clearance = float(np.mean(rays[8:12]))
         err = None
         corner_blob = None
+        scan_pts = []
 
         # ── Asymétrie raycasts : signal de virage très rapide ─────────────
         left_open  = float(np.mean(rays[:7]))
@@ -407,20 +446,16 @@ class PDController:
             err = self.corner_dir * 200.0
             self.state = "CORNER"
         else:
-            # ── Logique normale de suivi de ligne ─────────────────────────
-            if self.level >= 3:
+            # ── Scanlines : méthode principale (3 points comme dessiné) ──
+            err_scan, scan_pts = err_from_scanlines(mask)
+            if err_scan is not None:
+                err = err_scan
+
+            # ── Fallback blobs si scanlines échouent ──────────────────────
+            if err is None and self.level >= 3:
                 err, _ = err_from_two_lines(blobs)
-
-            if n_blobs == 0:
-                # Aucun blob → centroïde global (mask_wide)
-                err_global = err_from_mask(m_wide)
-                if err_global is not None:
-                    err = err_global
-            # n_blobs==1 : err_from_two_lines a donné l'estimation TRACK_WIDTH → bonne direction
-
-            if err is None and self.level >= 2:
-                err_near, err_mid, err_far = err_from_bands(mask)
-                err = self._combined_err(err_near, err_mid, err_far, rays)
+            if err is None and n_blobs == 0:
+                err = err_from_mask(m_wide)
             if err is None:
                 err = err_from_mask(mask)
 
@@ -463,6 +498,7 @@ class PDController:
             "blobs_cx": [b["cx"] for b in blobs[:4]],
             "corner": corner_blob is not None,
             "ray_asym": round(ray_asym, 2),
+            "scan_pts": scan_pts,
         }
         return steering, throttle, info
 
@@ -590,7 +626,7 @@ def run(args):
 
                     mask = white_line_mask(
                         bgr, hsv_low=HSV_LOW, hsv_high=HSV_HIGH,
-                        morph_k=7, blur_k=3, use_clahe=False, min_area=MIN_BLOB_AREA,
+                        morph_k=5, blur_k=3, use_clahe=True, min_area=MIN_BLOB_AREA,
                     )
                     # Masque large (ROI 45%) pour détection anticipée des coins
                     mask_wide = mask.copy()

@@ -452,7 +452,10 @@ def parse_args():
                    help="Poids du feedforward replay [0-1] (défaut: 0.70)")
     p.add_argument("--cam-crop-top", type=float, default=0.0,
                    help="Crop logiciel du haut de l'image [0.0-0.6] avant traitement "
-                        "(simule inclinaison + zoom). Ex: 0.3 = enlever 30%% du haut.")
+                        "(simule inclinaison + zoom). Ex: 0.35 = enlever 35%% du haut.")
+    p.add_argument("--roi-far", type=float, default=None,
+                   help="Override ROI_FAR [0.0-0.9] — fraction du haut ignoree pour le masque. "
+                        "Defaut: 0.65 sans crop, auto-ajuste si --cam-crop-top.")
     return p.parse_args()
 
 
@@ -471,6 +474,18 @@ def load_replay(path):
 
 
 def run(args):
+    global ROI_FAR, ROI_MID, ROI_NEAR
+    if args.roi_far is not None:
+        ROI_FAR = args.roi_far
+    elif args.cam_crop_top > 0:
+        # Avec crop logiciel, abaisser automatiquement le ROI
+        # Ex: crop=0.35 → ROI_FAR=0.65-0.35=0.30 (voir le haut de la zone zoomée)
+        ROI_FAR = max(0.20, ROI_FAR - args.cam_crop_top)
+    ROI_MID  = min(0.95, ROI_FAR + 0.25)
+    ROI_NEAR = min(0.97, ROI_FAR + 0.48)
+    print("[ctrl] ROI_FAR={:.2f} ROI_MID={:.2f} ROI_NEAR={:.2f}".format(
+        ROI_FAR, ROI_MID, ROI_NEAR))
+
     ctrl = PDController(level=args.level, fixed_speed=args.fixed_speed)
 
     # Mode replay : charge le CSV de piste enregistrée

@@ -37,7 +37,7 @@ def parse_args():
     p.add_argument("--port",   type=int, default=5601)
     p.add_argument("--width",  type=int, default=320)
     p.add_argument("--height", type=int, default=180)
-    p.add_argument("--fps",    type=int, default=12)
+    p.add_argument("--fps",    type=int, default=8)
     p.add_argument("--mode",   choices=["hsv", "canny"], default="hsv",
                    help="hsv=eclairage homogene | canny=bords (eclairage variable)")
     return p.parse_args()
@@ -165,12 +165,17 @@ def run_oak(args):
             break
         except RuntimeError as e:
             msg = str(e)
-            if "X_LINK_ERROR" in msg or "Device crashed" in msg or "Couldn't read" in msg:
+            if any(k in msg for k in ("X_LINK_ERROR", "Device crashed", "Couldn't read",
+                                       "No available devices", "Timeout")):
                 delay = min(5 * attempt, 30)
                 print(f"[masked] OAK-D crash — reconnexion dans {delay}s...")
                 time.sleep(delay)
             else:
                 raise
+        except Exception as e:
+            delay = min(5 * attempt, 30)
+            print(f"[masked] Erreur inattendue ({type(e).__name__}) — reconnexion dans {delay}s...")
+            time.sleep(delay)
 
 
 if __name__ == "__main__":

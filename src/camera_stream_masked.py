@@ -64,11 +64,15 @@ def _make_placeholder(w, h):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--port",   type=int, default=5601)
-    p.add_argument("--width",  type=int, default=320)
-    p.add_argument("--height", type=int, default=180)
-    p.add_argument("--fps",    type=int, default=8)
-    p.add_argument("--mode",   choices=["hsv", "canny"], default="hsv")
+    p.add_argument("--port",      type=int, default=5601)
+    p.add_argument("--width",     type=int, default=512)
+    p.add_argument("--height",    type=int, default=256)
+    p.add_argument("--fps",       type=int, default=8)
+    p.add_argument("--mode",      choices=["hsv", "canny"], default="hsv")
+    p.add_argument("--hsv-v-min", type=int, default=175,
+                   help="Seuil V min HSV (175=permissif, 200=strict)")
+    p.add_argument("--no-clahe",  action="store_true",
+                   help="Desactiver la normalisation CLAHE")
     return p.parse_args()
 
 
@@ -101,8 +105,13 @@ def apply_overlay(bgr, mask, vr):
     cv2.putText(vis, "{}x{} | {}px".format(W, H, whites), (4, 14),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 0), 1)
 
-    mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-    return np.hstack([vis, mask_bgr])
+    # Masque miniature en incrustation bas-droite (économise bande passante vs hstack)
+    mH, mW   = H // 2, W // 2
+    mask_small = cv2.resize(mask, (mW, mH))
+    mask_bgr   = cv2.cvtColor(mask_small, cv2.COLOR_GRAY2BGR)
+    cv2.rectangle(mask_bgr, (0, 0), (mW - 1, mH - 1), (180, 180, 180), 1)
+    vis[H - mH:H, W - mW:W] = mask_bgr
+    return vis
 
 
 # ── Handler MJPEG résilient ───────────────────────────────────────────────────
@@ -172,13 +181,15 @@ class MJPEGHandler(BaseHTTPRequestHandler):
 def run_oak(args):
     global _latest_jpeg, _frame_id, _camera_online
 
-    ROI_TOP = int(args.height * 0.35)
+    ROI_TOP    = int(args.height * 0.35)
+    USE_CLAHE  = not args.no_clahe
     vr = VisualRays(
         img_width=args.width, img_height=args.height,
         mode=args.mode, row_band=(0.35, 1.0),
+        morph_k=5,
     )
-    HSV_LOW  = np.array([0,   0, 180], dtype=np.uint8)
-    HSV_HIGH = np.array([180, 50, 255], dtype=np.uint8)
+    HSV_LOW  = np.array([0,   0, args.hsv_v_min], dtype=np.uint8)
+    HSV_HIGH = np.array([180, 55, 255],            dtype=np.uint8)
 
     attempt = 0
     while True:
@@ -213,8 +224,11 @@ def run_oak(args):
                     pkt = q.get()
                     bgr = pkt.getCvFrame()
 
-                    mask = white_line_mask(bgr, mode=args.mode,
-                                          hsv_low=HSV_LOW, hsv_high=HSV_HIGH)
+                    mask = white_line_mask(
+                        bgr, mode=args.mode,
+                        hsv_low=HSV_LOW, hsv_high=HSV_HIGH,
+                        morph_k=5, blur_k=3, use_clahe=USE_CLAHE,
+                    )
                     mask[:ROI_TOP, :] = 0
 
                     vis = apply_overlay(bgr, mask, vr)

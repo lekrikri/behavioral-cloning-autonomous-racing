@@ -19,27 +19,40 @@ import cv2
 def white_line_mask(
     bgr: np.ndarray,
     mode:       str = "hsv",
-    hsv_low:    tuple = (0,   0, 180),
+    hsv_low:    tuple = (0,   0, 175),
     hsv_high:   tuple = (180, 50, 255),
     canny_low:  int = 50,
     canny_high: int = 150,
-    morph_k:    int = 3,
+    morph_k:    int = 5,
+    blur_k:     int = 3,
+    use_clahe:  bool = False,
 ) -> np.ndarray:
     """Masque binaire des lignes blanches (uint8, 0/255), sans ROI.
 
     Source unique du masquage, partagée par VisualRays (production) et
     live_mask_oak.py (outil de dev) — ne pas dupliquer ailleurs.
+
+    blur_k    : taille kernel Gaussian blur avant HSV (0 = désactivé)
+    use_clahe : normalisation CLAHE du channel V (éclairage variable)
     """
+    if blur_k > 1:
+        bgr = cv2.GaussianBlur(bgr, (blur_k, blur_k), 0)
+
     kernel = np.ones((morph_k, morph_k), np.uint8)
+
     if mode == "canny":
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
         m    = cv2.Canny(gray, canny_low, canny_high)
         m    = cv2.dilate(m, kernel, iterations=2)
     else:
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        m   = cv2.inRange(hsv, np.asarray(hsv_low, np.uint8), np.asarray(hsv_high, np.uint8))
-        m   = cv2.morphologyEx(m, cv2.MORPH_OPEN,  kernel)
-        m   = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
+        if use_clahe:
+            clahe       = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+            hsv[:, :, 2] = clahe.apply(hsv[:, :, 2])
+        m = cv2.inRange(hsv, np.asarray(hsv_low, np.uint8), np.asarray(hsv_high, np.uint8))
+        m = cv2.morphologyEx(m, cv2.MORPH_OPEN,  kernel)
+        m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
+        m = cv2.morphologyEx(m, cv2.MORPH_DILATE, kernel, iterations=1)
     return m
 
 

@@ -45,13 +45,13 @@ except ImportError:
 CAM_W, CAM_H = 512, 256
 CAM_FPS      = 12
 
-HSV_LOW      = np.array([0,   0, 195], dtype=np.uint8)
-HSV_HIGH     = np.array([180, 40, 255], dtype=np.uint8)
-ROI_FAR      = 0.45
-ROI_MID      = 0.55
-ROI_NEAR     = 0.75
+HSV_LOW      = np.array([0,   0, 155], dtype=np.uint8)   # 195→155 : éclairage salle
+HSV_HIGH     = np.array([180, 55, 255], dtype=np.uint8)  # S 40→55 pour capturer lignes ternes
+ROI_FAR      = 0.55   # ignorer 55% du haut (ciel/salle) — caméra trop horizontale
+ROI_MID      = 0.65
+ROI_NEAR     = 0.80
 ROI_BOTTOM   = 1.00
-MIN_BLOB_AREA = 600          # augmenté pour réduire faux positifs sur piste
+MIN_BLOB_AREA = 300          # 600→300 pour ne pas rater les lignes
 
 TRACK_WIDTH_EST_PX = 385
 

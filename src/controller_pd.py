@@ -59,7 +59,7 @@ MIN_BLOB_AREA = 400          # px — filtre petits artefacts
 
 # Largeur de piste estimée en pixels (60-80 cm réels sur 512px de large)
 # Ajuster selon la distance caméra / hauteur de montage
-TRACK_WIDTH_EST_PX = 145
+TRACK_WIDTH_EST_PX = 385   # mesuré en live : cx≈[66,435] → 369-416px selon frame
 
 # ── Contrôleur PD ─────────────────────────────────────────────────────────────
 KP           = 0.004         # gain proportionnel (err px → steering [-1,1])
@@ -280,10 +280,10 @@ class PDController:
                 self.state = "RECOVER"
                 throttle = V_SLOW
             else:
-                curvature = float(np.std(rays))
-                throttle = V_MAX * (1.0 - min(curvature / CURVE_THRESH_HIGH, 0.6))
-                throttle = max(V_TURN, throttle)
-                self.state = "TURN" if curvature > CURVE_THRESH_HIGH else "STRAIGHT"
+                # forward_clearance = mean(rays[8:12]) : 1.0 = droit devant libre
+                # plus fiable que std(rays) qui est toujours élevé (lignes sur les bords)
+                throttle = V_TURN + (V_MAX - V_TURN) * forward_clearance
+                self.state = "TURN" if forward_clearance < 0.5 else "STRAIGHT"
 
         # ── Steering ──────────────────────────────────────────────────────────
         if err is None:

@@ -154,7 +154,7 @@ ROI_FAR      = 0.65
 ROI_MID      = 0.80
 ROI_NEAR     = 0.92
 ROI_BOTTOM   = 1.00
-MIN_BLOB_AREA  = 600
+MIN_BLOB_AREA  = 1200
 MIN_CORNER_AREA = 1500
 CORNER_DURATION = 15   # frames de maintien virage (~1.25s @ 12fps)
 
@@ -312,23 +312,26 @@ def push_frame(bgr, mask, info):
 def get_blobs(mask):
     """Retourne les blobs de lignes de piste (filtre flèches/logos compacts)."""
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cy_min = int(CAM_H * 0.30)
+    cy_min = int(CAM_H * 0.42)   # filtre le tiers supérieur (meubles, plafond)
+    cy_max = int(CAM_H * 0.97)   # exclut la bordure basse (artéfacts bord)
     blobs = []
     for i in range(1, n):
         area   = stats[i, cv2.CC_STAT_AREA]
         w      = stats[i, cv2.CC_STAT_WIDTH]
         h      = max(stats[i, cv2.CC_STAT_HEIGHT], 1)
         aspect = w / float(h)
-        # Les vraies lignes sont allongées (aspect >= 0.4 et pas trop carré)
-        # Les flèches/logos au sol sont compacts : area grande ET quasi carré (0.5 < aspect < 2.0)
-        # → on rejette les gros blobs compacts (surface > 3000px ET 0.5 < aspect < 2.0)
-        if area >= MIN_BLOB_AREA and aspect >= 0.4:
-            if area > 3000 and 0.5 < aspect < 2.0:
-                continue  # blob compact et grand = flèche/logo au sol, ignoré
-            cx = stats[i, cv2.CC_STAT_LEFT] + w // 2
-            cy = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT] // 2
-            if cy >= cy_min:
-                blobs.append({"cx": cx, "cy": cy, "area": area, "aspect": round(aspect, 1)})
+        cx = stats[i, cv2.CC_STAT_LEFT] + w // 2
+        cy = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT] // 2
+        if cy < cy_min or cy > cy_max:
+            continue  # hors zone piste
+        if area < MIN_BLOB_AREA:
+            continue
+        if aspect < 0.4:
+            continue  # trop fin verticalement (pieds de meubles)
+        # Blobs compacts de grande taille = flèche/logo au sol
+        if area > 3000 and 0.5 < aspect < 2.0:
+            continue
+        blobs.append({"cx": cx, "cy": cy, "area": area, "aspect": round(aspect, 1)})
     blobs.sort(key=lambda b: b["area"], reverse=True)
     # Garder uniquement le blob le plus à gauche et le plus à droite
     # (les vraies lignes de piste) — ignorer le bruit central

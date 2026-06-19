@@ -256,11 +256,8 @@ def push_frame(bgr, mask, info):
             info["state"], corner_flag, info["n_blobs"],
             info.get("ray_asym", 0.0)),
         (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
-    # miniature masque
-    mini_h = CAM_H // 2
-    mini = cv2.resize(cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR), (CAM_W, mini_h))
-    pad  = np.zeros((CAM_H - mini_h, CAM_W, 3), dtype=np.uint8)
-    panel = np.vstack([mini, pad])
+    # masque pleine taille (même dimensions que la vue caméra)
+    panel = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
     display = np.hstack([vis, panel])
     _, jpg = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 65])
     with _stream_lock:
@@ -291,6 +288,13 @@ def get_blobs(mask):
             if cy >= cy_min:
                 blobs.append({"cx": cx, "cy": cy, "area": area, "aspect": round(aspect, 1)})
     blobs.sort(key=lambda b: b["area"], reverse=True)
+    # Garder uniquement le blob le plus à gauche et le plus à droite
+    # (les vraies lignes de piste) — ignorer le bruit central
+    if len(blobs) >= 2:
+        left  = min(blobs, key=lambda b: b["cx"])
+        right = max(blobs, key=lambda b: b["cx"])
+        if left is not right:
+            return [left, right]
     return blobs
 
 

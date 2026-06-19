@@ -45,8 +45,8 @@ except ImportError:
 CAM_W, CAM_H = 512, 256
 CAM_FPS      = 12
 
-HSV_LOW      = np.array([0,   0, 170], dtype=np.uint8)   # 155→170 : éviter faux positifs sol gris
-HSV_HIGH     = np.array([180, 45, 255], dtype=np.uint8)  # S 55→45 : sol gris a S > 45
+HSV_LOW      = np.array([0,   0, 185], dtype=np.uint8)   # Blanc pur : V>=185
+HSV_HIGH     = np.array([180, 25, 255], dtype=np.uint8)  # S<=25 : blanc pur, sol gris a S>25
 ROI_FAR      = 0.65   # ignorer 65% du haut
 ROI_MID      = 0.80   # espacé : 0.75→0.80 pour mieux séparer les 3 bandes
 ROI_NEAR     = 0.92   # espacé : 0.87→0.92
@@ -216,7 +216,9 @@ def get_blobs(mask):
         w      = stats[i, cv2.CC_STAT_WIDTH]
         h      = max(stats[i, cv2.CC_STAT_HEIGHT], 1)
         aspect = w / float(h)
-        if area >= MIN_BLOB_AREA:
+        # aspect >= 0.4 : exclut les blobs très étroits (artefacts)
+        # pas de max aspect : lignes en perspective ont aspect élevé
+        if area >= MIN_BLOB_AREA and aspect >= 0.4:
             cx = stats[i, cv2.CC_STAT_LEFT] + w // 2
             cy = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT] // 2
             if cy >= cy_min:

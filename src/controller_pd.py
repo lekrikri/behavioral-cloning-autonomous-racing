@@ -333,7 +333,9 @@ def run(args):
             print("[ctrl] ERREUR : vesc_interface non disponible")
             sys.exit(1)
         vesc = VescInterface(port=args.port, baudrate=args.baud,
-                             current_max=CURRENT_MAX)
+                             current_max=CURRENT_MAX,
+                             throttle_mode="duty",
+                             max_duty=0.50)
         print("[ctrl] VESC connecte sur {}".format(args.port))
     else:
         print("[ctrl] DRY-RUN — VESC non commande")

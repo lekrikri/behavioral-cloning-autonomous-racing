@@ -55,7 +55,7 @@ MIN_BLOB_AREA = 700          # 300→700 : éliminer faux blobs (fenêtre, mur)
 
 TRACK_WIDTH_EST_PX = 385
 
-KP           = 0.006         # conservateur — augmenter progressivement
+KP           = 0.009         # augmenté pour prendre les virages
 KD           = 0.003
 ALPHA_D      = 0.7
 STEERING_MAX = 0.85
@@ -228,8 +228,8 @@ def err_from_two_lines(blobs):
     if right:
         est_left = right["cx"] - TRACK_WIDTH_EST_PX
         return (est_left + right["cx"]) // 2 - mid_x, TRACK_WIDTH_EST_PX
-    # Blob ambigu au centre → err=0, voiture continue tout droit
-    return 0, None
+    # Blob ambigu au centre → None, le fallback err_from_mask prend le relais
+    return None, None
 
 
 # ══════════════════════════════════════════════════════════════════════════════

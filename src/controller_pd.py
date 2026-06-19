@@ -112,8 +112,8 @@ except ImportError:
 CAM_W, CAM_H = 512, 256
 CAM_FPS      = 12
 
-HSV_LOW      = np.array([0,   0, 150], dtype=np.uint8)   # V>=150 (équilibre extérieur/intérieur)
-HSV_HIGH     = np.array([180, 55, 255], dtype=np.uint8)  # S<=55
+HSV_LOW      = np.array([0,   0, 160], dtype=np.uint8)   # V>=160 (extérieur lumière naturelle)
+HSV_HIGH     = np.array([180, 50, 255], dtype=np.uint8)  # S<=50
 ROI_FAR      = 0.65
 ROI_MID      = 0.80
 ROI_NEAR     = 0.92
@@ -237,23 +237,13 @@ def push_frame(bgr, mask, info):
     green = np.zeros_like(vis)
     green[:, :, 1] = mask
     vis = cv2.addWeighted(vis, 1.0, green, 0.5, 0)
-    # Points scanlines (magenta) + ligne reliant les centres
-    scan_pts = info.get("scan_pts", [])
-    if scan_pts:
-        prev = None
-        for (cx_s, ry) in scan_pts:
-            cv2.circle(vis, (cx_s, ry), 7, (255, 0, 200), -1)
-            if prev:
-                cv2.line(vis, prev, (cx_s, ry), (200, 100, 255), 1)
-            prev = (cx_s, ry)
-    else:
-        # Fallback : centroïde rouge si pas de scanlines
-        M = cv2.moments(mask)
-        if M["m00"] > 0:
-            cx = int(M["m10"] / M["m00"])
-            cy = int(M["m01"] / M["m00"])
-            cv2.circle(vis, (cx, cy), 6, (0, 0, 255), -1)
-            cv2.line(vis, (CAM_W // 2, CAM_H - 1), (cx, cy), (255, 0, 0), 1)
+    # Point rouge centroïde + ligne vers centre bas
+    M = cv2.moments(mask)
+    if M["m00"] > 0:
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+        cv2.circle(vis, (cx, cy), 8, (0, 0, 255), -1)
+        cv2.line(vis, (CAM_W // 2, CAM_H - 1), (cx, cy), (255, 0, 0), 2)
     # lignes bandes
     for frac, color in [(ROI_NEAR, (255, 200, 0)), (ROI_MID, (0, 200, 255)), (ROI_FAR, (0, 100, 255))]:
         cv2.line(vis, (0, int(CAM_H * frac)), (CAM_W, int(CAM_H * frac)), color, 1)
@@ -479,18 +469,14 @@ class PDController:
             err = self.corner_dir * 200.0
             self.state = "CORNER"
         else:
-            # ── Scanlines : méthode principale (3 points comme dessiné) ──
-            err_scan, scan_pts = err_from_scanlines(mask)
-            if err_scan is not None:
-                err = err_scan
-
-            # ── Fallback blobs si scanlines échouent ──────────────────────
-            if err is None and self.level >= 3:
+            # ── Méthode principale : deux lignes séparées (gauche/droite) ──
+            if self.level >= 3 and n_blobs >= 2:
                 err, _ = err_from_two_lines(blobs)
-            if err is None and n_blobs == 0:
-                err = err_from_mask(m_wide)
+            # ── Fallback : centroïde global du masque (point rouge) ────────
             if err is None:
                 err = err_from_mask(mask)
+            if err is None and n_blobs == 0:
+                err = err_from_mask(m_wide)
 
             # Mémoire de tendance : si vision perdue en virage, on maintient la direction
             if err is not None:

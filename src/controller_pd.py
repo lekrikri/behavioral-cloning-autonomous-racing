@@ -272,19 +272,21 @@ def push_frame(bgr, mask, info):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_blobs(mask):
-    """Retourne les blobs de lignes — plus de filtre aspect ratio car
-    les lignes en perspective sont diagonales (aspect ≈ 1, pas > 1.8)."""
+    """Retourne les blobs de lignes de piste (filtre flèches/logos compacts)."""
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cy_min = int(CAM_H * 0.30)  # 0.50→0.30 : lignes en haut de ROI acceptées
+    cy_min = int(CAM_H * 0.30)
     blobs = []
     for i in range(1, n):
         area   = stats[i, cv2.CC_STAT_AREA]
         w      = stats[i, cv2.CC_STAT_WIDTH]
         h      = max(stats[i, cv2.CC_STAT_HEIGHT], 1)
         aspect = w / float(h)
-        # aspect >= 0.4 : exclut les blobs très étroits (artefacts)
-        # pas de max aspect : lignes en perspective ont aspect élevé
+        # Les vraies lignes sont allongées (aspect >= 0.4 et pas trop carré)
+        # Les flèches/logos au sol sont compacts : area grande ET quasi carré (0.5 < aspect < 2.0)
+        # → on rejette les gros blobs compacts (surface > 3000px ET 0.5 < aspect < 2.0)
         if area >= MIN_BLOB_AREA and aspect >= 0.4:
+            if area > 3000 and 0.5 < aspect < 2.0:
+                continue  # blob compact et grand = flèche/logo au sol, ignoré
             cx = stats[i, cv2.CC_STAT_LEFT] + w // 2
             cy = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT] // 2
             if cy >= cy_min:

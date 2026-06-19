@@ -185,19 +185,22 @@ def push_frame(bgr, mask, info):
 # VISION
 # ══════════════════════════════════════════════════════════════════════════════
 
+MIN_ASPECT_RATIO = 1.8   # largeur/hauteur min — lignes sont allongées, coins compacts
+
 def get_blobs(mask):
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    # Les vrais blobs de lignes ont leur cy dans les 60% bas du masque
-    # Les faux blobs (mur, fenêtre) ont leur cy dans les 40% hauts → filtrés
     cy_min = int(CAM_H * 0.60)
     blobs = []
     for i in range(1, n):
-        area = stats[i, cv2.CC_STAT_AREA]
-        if area >= MIN_BLOB_AREA:
-            cx = stats[i, cv2.CC_STAT_LEFT] + stats[i, cv2.CC_STAT_WIDTH] // 2
+        area   = stats[i, cv2.CC_STAT_AREA]
+        w      = stats[i, cv2.CC_STAT_WIDTH]
+        h      = max(stats[i, cv2.CC_STAT_HEIGHT], 1)
+        aspect = w / float(h)
+        if area >= MIN_BLOB_AREA and aspect >= MIN_ASPECT_RATIO:
+            cx = stats[i, cv2.CC_STAT_LEFT] + w // 2
             cy = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT] // 2
-            if cy >= cy_min:   # ignorer blobs trop hauts dans l'image
-                blobs.append({"cx": cx, "cy": cy, "area": area})
+            if cy >= cy_min:
+                blobs.append({"cx": cx, "cy": cy, "area": area, "aspect": round(aspect, 1)})
     blobs.sort(key=lambda b: b["area"], reverse=True)
     return blobs
 

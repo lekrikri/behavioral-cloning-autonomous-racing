@@ -48,7 +48,7 @@ CAM_FPS      = 12
 # ── Vision ────────────────────────────────────────────────────────────────────
 HSV_LOW      = np.array([0,   0, 195], dtype=np.uint8)
 HSV_HIGH     = np.array([180, 40, 255], dtype=np.uint8)
-ROI_FAR      = 0.35          # bande haute (loin, lookahead)
+ROI_FAR      = 0.45          # bande haute (loin, lookahead)
 ROI_MID      = 0.55          # bande milieu
 ROI_NEAR     = 0.75          # bande basse proche (nouvelle)
 ROI_BOTTOM   = 1.00          # bas de l'image
@@ -299,6 +299,8 @@ class PDController:
             "curvature":         float(np.std(rays)),
             "forward_clearance": forward_clearance,
             "d_filtered":        self.d_filtered,
+            "blobs_cx":          [b["cx"] for b in blobs[:4]],
+            "blobs_area":        [b["area"] for b in blobs[:4]],
         }
         return steering, throttle, info
 
@@ -372,15 +374,25 @@ def run(args):
                         vesc.set_throttle(throttle)
 
                     frame_n += 1
-                    if frame_n % (CAM_FPS * 5) == 0:
+                    if frame_n % (CAM_FPS * 2) == 0:
                         fps = frame_n / (time.time() - t0)
+                        # Calcul track width si 2 blobs distincts
+                        cx_list = info["blobs_cx"]
+                        mid = CAM_W // 2
+                        lefts  = [x for x in cx_list if x < mid]
+                        rights = [x for x in cx_list if x >= mid]
+                        tw_str = "?"
+                        if lefts and rights:
+                            tw_str = str(min(rights) - max(lefts))
                         print("[ctrl] {:.0f}fps | err={} | steer={:.3f} | "
-                              "thr={:.2f} | state={} | blobs={} | fwd={:.2f} | d={:.4f}".format(
+                              "thr={:.2f} | state={} | blobs={} | fwd={:.2f} | "
+                              "cx={} | track_w={}px".format(
                                   fps,
                                   info["err"] if info["err"] is not None else "N/A",
                                   info["steering"], info["throttle"],
                                   info["state"], info["n_blobs"],
-                                  info["forward_clearance"], info["d_filtered"]))
+                                  info["forward_clearance"],
+                                  cx_list, tw_str))
 
                     if args.show:
                         vis = bgr.copy()

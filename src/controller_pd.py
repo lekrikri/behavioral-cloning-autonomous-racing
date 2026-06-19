@@ -79,14 +79,14 @@ except ImportError:
 CAM_W, CAM_H = 512, 256
 CAM_FPS      = 12
 
-HSV_LOW      = np.array([0,   0, 190], dtype=np.uint8)   # 200→190 : voir les lignes peintes
-HSV_HIGH     = np.array([180, 20, 255], dtype=np.uint8)  # S<=20 : blanc peint, sol gris S>20
+HSV_LOW      = np.array([0,   0, 185], dtype=np.uint8)   # V>=185 : lignes peintes blanches
+HSV_HIGH     = np.array([180, 20, 255], dtype=np.uint8)  # S<=20 : blanc pur, sol gris S>20
 ROI_FAR      = 0.65   # ignorer 65% du haut
-ROI_MID      = 0.80   # espacé : 0.75→0.80 pour mieux séparer les 3 bandes
-ROI_NEAR     = 0.92   # espacé : 0.87→0.92
+ROI_MID      = 0.80
+ROI_NEAR     = 0.92
 ROI_BOTTOM   = 1.00
-MIN_BLOB_AREA  = 1500  # 700→1500 : faux positifs sol gris (petits blobs)
-MIN_CORNER_AREA = 2500 # blob compact (coin L) : area > 2500, aspect < 1.8
+MIN_BLOB_AREA  = 800   # 2500→800 : lignes en perspective = petits blobs
+MIN_CORNER_AREA = 2000 # coin L compact
 CORNER_DURATION = 15   # frames de maintien virage (~1.25s @ 12fps)
 
 TRACK_WIDTH_EST_PX = 385
@@ -243,7 +243,7 @@ def get_blobs(mask):
     """Retourne les blobs de lignes — plus de filtre aspect ratio car
     les lignes en perspective sont diagonales (aspect ≈ 1, pas > 1.8)."""
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cy_min = int(CAM_H * 0.50)
+    cy_min = int(CAM_H * 0.30)  # 0.50→0.30 : lignes en haut de ROI acceptées
     blobs = []
     for i in range(1, n):
         area   = stats[i, cv2.CC_STAT_AREA]
@@ -284,7 +284,7 @@ def detect_corner_blob(mask):
     Retourne dict {cx, cy, area} ou None.
     """
     n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cy_min = int(CAM_H * 0.55)
+    cy_min = int(CAM_H * 0.35)  # 0.55→0.35 : détecter coin L plus tôt
     best = None
     for i in range(1, n):
         area = stats[i, cv2.CC_STAT_AREA]
@@ -293,7 +293,6 @@ def detect_corner_blob(mask):
         asp  = w / float(h)
         cy   = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT] // 2
         cx   = stats[i, cv2.CC_STAT_LEFT] + w // 2
-        # Blob compact (L) : grande aire, pas allongé
         if area >= MIN_CORNER_AREA and asp < 1.8 and cy >= cy_min:
             if best is None or area > best["area"]:
                 best = {"cx": cx, "cy": cy, "area": area, "aspect": round(asp, 1)}

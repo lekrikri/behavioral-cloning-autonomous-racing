@@ -62,9 +62,9 @@ STEERING_MAX = 0.85
 STEERING_DEADZONE = 0.03
 CAMERA_OFFSET_PX = 0         # biais caméra — calibrer si la voiture dérive constamment
 
-V_MAX        = 0.22          # → ~11% duty, assez pour avancer au sol
-V_TURN       = 0.22          # même vitesse en virage (mode calibration)
-V_SLOW       = 0.22          # même vitesse en RECOVER
+V_MAX        = 0.17          # → ~8.5% duty, très lent
+V_TURN       = 0.17
+V_SLOW       = 0.17
 V_STOP       = 0.00
 
 CURVE_THRESH_HIGH = 0.30

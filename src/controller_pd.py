@@ -450,6 +450,9 @@ def parse_args():
                    help="Rejoue un CSV enregistré comme feedforward de trajectoire")
     p.add_argument("--replay-weight", type=float, default=0.70,
                    help="Poids du feedforward replay [0-1] (défaut: 0.70)")
+    p.add_argument("--cam-crop-top", type=float, default=0.0,
+                   help="Crop logiciel du haut de l'image [0.0-0.6] avant traitement "
+                        "(simule inclinaison + zoom). Ex: 0.3 = enlever 30%% du haut.")
     return p.parse_args()
 
 
@@ -526,6 +529,12 @@ def run(args):
                 while True:
                     pkt = q.get()
                     bgr = pkt.getCvFrame()
+
+                    # Crop logiciel + zoom : simule inclinaison + focale augmentée
+                    if args.cam_crop_top > 0:
+                        y0 = int(CAM_H * args.cam_crop_top)
+                        bgr = cv2.resize(bgr[y0:, :], (CAM_W, CAM_H),
+                                         interpolation=cv2.INTER_LINEAR)
 
                     mask = white_line_mask(
                         bgr, hsv_low=HSV_LOW, hsv_high=HSV_HIGH,

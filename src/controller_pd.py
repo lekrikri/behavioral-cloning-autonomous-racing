@@ -495,10 +495,14 @@ class PDController:
 
         # ── Vitesse ────────────────────────────────────────────────────────
         if self.fixed_speed is not None:
-            # En mode CORNER : ralentir légèrement
-            throttle = self.fixed_speed * 0.75 if self.corner_mode else self.fixed_speed
-            if self.state != "CORNER":
-                self.state = "FIXED" if n_blobs > 0 else "BLIND"
+            if self.corner_mode:
+                throttle = self.fixed_speed * 0.75
+            elif n_blobs == 0:
+                throttle = V_STOP   # BLIND → arrêt complet, ne jamais avancer sans vision
+                self.state = "BLIND"
+            else:
+                throttle = self.fixed_speed
+                self.state = "FIXED"
         else:
             if self.corner_mode:
                 throttle = V_TURN

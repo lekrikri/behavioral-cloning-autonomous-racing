@@ -314,7 +314,7 @@ def get_blobs(mask):
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     cy_min  = int(CAM_H * 0.35)   # exclut le haut (plafond, arrière-plan)
     cy_max  = int(CAM_H * 0.97)   # exclut la bordure basse
-    h_max   = 55                   # pieds de chaises h>70px, lignes de piste h<35px
+    h_max   = 80                   # pieds de chaises h>90px, lignes de piste h<75px
     w_min   = 18                   # une ligne de piste a au moins 18px de large
     blobs = []
     for i in range(1, n):

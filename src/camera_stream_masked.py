@@ -198,7 +198,7 @@ def run_oak(args):
             cam.preview.link(xout.input)
 
             with dai.Device(pipeline, True) as device:
-                q = device.getOutputQueue("preview", maxSize=2, blocking=False)
+                q = device.getOutputQueue("preview", maxSize=1, blocking=False)
 
                 with _lock:
                     _camera_online = True
@@ -220,7 +220,7 @@ def run_oak(args):
                     vis = apply_overlay(bgr, mask, vr)
 
                     # Encoder le JPEG ICI (pas dans le handler)
-                    _, jpg = cv2.imencode(".jpg", vis, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    _, jpg = cv2.imencode(".jpg", vis, [cv2.IMWRITE_JPEG_QUALITY, 65])
 
                     with _lock:
                         _latest_jpeg = jpg.tobytes()

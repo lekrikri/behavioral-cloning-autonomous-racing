@@ -16,8 +16,9 @@ Architecture multi-thread :
   4. Tester ROUES EN L'AIR avant de poser la voiture au sol
 
 Usage :
-  python3.8 src/inference_realcar.py --duty-max 0.15
-  python3.8 src/inference_realcar.py --duty-max 0.15 --servo-center 0.52 --invert-steer
+  python3.8 src/inference_realcar.py --duty-max 0.20
+  python3.8 src/inference_realcar.py --duty-max 0.20 --servo-center 0.52 --invert-steer
+  python3.8 src/inference_realcar.py --duty-max 0.20 --perception-mode visual
 """
 
 import csv
@@ -95,6 +96,7 @@ class RealCarInference:
         stats_path: str   = STATS_PATH,
         vesc_port: str    = VESC_PORT,
         current_max: float = CURRENT_MAX,
+        duty_max: float    = 0.20,
         servo_center: float = 0.50,
         servo_range: float  = 0.35,
         invert_steer: bool  = False,
@@ -140,12 +142,14 @@ class RealCarInference:
         # ── VESC avec params calibrés ─────────────────────────────────────────
         self.vesc = VESCInterface(
             port=vesc_port,
-            max_erpm=current_max,   # current_max réutilisé comme max_erpm (ex: 8000 ERPM)
+            current_max=current_max,
             servo_center=servo_center,
             servo_range=servo_range,
             invert_steer=invert_steer,
+            throttle_mode="duty",   # duty = plus smooth que current au démarrage sensorless
+            max_duty=duty_max,
         )
-        print(f"[RealCar] servo_center={servo_center:.3f} | range=±{servo_range:.3f} | invert={invert_steer} | max_erpm={int(current_max)}")
+        print(f"[RealCar] servo_center={servo_center:.3f} | range=±{servo_range:.3f} | invert={invert_steer} | duty_max={duty_max:.2f}")
 
         self.smoother = SmoothingFilter()
 
@@ -417,6 +421,8 @@ def main():
     parser.add_argument("--port",         default=VESC_PORT)
     parser.add_argument("--current-max",  type=float, default=CURRENT_MAX,
                         help="Courant max moteur en A (defaut 5A pour 1er test, 8A normal)")
+    parser.add_argument("--duty-max",     type=float, default=0.20,
+                        help="Duty cycle max [0-1] en mode duty (defaut 0.20 = 20%%)")
     parser.add_argument("--servo-center", type=float, default=0.50)
     parser.add_argument("--servo-range",  type=float, default=0.35)
     parser.add_argument("--invert-steer", action="store_true")
@@ -432,6 +438,7 @@ def main():
         stats_path   = args.stats,
         vesc_port    = args.port,
         current_max  = args.current_max,
+        duty_max     = args.duty_max,
         servo_center = args.servo_center,
         servo_range  = args.servo_range,
         invert_steer     = args.invert_steer,

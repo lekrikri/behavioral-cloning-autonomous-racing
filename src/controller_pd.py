@@ -69,9 +69,9 @@ STEERING_MAX = 0.8           # saturation steering (protège la mécanique)
 STEERING_DEADZONE = 0.03     # zone morte (évite micro-oscillations)
 
 # ── Vitesse ───────────────────────────────────────────────────────────────────
-V_MAX        = 0.15          # duty cycle ligne droite (SÉCURITÉ : 15% pour premiers tests)
-V_TURN       = 0.10          # duty cycle virage
-V_SLOW       = 0.08          # duty cycle récupération (1 seule ligne)
+V_MAX        = 0.40          # duty cycle ligne droite (→ 20% duty réel avec max_duty=0.50)
+V_TURN       = 0.28          # duty cycle virage      (→ 14% duty réel)
+V_SLOW       = 0.20          # duty cycle récupération (→ 10% duty réel)
 V_STOP       = 0.00          # arrêt d'urgence (0 ligne)
 CURVE_THRESH_HIGH = 0.30     # std(rays) > seuil → virage
 CURVE_THRESH_LOW  = 0.15     # std(rays) < seuil → ligne droite (hystérésis)

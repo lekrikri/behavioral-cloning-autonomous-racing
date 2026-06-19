@@ -31,71 +31,107 @@ try:
 except ImportError:
     VescInterface = None
 
-def _usb_power_cycle_oak():
-    """Power cycle USB OAK-D via sysfs authorize (désactive + réactive le port).
-    Équivalent logiciel du débranchement physique — ne nécessite pas uhubctl."""
+def _find_oak_sysfs():
+    """Retourne (dir_path, dev_name) du device OAK-D dans sysfs, ou (None, None)."""
+    for vendor_path in glob.glob('/sys/bus/usb/devices/*/idVendor'):
+        try:
+            with open(vendor_path) as f:
+                if f.read().strip() != '03e7':
+                    continue
+        except Exception:
+            continue
+        dir_path = os.path.dirname(vendor_path)
+        dev_name = os.path.basename(dir_path)
+        return dir_path, dev_name
+    return None, None
+
+
+def _usb_reset_method1_authorized():
+    """Méthode 1 : authorized 0→1 (soft power cycle)."""
+    dir_path, _ = _find_oak_sysfs()
+    if dir_path is None:
+        return False
+    auth = os.path.join(dir_path, 'authorized')
+    if not os.path.exists(auth):
+        return False
     try:
-        for vendor_path in glob.glob('/sys/bus/usb/devices/*/idVendor'):
-            try:
-                with open(vendor_path) as f:
-                    if f.read().strip() != '03e7':
-                        continue
-            except Exception:
-                continue
-            dir_path = os.path.dirname(vendor_path)
-            auth_path = os.path.join(dir_path, 'authorized')
-            if not os.path.exists(auth_path):
-                continue
-            try:
-                # Désactiver le device (équivalent débranchement)
-                with open(auth_path, 'w') as f:
-                    f.write('0')
-                print("[ctrl] OAK-D désactivé via sysfs")
-                time.sleep(3)
-                # Réactiver (équivalent rebranchement)
-                with open(auth_path, 'w') as f:
-                    f.write('1')
-                print("[ctrl] OAK-D réactivé via sysfs")
-                time.sleep(4)
-                return True
-            except Exception as e2:
-                print("[ctrl] sysfs power cycle err: {}".format(e2))
+        with open(auth, 'w') as f: f.write('0')
+        print("[ctrl] USB [1] authorized=0")
+        time.sleep(4)
+        with open(auth, 'w') as f: f.write('1')
+        print("[ctrl] USB [1] authorized=1")
+        time.sleep(5)
+        return True
     except Exception as e:
-        print("[ctrl] USB scan err: {}".format(e))
-    # Fallback : ioctl reset classique
-    USBDEVFS_RESET = 0x5514
-    try:
-        for vendor_path in glob.glob('/sys/bus/usb/devices/*/idVendor'):
-            try:
-                with open(vendor_path) as f:
-                    if f.read().strip() != '03e7':
-                        continue
-            except Exception:
-                continue
-            dir_path = os.path.dirname(vendor_path)
-            try:
-                with open(os.path.join(dir_path, 'busnum')) as f:
-                    bus = int(f.read().strip())
-                with open(os.path.join(dir_path, 'devnum')) as f:
-                    dev = int(f.read().strip())
-            except Exception:
-                continue
-            dev_path = '/dev/bus/usb/{:03d}/{:03d}'.format(bus, dev)
-            try:
-                with open(dev_path, 'wb') as fd:
-                    fcntl.ioctl(fd, USBDEVFS_RESET, 0)
-                print("[ctrl] USB ioctl reset OAK-D: {}".format(dev_path))
-                time.sleep(3)
-                return True
-            except Exception as e2:
-                print("[ctrl] ioctl reset err: {}".format(e2))
-    except Exception as e:
-        print("[ctrl] ioctl scan err: {}".format(e))
+        print("[ctrl] USB [1] err: {}".format(e))
     return False
 
 
+def _usb_reset_method2_unbind_bind():
+    """Méthode 2 : unbind + rebind driver USB (plus agressif)."""
+    _, dev_name = _find_oak_sysfs()
+    if dev_name is None:
+        # Device peut ne plus être listé après crash — chercher dans unbind quand même
+        return False
+    try:
+        with open('/sys/bus/usb/drivers/usb/unbind', 'w') as f:
+            f.write(dev_name)
+        print("[ctrl] USB [2] unbind {}".format(dev_name))
+        time.sleep(5)
+        with open('/sys/bus/usb/drivers/usb/bind', 'w') as f:
+            f.write(dev_name)
+        print("[ctrl] USB [2] bind {}".format(dev_name))
+        time.sleep(6)
+        return True
+    except Exception as e:
+        print("[ctrl] USB [2] err: {}".format(e))
+    return False
+
+
+def _usb_reset_method3_ioctl():
+    """Méthode 3 : ioctl USBDEVFS_RESET (reset électrique bas niveau)."""
+    USBDEVFS_RESET = 0x5514
+    dir_path, _ = _find_oak_sysfs()
+    if dir_path is None:
+        return False
+    try:
+        with open(os.path.join(dir_path, 'busnum')) as f:
+            bus = int(f.read().strip())
+        with open(os.path.join(dir_path, 'devnum')) as f:
+            dev = int(f.read().strip())
+        dev_path = '/dev/bus/usb/{:03d}/{:03d}'.format(bus, dev)
+        with open(dev_path, 'wb') as fd:
+            fcntl.ioctl(fd, USBDEVFS_RESET, 0)
+        print("[ctrl] USB [3] ioctl reset {}".format(dev_path))
+        time.sleep(4)
+        return True
+    except Exception as e:
+        print("[ctrl] USB [3] err: {}".format(e))
+    return False
+
+
+# Compteur global pour alterner les méthodes de reset
+_reset_attempt_total = 0
+
 def _usb_reset_oak():
-    return _usb_power_cycle_oak()
+    """Escalade automatique des méthodes de reset USB selon le nombre d'échecs."""
+    global _reset_attempt_total
+    _reset_attempt_total += 1
+    n = _reset_attempt_total
+    print("[ctrl] USB reset OAK-D (tentative {})".format(n))
+    # Alterner : 1, 2, 1, 3, 1, 2, 1, 3, ...
+    if n % 4 == 2:
+        ok = _usb_reset_method2_unbind_bind()
+    elif n % 4 == 0:
+        ok = _usb_reset_method3_ioctl()
+    else:
+        ok = _usb_reset_method1_authorized()
+    if not ok:
+        # Essayer les autres méthodes en cascade si la principale échoue
+        for fn in [_usb_reset_method1_authorized, _usb_reset_method2_unbind_bind, _usb_reset_method3_ioctl]:
+            if fn():
+                break
+    return True
 
 
 try:
@@ -149,6 +185,8 @@ _latest_jpeg = None
 _frame_id    = 0
 _stream_lock = threading.Lock()
 _placeholder = None
+_last_frame_time = [time.time()]   # watchdog : heure de la dernière frame reçue
+_watchdog_trigger = [False]        # mis à True par le watchdog pour forcer un reset
 _drive_enabled = True   # contrôlé via HTTP /stop et /go
 
 def _make_placeholder():
@@ -626,6 +664,21 @@ def run(args):
     print("[ctrl] Niveau {} | {} | KP={} | offset={}px".format(
         args.level, speed_str, KP, CAMERA_OFFSET_PX))
 
+    # Watchdog : thread qui surveille les frames et force un reset si caméra gelée
+    def _watchdog():
+        FRAME_TIMEOUT = 10.0  # secondes sans frame → reset forcé
+        while True:
+            time.sleep(3)
+            if time.time() - _last_frame_time[0] > FRAME_TIMEOUT:
+                print("[watchdog] Aucune frame depuis {:.0f}s — reset USB force".format(
+                    time.time() - _last_frame_time[0]))
+                _watchdog_trigger[0] = True
+                _usb_reset_oak()
+                _last_frame_time[0] = time.time()  # reset le timer pour ne pas boucler
+
+    wt = threading.Thread(target=_watchdog, daemon=True)
+    wt.start()
+
     attempt = 0
     while True:
         try:
@@ -697,6 +750,7 @@ def run(args):
 
                     if args.stream_port > 0:
                         push_frame(bgr, mask, info)
+                    _last_frame_time[0] = time.time()
 
                     frame_n += 1
                     if frame_n % (CAM_FPS * 3) == 0:

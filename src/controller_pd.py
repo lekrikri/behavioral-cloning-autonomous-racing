@@ -827,6 +827,9 @@ class PDController:
                 self.corner_count = CORNER_DURATION
                 print("[ctrl] CORNER score={} dir={:+.0f}".format(cscore, self.corner_dir))
 
+        # Offset effectif calculé ici pour être appliqué à l'erreur BRUTE
+        effective_offset = CAMERA_OFFSET_PX + int(self.auto_offset)
+
         if self.corner_mode:
             self.corner_count -= 1
             if self.corner_count <= 0:
@@ -839,7 +842,7 @@ class PDController:
             last_tw = float(np.median(self.track_widths[-10:])) if len(self.track_widths) >= 3 else float(TRACK_WIDTH_EST_PX)
             if left_cx is not None and right_cx is not None:
                 center = (left_cx + right_cx) // 2
-                err = center - CAM_W // 2
+                err = center - CAM_W // 2 - effective_offset  # offset soustrait à la SOURCE
                 tw = right_cx - left_cx
                 if 100 < tw < CAM_W - 20:
                     self.track_widths.append(tw)
@@ -848,11 +851,11 @@ class PDController:
             elif left_cx is not None:
                 est_right = left_cx + int(last_tw)
                 center = (left_cx + est_right) // 2
-                err = center - CAM_W // 2
+                err = center - CAM_W // 2 - effective_offset
             elif right_cx is not None:
                 est_left = right_cx - int(last_tw)
                 center = (est_left + right_cx) // 2
-                err = center - CAM_W // 2
+                err = center - CAM_W // 2 - effective_offset
             else:
                 err = None
 
@@ -945,7 +948,7 @@ class PDController:
         self.prev_n_blobs = n_blobs   # pour CORNER score frame suivante
 
         # ── Auto-calibration offset caméra ────────────────────────────────
-        # Condition : b=2, pas en virage, err stable → accumule l'offset moyen
+        # err ici est DÉJÀ corrigé de l'offset → on accumule l'erreur résiduelle
         if n_blobs == 2 and not self.corner_mode and err is not None:
             raw_for_calib = float(err)
             self.calib_err_history.append(raw_for_calib)
@@ -969,7 +972,6 @@ class PDController:
             print("[calib] CAMERA_OFFSET_PX={:+d}px".format(measured))
 
         # ── Steering ───────────────────────────────────────────────────────
-        effective_offset = CAMERA_OFFSET_PX + int(self.auto_offset)
         if self.state == "BLIND":
             steering = 0.0          # en BLIND complet : ne pas dériver sur prev_err
             self.prev_err = 0.0     # reset pour éviter spike au retour de vision
@@ -977,7 +979,7 @@ class PDController:
         elif err is None:
             steering = 0.0
         else:
-            steering = self._pd(float(err) - effective_offset)
+            steering = self._pd(float(err))  # offset déjà soustrait à la source
         self.last_steering_cmd = steering   # mémoriser pour INERTIAL_COAST
 
         info = {

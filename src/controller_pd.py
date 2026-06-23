@@ -628,16 +628,8 @@ class PDController:
             err = self.corner_dir * 200.0
             self.state = "CORNER"
         else:
-            # ── Priorité 1 : signal turn_signal depuis raycasts (IA suggestion) ──
-            # ray_asym = right_open - left_open (déjà calculé)
-            # Si espace libre très asymétrique → virage probable, signal fort
-            turn_signal = ray_asym  # >0=virage droite, <0=virage gauche
-            turn_boost = 0.0
-            if abs(turn_signal) > 0.25:
-                # Injecter proportionnellement en px d'erreur supplémentaire
-                turn_boost = turn_signal * 80.0  # 80px max de boost
-                self.last_turn_dir = 1.0 if turn_signal > 0 else -1.0
-                self.turn_memory_ctr = 15  # mémoriser 15 frames
+            # Mémoire de direction (mise à jour seulement, pas de boost)
+            turn_boost = 0.0  # désactivé : causait des oscillations quand b=2
 
             # ── Méthode principale : deux lignes séparées (gauche/droite) ──
             # Largeur dynamique : médiane des 10 dernières mesures réelles (b=2)
@@ -670,19 +662,15 @@ class PDController:
                 if abs(err) > 60:
                     self.last_turn_dir = 1.0 if err > 0 else -1.0
                     self.turn_memory_ctr = 15
-            trend = sum(self.err_history) / len(self.err_history) if self.err_history else 0.0
-            if err is None or abs(err) < 25:
-                err = trend * 0.6
-
-            # Priorité 4 IA : mémoire de direction quand n_blobs <= 1
-            if n_blobs <= 1 and self.turn_memory_ctr > 0:
-                self.turn_memory_ctr -= 1
-                if err is None or abs(err) < 30:
-                    err = (err or 0.0) + self.last_turn_dir * 50.0
-
-            # Priorité 1 IA : ajouter le boost turn_signal à l'erreur finale
-            if err is not None:
-                err = err + turn_boost
+            # Trend et mémoire : seulement si b=0 (pas de blob visible)
+            if n_blobs == 0:
+                trend = sum(self.err_history) / len(self.err_history) if self.err_history else 0.0
+                if err is None:
+                    err = trend * 0.6
+                if self.turn_memory_ctr > 0:
+                    self.turn_memory_ctr -= 1
+                    if err is None or abs(err) < 30:
+                        err = (err or 0.0) + self.last_turn_dir * 50.0
 
         # ── Vitesse adaptative selon courbure (Priorité 3 IA) ─────────────
         curvature = float(np.std(rays))  # std des rays = indicateur de courbure

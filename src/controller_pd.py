@@ -317,8 +317,8 @@ def get_blobs(mask):
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     cy_min     = int(CAM_H * 0.44)  # compromis vision lointaine + filtrage artefacts
     cy_max     = int(CAM_H * 0.97)  # exclut la bordure basse
-    y_bot_min  = int(CAM_H * 0.72)  # le bas du blob doit descendre sous 72% (touch bottom)
-    aspect_min = 0.8                 # pieds de chaises aspect~0.05-0.3, lignes>=0.8
+    y_bot_min  = int(CAM_H * 0.62)  # le bas du blob doit descendre sous 62% (touch bottom)
+    aspect_min = 0.35                # lignes en perspective aspect~0.3-0.5, pieds chaises ~0.05-0.15
     w_min      = 20                  # une ligne de piste a au moins 20px de large
     blobs = []
     for i in range(1, n):
@@ -668,8 +668,12 @@ class PDController:
         self.prev_n_blobs = n_blobs   # pour CORNER score frame suivante
 
         # ── Steering ───────────────────────────────────────────────────────
-        if err is None:
-            steering = self.prev_err * KP
+        if self.state == "BLIND":
+            steering = 0.0          # en BLIND complet : ne pas dériver sur prev_err
+            self.prev_err = 0.0     # reset pour éviter spike au retour de vision
+            self.err_smooth = 0.0   # reset smooth aussi
+        elif err is None:
+            steering = 0.0
         else:
             steering = self._pd(float(err) - CAMERA_OFFSET_PX)
         self.last_steering_cmd = steering   # mémoriser pour INERTIAL_COAST

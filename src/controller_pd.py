@@ -358,7 +358,12 @@ def get_blobs(mask):
         if w < w_min:
             rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "w", "rect": rect})
             continue
-        if area > 3000 and 0.5 < aspect < 2.0:
+        # Blobs compacts et pleins (logo/flèche au sol) — solidity haute + pas extrêmement allongé
+        # Les lignes de piste ont solidity faible (<0.50) car fines dans leur bounding box
+        # Les logos remplis ont solidity >0.65. Aspect < 2.5 évite de filtrer les lignes proches horizontales
+        bbox_area = w * h
+        solidity = float(area) / max(bbox_area, 1)
+        if area > 3000 and solidity > 0.65 and aspect < 2.5:
             rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "cmp", "rect": rect})
             continue
         blobs.append({"cx": cx, "cy": cy, "area": area, "aspect": round(aspect, 1)})

@@ -927,11 +927,8 @@ class PDController:
             else:
                 err = None
 
-            # Fallback : centroïde global du masque si aucune ligne trouvée
-            if err is None:
-                err = err_from_mask(mask)
-            if err is None:
-                err = err_from_mask(m_wide)
+            # blobs=0 : pas de fallback err_from_mask (centroïde global bruité → pollue Kalman)
+            # err reste None → steer=0 propre, Kalman non mis à jour
 
             # Mémoire de tendance : maintient la direction si vision perdue
             if err is not None:
@@ -1012,6 +1009,7 @@ class PDController:
                 err = 0.0
         else:
             self.kalman.reset()
+            self.err_smooth = 0.0  # reset pour éviter inertie au retour de vision
 
         self.prev_n_blobs = n_blobs   # pour CORNER score frame suivante
 
@@ -1023,21 +1021,23 @@ class PDController:
             if len(self.calib_err_history) > 90:  # ~15s à 6fps
                 self.calib_err_history.pop(0)
             # EMA très lente : ne corrige que les biais persistants (pas les vraies erreurs)
-            if len(self.calib_err_history) >= 30 and abs(self.auto_offset) < 80:
+            if len(self.calib_err_history) >= 30 and abs(self.auto_offset) < 15:
                 recent_mean = sum(self.calib_err_history[-30:]) / 30.0
                 if abs(recent_mean) > 8.0:  # biais > 8px → apprendre
-                    self.auto_offset += 0.02 * recent_mean  # EMA très lente
+                    self.auto_offset += 0.01 * recent_mean  # EMA encore plus lente
 
         # ── Calibration manuelle via HTTP /calibrate ──────────────────────
         if _calibrate_request[0] and n_blobs == 2 and len(self.calib_err_history) >= 10:
             _calibrate_request[0] = False
             residual = int(round(sum(self.calib_err_history[-20:]) / float(min(len(self.calib_err_history), 20))))
-            new_offset = CAMERA_OFFSET_PX + int(self.auto_offset) + residual
+            # N'inclut PAS auto_offset : évite l'accumulation de bruit après plusieurs /calibrate
+            new_offset = CAMERA_OFFSET_PX + residual
             CAMERA_OFFSET_PX = new_offset
-            self.auto_offset = 0.0
+            self.auto_offset  = 0.0   # reset : la calibration a absorbé le biais
+            self.servo_bias   = 0.0   # reset : repart de zéro après calibration manuelle
             self.calib_err_history = []
             _calibrate_result[0] = new_offset
-            print("[calib] CAMERA_OFFSET_PX={:+d}px (residuel={:+d})".format(new_offset, residual))
+            print("[calib] CAMERA_OFFSET_PX={:+d}px (residuel={:+d}, auto+servo reset)".format(new_offset, residual))
 
         # ── Steering ───────────────────────────────────────────────────────
         if self.state == "BLIND":
@@ -1298,12 +1298,15 @@ def run(args):
                         rep_str = " [REPLAY {}/{}]".format(frame_n % len(replay_data) if replay_data else 0,
                                                             len(replay_data) if replay_data else 0) if replay_data else ""
                         print("[ctrl] {:.0f}fps | err={} | steer={:.3f} | "
-                              "thr={:.2f} | {} | blobs={} | cx={} | tw={}px{}{}".format(
+                              "thr={:.2f} | {} | blobs={} | cx={} | tw={}px | "
+                              "off={:+.1f} sbias={:+.1f}{}{}".format(
                                   fps,
                                   int(info["err"]) if info["err"] is not None else "N/A",
                                   steering, throttle,
                                   info["state"], info["n_blobs"],
-                                  cx_list, tw, rec_str, rep_str))
+                                  cx_list, tw,
+                                  ctrl.auto_offset, ctrl.servo_bias,
+                                  rec_str, rep_str))
 
         except KeyboardInterrupt:
             print("[ctrl] Arret."); break

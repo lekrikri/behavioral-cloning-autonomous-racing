@@ -148,8 +148,8 @@ except ImportError:
 CAM_W, CAM_H = 512, 256
 CAM_FPS      = 8
 
-HSV_LOW      = np.array([0,   0, 165], dtype=np.uint8)   # V>=165 (filtre tapis gris V<160)
-HSV_HIGH     = np.array([180, 40, 255], dtype=np.uint8)  # S<=40 (blancheur pure uniquement)
+HSV_LOW      = np.array([0,   0, 178], dtype=np.uint8)   # V>=178 (blanc lumineux uniquement)
+HSV_HIGH     = np.array([180, 35, 255], dtype=np.uint8)  # S<=35 (blanc pur, pas gris/métal)
 ROI_FAR      = 0.65
 ROI_MID      = 0.80
 ROI_NEAR     = 0.92
@@ -312,10 +312,10 @@ def push_frame(bgr, mask, info):
 def get_blobs(mask):
     """Retourne les blobs de lignes de piste (filtre chaises, tapis, logos)."""
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cy_min     = int(CAM_H * 0.40)  # filtre le haut (pieds de chaises ont cy plus haut)
+    cy_min     = int(CAM_H * 0.52)  # moitié basse uniquement — artefacts lointains éliminés
     cy_max     = int(CAM_H * 0.97)  # exclut la bordure basse
     aspect_min = 0.8                 # pieds de chaises aspect~0.05-0.3, lignes>=0.8
-    w_min      = 18                  # une ligne de piste a au moins 18px de large
+    w_min      = 20                  # une ligne de piste a au moins 20px de large
     blobs = []
     for i in range(1, n):
         area   = stats[i, cv2.CC_STAT_AREA]
@@ -398,7 +398,7 @@ def detect_corner_blob(mask):
     Retourne dict {cx, cy, area} ou None.
     """
     n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cy_min = int(CAM_H * 0.35)  # 0.55→0.35 : détecter coin L plus tôt
+    cy_min = int(CAM_H * 0.45)  # détecte coin L dans la moitié basse (élimine artefacts haut)
     best = None
     for i in range(1, n):
         area = stats[i, cv2.CC_STAT_AREA]

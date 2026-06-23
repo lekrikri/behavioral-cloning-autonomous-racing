@@ -780,6 +780,7 @@ class PDController:
         return sum(e * w for e, w in valid) / total_w
 
     def compute(self, mask, bgr, mask_wide=None):
+        global CAMERA_OFFSET_PX
         rays    = self.vr(bgr)
         blobs, rejected_blobs = get_blobs(mask)
         n_blobs = len(blobs)
@@ -964,7 +965,6 @@ class PDController:
         if _calibrate_request[0] and n_blobs == 2 and len(self.calib_err_history) >= 10:
             _calibrate_request[0] = False
             measured = int(round(sum(self.calib_err_history[-20:]) / float(min(len(self.calib_err_history), 20))))
-            global CAMERA_OFFSET_PX
             CAMERA_OFFSET_PX = measured
             self.auto_offset = 0.0
             self.calib_err_history = []

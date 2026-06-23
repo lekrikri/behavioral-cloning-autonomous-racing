@@ -964,12 +964,13 @@ class PDController:
         # ── Calibration manuelle via HTTP /calibrate ──────────────────────
         if _calibrate_request[0] and n_blobs == 2 and len(self.calib_err_history) >= 10:
             _calibrate_request[0] = False
-            measured = int(round(sum(self.calib_err_history[-20:]) / float(min(len(self.calib_err_history), 20))))
-            CAMERA_OFFSET_PX = measured
+            residual = int(round(sum(self.calib_err_history[-20:]) / float(min(len(self.calib_err_history), 20))))
+            new_offset = CAMERA_OFFSET_PX + int(self.auto_offset) + residual
+            CAMERA_OFFSET_PX = new_offset
             self.auto_offset = 0.0
             self.calib_err_history = []
-            _calibrate_result[0] = measured
-            print("[calib] CAMERA_OFFSET_PX={:+d}px".format(measured))
+            _calibrate_result[0] = new_offset
+            print("[calib] CAMERA_OFFSET_PX={:+d}px (residuel={:+d})".format(new_offset, residual))
 
         # ── Steering ───────────────────────────────────────────────────────
         if self.state == "BLIND":

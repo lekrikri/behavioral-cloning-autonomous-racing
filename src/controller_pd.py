@@ -146,7 +146,7 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════════════════════
 
 CAM_W, CAM_H = 512, 256
-CAM_FPS      = 8
+CAM_FPS      = 6
 
 HSV_LOW      = np.array([0,   0, 178], dtype=np.uint8)   # V>=178 (blanc lumineux uniquement)
 HSV_HIGH     = np.array([180, 35, 255], dtype=np.uint8)  # S<=35 (blanc pur, pas gris/métal)
@@ -312,7 +312,7 @@ def push_frame(bgr, mask, info):
 def get_blobs(mask):
     """Retourne les blobs de lignes de piste (filtre chaises, tapis, logos)."""
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cy_min     = int(CAM_H * 0.52)  # moitié basse uniquement — artefacts lointains éliminés
+    cy_min     = int(CAM_H * 0.44)  # compromis vision lointaine + filtrage artefacts
     cy_max     = int(CAM_H * 0.97)  # exclut la bordure basse
     aspect_min = 0.8                 # pieds de chaises aspect~0.05-0.3, lignes>=0.8
     w_min      = 20                  # une ligne de piste a au moins 20px de large

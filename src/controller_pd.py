@@ -159,12 +159,13 @@ MIN_CORNER_AREA = 6000
 CORNER_DURATION = 15   # frames de maintien virage (~1.25s @ 12fps)
 
 TRACK_WIDTH_EST_PX = 280     # largeur réelle piste ~280px (CAM_W=512)
+SLIDE_WIN    = 70            # fenêtre ±px pour sliding windows autour de la position précédente
 
-KP           = 0.010         # KP réduit pour moins d'oscillation
-KD           = 0.003
+KP           = 0.006         # réduit : 6fps = 167ms par frame, évite sur-braquage
+KD           = 0.005         # augmenté : amortit l'oscillation due au retard visuel
 ALPHA_D      = 0.7
 STEERING_MAX = 0.85
-STEERING_DEADZONE = 0.05     # deadzone plus large = moins d'oscillation autour du centre
+STEERING_DEADZONE = 0.05
 CAMERA_OFFSET_PX = 0         # biais caméra — calibrer si la voiture dérive constamment
 
 V_MAX        = 0.14          # vitesse max ligne droite (~7% duty)
@@ -188,6 +189,9 @@ _placeholder = None
 _last_frame_time = [time.time()]   # watchdog : heure de la dernière frame reçue
 _watchdog_trigger = [False]        # mis à True par le watchdog pour forcer un reset
 _camera_restarted = [False]        # mis à True après chaque reconnexion OAK-D → reset Kalman
+_coast_steer    = [0.0]            # dernier steering valide pour coast mode
+_coast_throttle = [0.06]           # dernier throttle valide pour coast mode
+_coast_crash_t  = [0.0]            # timestamp du début du crash caméra actuel
 _drive_enabled = True   # contrôlé via HTTP /stop et /go
 _go_reset = [False]         # mis à True par /go → PDController reset son état CORNER/Kalman
 _calibrate_request = [False]       # mis à True par /calibrate → PDController applique l'offset
@@ -460,7 +464,7 @@ def err_from_bands(mask):
     return err_from_mask(mask_near), err_from_mask(mask_mid), err_from_mask(mask_far)
 
 
-def find_lane_histogram(mask):
+def find_lane_histogram(mask, prev_left=None, prev_right=None):
     """
     Détecte les deux lignes de piste par histogramme de colonnes.
 
@@ -505,41 +509,47 @@ def find_lane_histogram(mask):
     def _best_peak(half_hist, offset, prev_cx, peer_cx, peer_side):
         """
         Retourne le meilleur cx dans half_hist (offset = décalage par rapport à la demi-image).
+        Si prev_cx fourni : sliding windows ±SLIDE_WIN autour de la position précédente.
         peer_cx : position de la ligne de l'autre côté (pour contrainte de track_width).
-        peer_side : +1 si peer est à droite de nous, -1 si à gauche.
         """
+        n = len(half_hist)
+        # Sliding windows : restreindre la zone de recherche si on a un historique
+        if prev_cx is not None:
+            local_center = prev_cx - offset
+            i_min = max(2, local_center - SLIDE_WIN)
+            i_max = min(n - 2, local_center + SLIDE_WIN)
+        else:
+            i_min, i_max = 2, n - 2
+
         best_cx = None
         best_score = -1.0
-        n = len(half_hist)
-        for i in range(2, n - 2):
+        for i in range(i_min, i_max + 1):
             v = half_hist[i]
             if v < HIST_MIN:
                 continue
-            # Pic local strict
             if not (v > half_hist[i - 1] and v > half_hist[i + 1]):
                 continue
             cx = i + offset
             score = v
-            # Bonus : cohérence avec la position précédente (stabilité temporelle)
             if prev_cx is not None:
                 score += max(0.0, 3000.0 - abs(cx - prev_cx) * 60.0)
-            # Bonus : contrainte track_width (écartement attendu entre les deux lignes)
             if peer_cx is not None:
                 dist = abs(cx - peer_cx)
-                expected = TRACK_WIDTH_EST_PX
-                score += max(0.0, 4000.0 - abs(dist - expected) * 80.0)
+                score += max(0.0, 4000.0 - abs(dist - TRACK_WIDTH_EST_PX) * 80.0)
             if score > best_score:
                 best_score = score
                 best_cx = cx
-        # Fallback : argmax si aucun pic local
-        if best_cx is None and float(np.max(half_hist)) >= HIST_MIN:
-            best_cx = int(np.argmax(half_hist)) + offset
+        # Fallback local argmax
+        if best_cx is None:
+            sub = half_hist[i_min:i_max + 1]
+            if len(sub) > 0 and float(np.max(sub)) >= HIST_MIN:
+                best_cx = int(np.argmax(sub)) + i_min + offset
         return best_cx
 
-    left_cx  = _best_peak(left_half,  0,   None, None, +1)
-    right_cx = _best_peak(right_half, mid, None, left_cx, -1)
+    left_cx  = _best_peak(left_half,  0,   prev_left,  None, +1)
+    right_cx = _best_peak(right_half, mid, prev_right, left_cx, -1)
     # Deuxième passe : re-scorer left avec right connu
-    left_cx  = _best_peak(left_half,  0,   None, right_cx, +1)
+    left_cx  = _best_peak(left_half,  0,   prev_left,  right_cx, +1)
 
     left_peak  = float(left_half[left_cx]) if left_cx is not None else 0.0
     right_peak = float(right_half[right_cx - mid]) if right_cx is not None else 0.0
@@ -742,6 +752,12 @@ class PDController:
         # ── Auto-calibration offset caméra ────────────────────────────────────
         self.calib_err_history = []   # err brutes récentes pour calibration
         self.auto_offset       = 0.0  # offset appris en ligne (EMA)
+        # ── Servo bias : biais mécanique châssis ──────────────────────────────
+        self.servo_bias        = 0.0  # offset px appris (steering résiduel quand err≈0)
+        self._bias_samples     = []   # échantillons steering récents quand err≈0
+        # ── Sliding windows : positions précédentes pour restreindre la recherche
+        self.hist_prev_left    = None  # cx ligne gauche frame précédente
+        self.hist_prev_right   = None  # cx ligne droite frame précédente
         self.vr           = VisualRays(
             img_width=CAM_W, img_height=CAM_H,
             row_band=(ROI_FAR, ROI_BOTTOM), morph_k=5,
@@ -797,10 +813,12 @@ class PDController:
         if _camera_restarted[0]:
             _camera_restarted[0] = False
             self.kalman.reset()
-            self.err_smooth = 0.0
-            self.prev_err   = 0.0
-            self.track_widths = []  # oublier les mesures de piste avant le crash
-            print("[ctrl] camera restart → reset Kalman+track_widths")
+            self.err_smooth      = 0.0
+            self.prev_err        = 0.0
+            self.track_widths    = []
+            self.hist_prev_left  = None  # oublier positions sliding windows
+            self.hist_prev_right = None
+            print("[ctrl] camera restart → reset Kalman+track_widths+sliding_windows")
         rays    = self.vr(bgr)
         blobs, rejected_blobs = get_blobs(mask)
         n_blobs = len(blobs)
@@ -818,12 +836,39 @@ class PDController:
         m_wide = mask_wide if mask_wide is not None else mask
         corner_blob = detect_corner_blob(m_wide)
 
-        # ── Détection lignes : Histogramme (calcul) + Raycasts horizontaux (visu) ──
-        hist_l, hist_r, hist_lconf, hist_rconf = find_lane_histogram(mask)
+        # ── Détection lignes : Histogramme sliding + Scanlines + Fusion ─────
+        hist_l, hist_r, hist_lconf, hist_rconf = find_lane_histogram(
+            mask, prev_left=self.hist_prev_left, prev_right=self.hist_prev_right)
         scan_l, scan_r, scan_rows, scan_left_hits, scan_right_hits = find_lane_scanlines(mask)
-        # Histogramme seul pour le calcul d'erreur (plus robuste au bruit central)
-        # Les scanlines servent uniquement à la visualisation (points rouges dans le stream)
-        left_cx, right_cx = hist_l, hist_r
+
+        # Confiance scanlines : nb hits / 6 scanlines
+        conf_scan_l = len(scan_left_hits)  / 6.0
+        conf_scan_r = len(scan_right_hits) / 6.0
+        HIST_PEAK_MAX = 12.0 * 255.0 * 20.0  # valeur de normalisation
+        conf_hist_l = min(1.0, hist_lconf / HIST_PEAK_MAX)
+        conf_hist_r = min(1.0, hist_rconf / HIST_PEAK_MAX)
+
+        # Fusion pondérée histogramme + scanlines quand les deux existent et concordent
+        def _fuse_cx(h, c_h, s, c_s):
+            if h is None and s is None:
+                return None
+            if h is None:
+                return s
+            if s is None or c_s < 0.34:  # moins de 2 hits scanlines → ignorer
+                return h
+            if abs(h - s) > 50:          # divergence forte → histogramme prioritaire
+                return h
+            total_w = c_h + c_s
+            if total_w < 1e-6:
+                return h
+            return int(round((h * c_h + s * c_s) / total_w))
+
+        left_cx  = _fuse_cx(hist_l, conf_hist_l, scan_l, conf_scan_l)
+        right_cx = _fuse_cx(hist_r, conf_hist_r, scan_r, conf_scan_r)
+
+        # Mémoriser les positions pour la prochaine frame (sliding windows)
+        if left_cx  is not None: self.hist_prev_left  = left_cx
+        if right_cx is not None: self.hist_prev_right = right_cx
 
         # n_blobs : nombre de lignes détectées (0/1/2) — pour CORNER et COAST
         n_blobs = (1 if left_cx is not None else 0) + (1 if right_cx is not None else 0)
@@ -849,7 +894,7 @@ class PDController:
                 print("[ctrl] CORNER score={} dir={:+.0f}".format(cscore, self.corner_dir))
 
         # Offset effectif calculé ici pour être appliqué à l'erreur BRUTE
-        effective_offset = CAMERA_OFFSET_PX + int(self.auto_offset)
+        effective_offset = CAMERA_OFFSET_PX + int(self.auto_offset) + int(self.servo_bias)
 
         if self.corner_mode:
             self.corner_count -= 1
@@ -1007,6 +1052,23 @@ class PDController:
             if n_blobs == 1 and len(self.track_widths) < 3:
                 steering = max(-0.40, min(0.40, steering))
         self.last_steering_cmd = steering   # mémoriser pour INERTIAL_COAST
+
+        # ── Servo bias : apprentissage biais mécanique châssis ────────────────
+        # Si err≈0 (voiture centrée) mais steer≠0, c'est un défaut physique du servo
+        if n_blobs == 2 and err is not None and abs(float(err)) < 8:
+            self._bias_samples.append(steering)
+            if len(self._bias_samples) >= 80:
+                mean_steer = sum(self._bias_samples[-40:]) / 40.0
+                if abs(mean_steer) > 0.02:  # biais significatif
+                    # Convertir steering résiduel en pixels d'offset (steer = kp * err_manquant)
+                    bias_px = mean_steer / max(0.006, KP)
+                    self.servo_bias = 0.95 * self.servo_bias + 0.05 * bias_px
+                    self.servo_bias = max(-60.0, min(60.0, self.servo_bias))
+                    print("[servo_bias] {:.1f}px (steer_moyen={:.3f})".format(self.servo_bias, mean_steer))
+                self._bias_samples = []
+        else:
+            if len(self._bias_samples) > 10:
+                self._bias_samples = []  # reset si on quitte la zone stable
 
         info = {
             "err": err, "steering": steering, "throttle": throttle,
@@ -1209,6 +1271,11 @@ def run(args):
                             "blobs":    info["n_blobs"],
                         })
 
+                    # Mémoriser pour coast mode (crash caméra)
+                    if abs(steering) < 0.5 and throttle > 0:
+                        _coast_steer[0]    = steering
+                        _coast_throttle[0] = throttle
+
                     if vesc is not None:
                         if _drive_enabled:
                             vesc.drive(steering, throttle)
@@ -1241,14 +1308,37 @@ def run(args):
         except KeyboardInterrupt:
             print("[ctrl] Arret."); break
         except Exception as e:
+            print("[ctrl] Erreur ({}) — coast mode + reset USB + reconnexion".format(type(e).__name__))
+            _coast_crash_t[0] = time.time()
+            _usb_reset_oak()
+            delay = max(5, min(5 * attempt, 30))
+            coast_s = float(_coast_steer[0])
+            coast_t = float(_coast_throttle[0])
+            # Coast mode : décroissance progressive pendant le reset USB
+            elapsed = 0.0
+            while elapsed < delay:
+                elapsed = time.time() - _coast_crash_t[0]
+                if vesc and _drive_enabled:
+                    if elapsed < 0.5:
+                        s = coast_s
+                        t = coast_t
+                    elif elapsed < 1.5:
+                        s = coast_s * 0.90
+                        t = coast_t * 0.90
+                    elif elapsed < 2.5:
+                        s = coast_s * 0.70
+                        t = coast_t * 0.60
+                    else:
+                        try: vesc.stop()
+                        except: pass
+                        break
+                    try: vesc.drive(s, t)
+                    except: pass
+                time.sleep(0.05)
             if vesc:
                 try: vesc.stop()
                 except: pass
-            print("[ctrl] Erreur ({}) — reset USB + reconnexion".format(type(e).__name__))
-            _usb_reset_oak()
-            delay = max(5, min(5 * attempt, 30))
-            print("[ctrl] Reconnexion dans {}s...".format(delay))
-            time.sleep(delay)
+            print("[ctrl] Reconnexion dans {}s restantes...".format(max(0, delay - elapsed)))
 
     if vesc:
         try: vesc.stop(); vesc.close()

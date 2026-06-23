@@ -284,6 +284,20 @@ def push_frame(bgr, mask, info, rejected_blobs=None):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.28, (0, 128, 255), 1)
     # Ligne verticale blanche = cible (la voiture doit rester ici)
     cv2.line(vis, (CAM_W // 2, int(CAM_H * ROI_FAR)), (CAM_W // 2, CAM_H), (255, 255, 255), 1)
+    # Lignes JAUNES verticales = positions détectées par histogramme
+    y_hist = int(CAM_H * 0.62)
+    if info.get("hist_left_cx") is not None:
+        cv2.line(vis, (info["hist_left_cx"], y_hist), (info["hist_left_cx"], CAM_H), (0, 220, 255), 2)
+    if info.get("hist_right_cx") is not None:
+        cv2.line(vis, (info["hist_right_cx"], y_hist), (info["hist_right_cx"], CAM_H), (0, 220, 255), 2)
+    # Raycasts HORIZONTAUX : tirets depuis le centre + cercle rouge sur la touche
+    mid_x = CAM_W // 2
+    for (hx, hy) in info.get("scan_left_hits", []):
+        cv2.line(vis, (mid_x, hy), (hx, hy), (0, 80, 255), 1)   # trait rouge depuis centre
+        cv2.circle(vis, (hx, hy), 4, (0, 0, 255), -1)            # cercle rouge = touche
+    for (hx, hy) in info.get("scan_right_hits", []):
+        cv2.line(vis, (mid_x, hy), (hx, hy), (0, 80, 255), 1)
+        cv2.circle(vis, (hx, hy), 4, (0, 0, 255), -1)
     # Point VERT = midpoint de contrôle réel (ce que suit la voiture)
     # Le trait bleu = direction de steering, part du bas-centre vers le point vert
     if info["err"] is not None:
@@ -425,6 +439,138 @@ def err_from_bands(mask):
     mask_mid  = mask.copy(); mask_mid[row_near:, :] = 0; mask_mid[:row_mid, :] = 0
     mask_far  = mask.copy(); mask_far[row_mid:, :] = 0;  mask_far[:row_far, :] = 0
     return err_from_mask(mask_near), err_from_mask(mask_mid), err_from_mask(mask_far)
+
+
+def find_lane_histogram(mask):
+    """
+    Détecte les deux lignes de piste par histogramme de colonnes.
+
+    Au lieu de chercher des blobs (objets connectés), on somme les pixels blancs
+    par colonne dans la zone basse. Les vraies lignes de piste traversent l'image
+    en hauteur → gros pic. Les artefacts isolés (meubles, ombres) = pic faible.
+
+    Returns: (left_cx, right_cx, left_conf, right_conf)
+      left_cx / right_cx : position pixel du pic gauche/droit, None si non détecté
+      left_conf / right_conf : énergie du pic (somme pixels blancs dans la colonne)
+    """
+    y_start = int(CAM_H * 0.62)
+    y_end   = int(CAM_H * 0.97)
+    roi = mask[y_start:y_end, :]
+
+    # Histogramme : somme des pixels blancs par colonne (valeur max = 255 × hauteur_roi)
+    hist = np.sum(roi.astype(np.float32), axis=0)
+
+    # Lissage gaussien 21px : fusionne les pixels adjacents d'une même ligne blanche
+    # Une ligne de piste fait ~30-60px de large → le pic se consolide
+    k = 21
+    sigma = k / 4.0
+    xs = np.arange(-(k // 2), k // 2 + 1, dtype=np.float32)
+    gauss = np.exp(-0.5 * (xs / sigma) ** 2)
+    gauss /= gauss.sum()
+    hist = np.convolve(hist, gauss, mode='same')
+
+    mid = CAM_W // 2
+
+    # Seuil minimum : au moins ~12px blancs dans la colonne
+    HIST_MIN = 12.0 * 255.0
+
+    left_half  = hist[:mid]
+    right_half = hist[mid:]
+
+    left_peak  = float(np.max(left_half))
+    right_peak = float(np.max(right_half))
+
+    left_cx  = int(np.argmax(left_half))        if left_peak  >= HIST_MIN else None
+    right_cx = int(mid + np.argmax(right_half)) if right_peak >= HIST_MIN else None
+
+    return left_cx, right_cx, left_peak, right_peak
+
+
+def find_lane_scanlines(mask, n_lines=6):
+    """
+    Raycasts horizontaux depuis le centre vers les bords sur N lignes.
+
+    Sur chaque scanline, on part du centre et on cherche :
+      - vers la GAUCHE : premier pixel blanc = bord intérieur de la ligne gauche
+      - vers la DROITE : premier pixel blanc = bord intérieur de la ligne droite
+
+    Avantage vs extrêmes gauche/droite : insensible aux artefacts aux bords de l'image.
+    Les artefacts lointains ne sont jamais atteints car on s'arrête au premier blanc.
+
+    Returns: (left_cx, right_cx, scanline_rows, left_hits, right_hits)
+      left_cx / right_cx : médiane des touches, None si aucune scanline n'a touché
+      scanline_rows : liste des y des scanlines (pour visu)
+      left_hits / right_hits : liste des touches (x, y) pour visu
+    """
+    mid_x = CAM_W // 2
+    # Scanlines de 65% à 90% de la hauteur — zone proche, lignes larges et nettes
+    rows = [int(CAM_H * (0.65 + i * (0.25 / max(n_lines - 1, 1)))) for i in range(n_lines)]
+
+    left_xs   = []
+    right_xs  = []
+    left_hits  = []
+    right_hits = []
+
+    for r in rows:
+        r = min(r, CAM_H - 1)
+        line = mask[r, :]
+
+        # Raycast vers la gauche depuis le centre
+        hit_l = None
+        for x in range(mid_x, -1, -1):
+            if line[x] > 0:
+                hit_l = x
+                break
+        if hit_l is not None:
+            left_xs.append(hit_l)
+            left_hits.append((hit_l, r))
+
+        # Raycast vers la droite depuis le centre
+        hit_r = None
+        for x in range(mid_x, CAM_W):
+            if line[x] > 0:
+                hit_r = x
+                break
+        if hit_r is not None:
+            right_xs.append(hit_r)
+            right_hits.append((hit_r, r))
+
+    # Filtrage : rejeter les touches trop proches du centre (bruit au milieu)
+    MIN_DIST_FROM_CENTER = 15
+    left_xs  = [x for x in left_xs  if mid_x - x > MIN_DIST_FROM_CENTER]
+    right_xs = [x for x in right_xs if x - mid_x > MIN_DIST_FROM_CENTER]
+
+    left_cx  = int(np.median(left_xs))  if left_xs  else None
+    right_cx = int(np.median(right_xs)) if right_xs else None
+
+    return left_cx, right_cx, rows, left_hits, right_hits
+
+
+def fuse_lane_estimates(hist_left, hist_right, scan_left, scan_right):
+    """
+    Fusionne les estimations histogramme + raycasts horizontaux.
+
+    Si les deux méthodes sont proches (< 40px) → moyenne pondérée.
+    Si divergence → préférer l'histogramme (vue globale plus robuste).
+    Si une seule méthode donne un résultat → utiliser celle-là.
+
+    Returns: (left_cx, right_cx) — valeurs fusionnées ou None
+    """
+    MAX_DIVERGENCE = 40   # px
+
+    def _fuse_one(h, s):
+        if h is not None and s is not None:
+            if abs(h - s) <= MAX_DIVERGENCE:
+                return int(round(0.5 * h + 0.5 * s))  # moyenne équipondérée
+            else:
+                return h  # divergence → histogramme prioritaire
+        if h is not None:
+            return h
+        if s is not None:
+            return s
+        return None
+
+    return _fuse_one(hist_left, scan_left), _fuse_one(hist_right, scan_right)
 
 
 def detect_corner_blob(mask):
@@ -584,26 +730,13 @@ class PDController:
         m_wide = mask_wide if mask_wide is not None else mask
         corner_blob = detect_corner_blob(m_wide)
 
-        # ── Blob proximity tracker : rejette les sauts >80px vers des artefacts ─
-        if blobs:
-            lefts  = [b for b in blobs if b["cx"] < CAM_W // 2]
-            rights = [b for b in blobs if b["cx"] >= CAM_W // 2]
-            if lefts and self.last_left_cx is not None:
-                best_l = min(lefts, key=lambda b: abs(b["cx"] - self.last_left_cx))
-                if abs(best_l["cx"] - self.last_left_cx) > 80:
-                    best_l = max(lefts, key=lambda b: b["area"])
-                blobs = [best_l] + [b for b in blobs if b["cx"] >= CAM_W // 2]
-            if rights and self.last_right_cx is not None:
-                best_r = min(rights, key=lambda b: abs(b["cx"] - self.last_right_cx))
-                if abs(best_r["cx"] - self.last_right_cx) > 80:
-                    best_r = max(rights, key=lambda b: b["area"])
-                blobs = [b for b in blobs if b["cx"] < CAM_W // 2] + [best_r]
-            n_blobs = len(blobs)
-            self.last_left_cx  = min(blobs, key=lambda b: b["cx"])["cx"] if blobs else None
-            self.last_right_cx = max(blobs, key=lambda b: b["cx"])["cx"] if blobs else None
-        else:
-            self.last_left_cx = None
-            self.last_right_cx = None
+        # ── Détection lignes : Histogramme + Raycasts horizontaux + Fusion ──
+        hist_l, hist_r, hist_lconf, hist_rconf = find_lane_histogram(mask)
+        scan_l, scan_r, scan_rows, scan_left_hits, scan_right_hits = find_lane_scanlines(mask)
+        left_cx, right_cx = fuse_lane_estimates(hist_l, hist_r, scan_l, scan_r)
+
+        # n_blobs : nombre de lignes détectées (0/1/2) — pour CORNER et COAST
+        n_blobs = (1 if left_cx is not None else 0) + (1 if right_cx is not None else 0)
 
         # ── Machine à états CORNER — score multi-signal ≥ 3 requis (IA) ─────
         if not self.corner_mode:
@@ -633,30 +766,31 @@ class PDController:
             err = self.corner_dir * 200.0
             self.state = "CORNER"
         else:
-            # Mémoire de direction (mise à jour seulement, pas de boost)
-            turn_boost = 0.0  # désactivé : causait des oscillations quand b=2
-
-            # ── Méthode principale : deux lignes séparées (gauche/droite) ──
-            # Largeur dynamique : médiane des 10 dernières mesures réelles (b=2)
-            last_tw = None
-            if len(self.track_widths) >= 3:
-                last_tw = float(np.median(self.track_widths[-10:]))
-            if self.level >= 3 and n_blobs >= 2:
-                err_lines, tw = err_from_two_lines(blobs, track_width=last_tw)
-                if tw is not None and tw > 100 and tw < CAM_W - 20:
+            # ── Calcul erreur depuis positions fusionnées ──────────────────
+            last_tw = float(np.median(self.track_widths[-10:])) if len(self.track_widths) >= 3 else float(TRACK_WIDTH_EST_PX)
+            if left_cx is not None and right_cx is not None:
+                center = (left_cx + right_cx) // 2
+                err = center - CAM_W // 2
+                tw = right_cx - left_cx
+                if 100 < tw < CAM_W - 20:
                     self.track_widths.append(tw)
                     if len(self.track_widths) > 20:
                         self.track_widths.pop(0)
-                err = err_lines
-            elif n_blobs == 1:
-                # b=1 : utilise la largeur dynamique pour mieux estimer la ligne manquante
-                err_lines, _ = err_from_two_lines(blobs, track_width=last_tw)
-                if err_lines is not None:
-                    err = err_lines
-            # ── Fallback : centroïde global du masque (point rouge) ────────
+            elif left_cx is not None:
+                est_right = left_cx + int(last_tw)
+                center = (left_cx + est_right) // 2
+                err = center - CAM_W // 2
+            elif right_cx is not None:
+                est_left = right_cx - int(last_tw)
+                center = (est_left + right_cx) // 2
+                err = center - CAM_W // 2
+            else:
+                err = None
+
+            # Fallback : centroïde global du masque si aucune ligne trouvée
             if err is None:
                 err = err_from_mask(mask)
-            if err is None and n_blobs == 0:
+            if err is None:
                 err = err_from_mask(m_wide)
 
             # Mémoire de tendance : maintient la direction si vision perdue
@@ -667,7 +801,7 @@ class PDController:
                 if abs(err) > 60:
                     self.last_turn_dir = 1.0 if err > 0 else -1.0
                     self.turn_memory_ctr = 15
-            # Trend et mémoire : seulement si b=0 (pas de blob visible)
+            # Trend et mémoire : seulement si aucune ligne visible
             if n_blobs == 0:
                 trend = sum(self.err_history) / len(self.err_history) if self.err_history else 0.0
                 if err is None:
@@ -696,6 +830,9 @@ class PDController:
                         "forward_clearance": forward_clearance,
                         "blobs_cx": [], "corner": False,
                         "ray_asym": round(ray_asym, 2), "scan_pts": [],
+                        "hist_left_cx": hist_l, "hist_right_cx": hist_r,
+                        "scan_left_hits": scan_left_hits,
+                        "scan_right_hits": scan_right_hits,
                     }
                     push_frame(bgr, mask, info, rejected_blobs)
                     return steering, throttle, info
@@ -753,11 +890,14 @@ class PDController:
             "err": err, "steering": steering, "throttle": throttle,
             "state": self.state, "n_blobs": n_blobs,
             "forward_clearance": forward_clearance,
-            "blobs_cx": [b["cx"] for b in blobs[:4]],
+            "blobs_cx": [],
             "corner": corner_blob is not None,
             "ray_asym": round(ray_asym, 2),
             "scan_pts": scan_pts,
             "rejected_blobs": rejected_blobs,
+            "hist_left_cx": hist_l, "hist_right_cx": hist_r,
+            "scan_left_hits": scan_left_hits,
+            "scan_right_hits": scan_right_hits,
         }
         return steering, throttle, info
 

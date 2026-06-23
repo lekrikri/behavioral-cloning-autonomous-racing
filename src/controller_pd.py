@@ -506,7 +506,15 @@ class PDController:
         d_raw = err - self.prev_err
         self.d_filtered = ALPHA_D * self.d_filtered + (1.0 - ALPHA_D) * d_raw
         self.prev_err = err
-        raw = KP * err + KD * self.d_filtered
+        # KP adaptatif : fort si loin du centre, doux si proche (anti-oscillation)
+        abs_err = abs(err)
+        if abs_err > 50:
+            kp = 0.020          # loin → correction forte
+        elif abs_err < 15:
+            kp = 0.008          # près → correction douce (évite les micro-oscillations)
+        else:
+            kp = 0.008 + (0.020 - 0.008) * (abs_err - 15.0) / (50.0 - 15.0)
+        raw = kp * err + KD * self.d_filtered
         raw = max(-STEERING_MAX, min(STEERING_MAX, raw))
         if abs(raw) < STEERING_DEADZONE:
             raw = 0.0

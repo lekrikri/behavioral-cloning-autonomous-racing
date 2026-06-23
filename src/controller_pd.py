@@ -707,9 +707,10 @@ class _Kalman1D(object):
 
 
 class PDController:
-    def __init__(self, level=3, fixed_speed=None):
+    def __init__(self, level=3, fixed_speed=None, no_corner=False):
         self.level        = level
         self.fixed_speed  = fixed_speed
+        self.no_corner    = no_corner
         self.prev_err     = 0.0
         self.d_filtered   = 0.0
         self.state        = "STOP"
@@ -819,17 +820,17 @@ class PDController:
         # n_blobs : nombre de lignes détectées (0/1/2) — pour CORNER et COAST
         n_blobs = (1 if left_cx is not None else 0) + (1 if right_cx is not None else 0)
 
-        # ── Machine à états CORNER — score multi-signal ≥ 3 requis (IA) ─────
-        if not self.corner_mode:
+        # ── Machine à états CORNER — score multi-signal ≥ 4 requis ─────────
+        if not self.corner_mode and not self.no_corner:
             cscore = 0
             if corner_blob is not None:
                 cscore += 2                                  # blob compact = signal fort
-            if abs(ray_asym) > 0.35:
+            if abs(ray_asym) > 0.40:
                 cscore += 1                                  # asymétrie raycasts
             if self.prev_n_blobs == 2 and n_blobs <= 1:
                 cscore += 1                                  # disparition soudaine d'une ligne
 
-            if cscore >= 3:
+            if cscore >= 4:
                 if corner_blob is not None:
                     corner_dir_cx = corner_blob["cx"]
                 else:
@@ -1042,6 +1043,8 @@ def parse_args():
                         "au centre de la piste et ajuster jusqu'a err=0.")
     p.add_argument("--steering-max", type=float, default=None,
                    help="Override STEERING_MAX [0.3-1.0] (defaut: 0.85).")
+    p.add_argument("--no-corner",   action="store_true",
+                   help="Desactive la detection de coin L (mode ligne droite / test).")
     return p.parse_args()
 
 
@@ -1072,7 +1075,7 @@ def run(args):
     print("[ctrl] ROI_FAR={:.2f} ROI_MID={:.2f} ROI_NEAR={:.2f}".format(
         ROI_FAR, ROI_MID, ROI_NEAR))
 
-    ctrl = PDController(level=args.level, fixed_speed=args.fixed_speed)
+    ctrl = PDController(level=args.level, fixed_speed=args.fixed_speed, no_corner=args.no_corner)
 
     # Mode replay : charge le CSV de piste enregistrée
     replay_data = None

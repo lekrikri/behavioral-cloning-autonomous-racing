@@ -268,13 +268,20 @@ def start_stream_server(port):
         socket.gethostbyname(socket.gethostname()), port))
 
 
-def push_frame(bgr, mask, info):
+def push_frame(bgr, mask, info, rejected_blobs=None):
     global _latest_jpeg, _frame_id
     vis = bgr.copy()
-    # overlay masque vert
+    # overlay masque vert (blobs acceptés uniquement — lignes de piste)
     green = np.zeros_like(vis)
     green[:, :, 1] = mask
     vis = cv2.addWeighted(vis, 1.0, green, 0.5, 0)
+    # Blobs REJETÉS en orange — artefacts filtrés (debug, ne touche pas l'algo)
+    if rejected_blobs:
+        for rb in rejected_blobs:
+            x, yt, w, h = rb["rect"]
+            cv2.rectangle(vis, (x, yt), (x + w, yt + h), (0, 128, 255), 1)
+            cv2.putText(vis, rb["reason"], (x, max(yt - 2, 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.28, (0, 128, 255), 1)
     # Ligne verticale blanche = cible (la voiture doit rester ici)
     cv2.line(vis, (CAM_W // 2, int(CAM_H * ROI_FAR)), (CAM_W // 2, CAM_H), (255, 255, 255), 1)
     # Point VERT = midpoint de contrôle réel (ce que suit la voiture)
@@ -313,45 +320,56 @@ def push_frame(bgr, mask, info):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_blobs(mask):
-    """Retourne les blobs de lignes de piste (filtre chaises, tapis, logos)."""
+    """Retourne (accepted_blobs, rejected_blobs) — les rejetés servent uniquement à la visu orange."""
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cy_min     = int(CAM_H * 0.44)  # compromis vision lointaine + filtrage artefacts
-    cy_max     = int(CAM_H * 0.97)  # exclut la bordure basse
-    y_bot_min  = int(CAM_H * 0.62)  # le bas du blob doit descendre sous 62% (touch bottom)
-    aspect_min = 0.35                # lignes en perspective aspect~0.3-0.5, pieds chaises ~0.05-0.15
-    w_min      = 20                  # une ligne de piste a au moins 20px de large
-    blobs = []
+    cy_min     = int(CAM_H * 0.44)
+    cy_max     = int(CAM_H * 0.97)
+    y_bot_min  = int(CAM_H * 0.62)
+    # 0.10 : pieds de chaises (area<<800) déjà éliminés par MIN_BLOB_AREA,
+    # les lignes en perspective ont w/h ~0.10-0.30 selon distance
+    aspect_min = 0.10
+    w_min      = 20
+    blobs    = []
+    rejected = []
     for i in range(1, n):
         area   = stats[i, cv2.CC_STAT_AREA]
+        x      = stats[i, cv2.CC_STAT_LEFT]
+        y_top  = stats[i, cv2.CC_STAT_TOP]
         w      = stats[i, cv2.CC_STAT_WIDTH]
         h      = max(stats[i, cv2.CC_STAT_HEIGHT], 1)
         aspect = w / float(h)
-        cx     = stats[i, cv2.CC_STAT_LEFT] + w // 2
-        cy     = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT] // 2
-        y_bot  = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT]
+        cx     = x + w // 2
+        cy     = y_top + stats[i, cv2.CC_STAT_HEIGHT] // 2
+        y_bot  = y_top + stats[i, cv2.CC_STAT_HEIGHT]
+        rect   = (x, y_top, w, h)
+
         if cy < cy_min or cy > cy_max:
-            continue  # hors zone piste verticalement
+            rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "cy", "rect": rect})
+            continue
         if y_bot < y_bot_min:
-            continue  # artefact haut (extincteur, logo mural) — ne touche pas le bas du ROI
+            rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "ybot", "rect": rect})
+            continue
         if area < MIN_BLOB_AREA:
+            rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "area", "rect": rect})
             continue
         if aspect < aspect_min:
-            continue  # objet vertical (pied de chaise aspect~0.1, poteau, barre)
+            rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "asp", "rect": rect})
+            continue
         if w < w_min:
-            continue  # trop fin horizontalement
-        # Blobs compacts de grande taille = flèche/logo au sol
+            rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "w", "rect": rect})
+            continue
         if area > 3000 and 0.5 < aspect < 2.0:
+            rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "cmp", "rect": rect})
             continue
         blobs.append({"cx": cx, "cy": cy, "area": area, "aspect": round(aspect, 1)})
+
     blobs.sort(key=lambda b: b["area"], reverse=True)
-    # Garder uniquement le blob le plus à gauche et le plus à droite
-    # (les vraies lignes de piste) — ignorer le bruit central
     if len(blobs) >= 2:
         left  = min(blobs, key=lambda b: b["cx"])
         right = max(blobs, key=lambda b: b["cx"])
         if left is not right:
-            return [left, right]
-    return blobs
+            return [left, right], rejected
+    return blobs, rejected
 
 
 def err_from_mask(mask):
@@ -503,7 +521,7 @@ class PDController:
 
     def compute(self, mask, bgr, mask_wide=None):
         rays    = self.vr(bgr)
-        blobs   = get_blobs(mask)
+        blobs, rejected_blobs = get_blobs(mask)
         n_blobs = len(blobs)
         forward_clearance = float(np.mean(rays[8:12]))
         err = None
@@ -627,7 +645,7 @@ class PDController:
                 if self.blind_frames <= 10:           # ~1.7s à 6fps : INERTIAL_COAST
                     throttle = self.fixed_speed * 0.65
                     self.state = "COAST"
-                    steering = self.last_steering_cmd * 0.90   # décroissance douce
+                    steering = self.last_steering_cmd * 0.80   # décroissance rapide vers 0
                     self.prev_n_blobs = 0
                     info = {
                         "err": err, "steering": steering, "throttle": throttle,
@@ -636,7 +654,7 @@ class PDController:
                         "blobs_cx": [], "corner": False,
                         "ray_asym": round(ray_asym, 2), "scan_pts": [],
                     }
-                    push_frame(bgr, mask, info)
+                    push_frame(bgr, mask, info, rejected_blobs)
                     return steering, throttle, info
                 else:
                     throttle = V_STOP
@@ -686,6 +704,7 @@ class PDController:
             "corner": corner_blob is not None,
             "ray_asym": round(ray_asym, 2),
             "scan_pts": scan_pts,
+            "rejected_blobs": rejected_blobs,
         }
         return steering, throttle, info
 
@@ -867,7 +886,7 @@ def run(args):
                             vesc.stop()
 
                     if args.stream_port > 0:
-                        push_frame(bgr, mask, info)
+                        push_frame(bgr, mask, info, info.get("rejected_blobs"))
                     _last_frame_time[0] = time.time()
 
                     frame_n += 1

@@ -497,33 +497,37 @@ def clean_mask_artifacts(mask, bgr=None):
         sobel_mag = np.sqrt(sx * sx + sy * sy)
 
     for i in range(1, n):
-        area = stats[i, cv2.CC_STAT_AREA]
-        bw   = stats[i, cv2.CC_STAT_WIDTH]
-        bh   = max(stats[i, cv2.CC_STAT_HEIGHT], 1)
-        cy   = stats[i, cv2.CC_STAT_TOP] + bh // 2
+        area  = stats[i, cv2.CC_STAT_AREA]
+        bx    = stats[i, cv2.CC_STAT_LEFT]
+        by    = stats[i, cv2.CC_STAT_TOP]
+        bw    = stats[i, cv2.CC_STAT_WIDTH]
+        bh    = max(stats[i, cv2.CC_STAT_HEIGHT], 1)
+        y_bot = by + bh   # bas du blob — clé : une ligne de piste touche la zone proche
         blob_mask = (labels == i)
 
         reason = None
 
         if area < 350:
             reason = "small"
-        elif cy < roi_top:
+        elif y_bot < int(CAM_H * 0.50):
+            # Le bas du blob est entièrement dans la moitié haute → mur/fond de salle
+            # Une vraie ligne vue de loin a quand même son bas dans la moitié basse
             reason = "high"
         else:
             asp = float(max(bw, bh)) / max(min(bw, bh), 1)
-            if asp < 1.8 and area < 2000:
-                reason = "compact"  # carré compact → chaussure, reflet, logo
+            if asp < 1.8 and area < 1500:
+                reason = "compact"  # carré compact petit → reflet, logo, chaussure
             elif sobel_mag is not None:
-                # Filtre Sobel : mesure le gradient moyen sur le bord extérieur du blob
-                # Les vraies lignes (blanc net sur gris foncé) ont un fort gradient.
-                # Les reflets diffus et artefacts lointains ont un gradient faible.
+                # Filtre Sobel : mesure le gradient moyen sur le bord extérieur du blob.
+                # Vraie ligne blanche sur sol gris → bords très nets → gradient élevé.
+                # Reflet diffus, mur gris → bords flous → gradient faible.
                 kernel3 = np.ones((3, 3), np.uint8)
                 blob_u8 = blob_mask.astype(np.uint8) * 255
                 border  = cv2.dilate(blob_u8, kernel3) - blob_u8
                 border_pixels = sobel_mag[border > 0]
                 if len(border_pixels) > 0:
                     mean_grad = float(np.mean(border_pixels))
-                    if mean_grad < 18.0:  # gradient trop faible = reflet diffus
+                    if mean_grad < 12.0:  # seuil bas : ne rejeter que les reflets vraiment diffus
                         reason = "diffuse"
 
         if reason is not None:

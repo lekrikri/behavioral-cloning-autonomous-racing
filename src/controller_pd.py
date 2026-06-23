@@ -517,17 +517,17 @@ def clean_mask_artifacts(mask, bgr=None):
             asp = float(max(bw, bh)) / max(min(bw, bh), 1)
             if asp < 1.8 and area < 1500:
                 reason = "compact"  # carré compact petit → reflet, logo, chaussure
-            elif sobel_mag is not None:
-                # Filtre Sobel : mesure le gradient moyen sur le bord extérieur du blob.
-                # Vraie ligne blanche sur sol gris → bords très nets → gradient élevé.
-                # Reflet diffus, mur gris → bords flous → gradient faible.
+            elif sobel_mag is not None and area < 4000:
+                # Sobel uniquement sur les blobs de taille MOYENNE.
+                # Les vraies lignes proches sont grandes (area >> 4000) → jamais filtrées ici.
+                # Le filtre cible les artefacts moyens diffus : mur lointain, reflet de sol.
                 kernel3 = np.ones((3, 3), np.uint8)
                 blob_u8 = blob_mask.astype(np.uint8) * 255
                 border  = cv2.dilate(blob_u8, kernel3) - blob_u8
                 border_pixels = sobel_mag[border > 0]
                 if len(border_pixels) > 0:
                     mean_grad = float(np.mean(border_pixels))
-                    if mean_grad < 12.0:  # seuil bas : ne rejeter que les reflets vraiment diffus
+                    if mean_grad < 10.0:  # seuls les reflets vraiment flous sont rejetés
                         reason = "diffuse"
 
         if reason is not None:

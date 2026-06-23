@@ -294,10 +294,17 @@ def start_stream_server(port):
 def push_frame(bgr, mask, info, rejected_blobs=None):
     global _latest_jpeg, _frame_id
     vis = bgr.copy()
-    # overlay masque vert (blobs acceptés uniquement — lignes de piste)
+    mask_rej   = info.get("mask_rejected")
+    mask_clean = info.get("mask_clean", mask)  # masque filtré pour overlay vert
+    # overlay vert = pixels ACCEPTÉS (vraies lignes de piste après filtre IA)
     green = np.zeros_like(vis)
-    green[:, :, 1] = mask
+    green[:, :, 1] = mask_clean
     vis = cv2.addWeighted(vis, 1.0, green, 0.5, 0)
+    # overlay rouge = pixels REJETÉS par filtre IA (artefacts, reflets, murs)
+    if mask_rej is not None and mask_rej.any():
+        red_ov = np.zeros_like(vis)
+        red_ov[:, :, 2] = mask_rej
+        vis = cv2.addWeighted(vis, 1.0, red_ov, 0.7, 0)
     # Blobs REJETÉS en orange — artefacts filtrés (debug, ne touche pas l'algo)
     if rejected_blobs:
         for rb in rejected_blobs:
@@ -341,10 +348,11 @@ def push_frame(bgr, mask, info, rejected_blobs=None):
             info["state"], corner_flag, info["n_blobs"],
             info.get("ray_asym", 0.0)),
         (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
-    # vue droite : caméra masquée (seuls les pixels détectés visibles, reste noir)
-    mask_bool = (mask > 0)
-    panel = bgr.copy()
-    panel[~mask_bool] = 0
+    # Panel droit : masque coloré — vert=accepté(ligne), rouge=rejeté(artefact IA)
+    panel = np.zeros_like(vis)
+    panel[mask > 0, 1] = 255          # vert = pixel accepté (vraie ligne)
+    if mask_rej is not None:
+        panel[mask_rej > 0, 2] = 255  # rouge = pixel rejeté par filtre IA
     display = np.hstack([vis, panel])
     _, jpg = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 65])
     with _stream_lock:
@@ -462,6 +470,68 @@ def err_from_bands(mask):
     mask_mid  = mask.copy(); mask_mid[row_near:, :] = 0; mask_mid[:row_mid, :] = 0
     mask_far  = mask.copy(); mask_far[row_mid:, :] = 0;  mask_far[:row_far, :] = 0
     return err_from_mask(mask_near), err_from_mask(mask_mid), err_from_mask(mask_far)
+
+
+def clean_mask_artifacts(mask, bgr=None):
+    """
+    Filtre intelligent du masque : supprime les composantes qui ne sont pas des lignes.
+
+    Deux niveaux de filtrage :
+    1. Géométrie : area, aspect ratio, position Y — rejette chaussures, logos, murs
+    2. Sobel edges (si bgr fourni) : les vraies lignes ont des bords nets sur fond gris.
+       Les reflets/artefacts diffus ont des bords flous → gradient Sobel faible.
+
+    Retourne (mask_clean, rejected_mask) pour la visualisation.
+    """
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    clean    = np.zeros_like(mask)
+    rejected = np.zeros_like(mask)
+    roi_top  = int(CAM_H * 0.52)
+
+    # Pré-calcul Sobel sur image grise (une seule fois pour toutes les composantes)
+    sobel_mag = None
+    if bgr is not None:
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        sx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        sy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        sobel_mag = np.sqrt(sx * sx + sy * sy)
+
+    for i in range(1, n):
+        area = stats[i, cv2.CC_STAT_AREA]
+        bw   = stats[i, cv2.CC_STAT_WIDTH]
+        bh   = max(stats[i, cv2.CC_STAT_HEIGHT], 1)
+        cy   = stats[i, cv2.CC_STAT_TOP] + bh // 2
+        blob_mask = (labels == i)
+
+        reason = None
+
+        if area < 350:
+            reason = "small"
+        elif cy < roi_top:
+            reason = "high"
+        else:
+            asp = float(max(bw, bh)) / max(min(bw, bh), 1)
+            if asp < 1.8 and area < 2000:
+                reason = "compact"  # carré compact → chaussure, reflet, logo
+            elif sobel_mag is not None:
+                # Filtre Sobel : mesure le gradient moyen sur le bord extérieur du blob
+                # Les vraies lignes (blanc net sur gris foncé) ont un fort gradient.
+                # Les reflets diffus et artefacts lointains ont un gradient faible.
+                kernel3 = np.ones((3, 3), np.uint8)
+                blob_u8 = blob_mask.astype(np.uint8) * 255
+                border  = cv2.dilate(blob_u8, kernel3) - blob_u8
+                border_pixels = sobel_mag[border > 0]
+                if len(border_pixels) > 0:
+                    mean_grad = float(np.mean(border_pixels))
+                    if mean_grad < 18.0:  # gradient trop faible = reflet diffus
+                        reason = "diffuse"
+
+        if reason is not None:
+            rejected[blob_mask] = 255
+        else:
+            clean[blob_mask] = 255
+
+    return clean, rejected
 
 
 def find_lane_histogram(mask, prev_left=None, prev_right=None):
@@ -836,10 +906,15 @@ class PDController:
         m_wide = mask_wide if mask_wide is not None else mask
         corner_blob = detect_corner_blob(m_wide)
 
+        # ── Masque nettoyé : supprime artefacts (reflets, chaussures, murs) ──
+        # Le masque brut reste pour la visu orange (blobs rejetés).
+        # L'histogramme et les scanlines utilisent le masque propre.
+        mask_clean, mask_rejected = clean_mask_artifacts(mask, bgr=bgr)
+
         # ── Détection lignes : Histogramme sliding + Scanlines + Fusion ─────
         hist_l, hist_r, hist_lconf, hist_rconf = find_lane_histogram(
-            mask, prev_left=self.hist_prev_left, prev_right=self.hist_prev_right)
-        scan_l, scan_r, scan_rows, scan_left_hits, scan_right_hits = find_lane_scanlines(mask)
+            mask_clean, prev_left=self.hist_prev_left, prev_right=self.hist_prev_right)
+        scan_l, scan_r, scan_rows, scan_left_hits, scan_right_hits = find_lane_scanlines(mask_clean)
 
         # Confiance scanlines : nb hits / 6 scanlines
         conf_scan_l = len(scan_left_hits)  / 6.0
@@ -970,8 +1045,10 @@ class PDController:
                         "hist_left_cx": hist_l, "hist_right_cx": hist_r,
                         "scan_left_hits": scan_left_hits,
                         "scan_right_hits": scan_right_hits,
+                        "mask_rejected": mask_rejected,
+                        "mask_clean": mask_clean,
                     }
-                    push_frame(bgr, mask, info, rejected_blobs)
+                    push_frame(bgr, mask_clean, info, rejected_blobs)
                     return steering, throttle, info
                 else:
                     throttle = V_STOP
@@ -1082,6 +1159,8 @@ class PDController:
             "hist_left_cx": hist_l, "hist_right_cx": hist_r,
             "scan_left_hits": scan_left_hits,
             "scan_right_hits": scan_right_hits,
+            "mask_rejected": mask_rejected,
+            "mask_clean": mask_clean,
         }
         return steering, throttle, info
 
@@ -1283,7 +1362,7 @@ def run(args):
                             vesc.stop()
 
                     if args.stream_port > 0:
-                        push_frame(bgr, mask, info, info.get("rejected_blobs"))
+                        push_frame(bgr, info.get("mask_clean", mask), info, info.get("rejected_blobs"))
                     _last_frame_time[0] = time.time()
 
                     frame_n += 1

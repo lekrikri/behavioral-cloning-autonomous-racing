@@ -155,7 +155,7 @@ ROI_MID      = 0.80
 ROI_NEAR     = 0.92
 ROI_BOTTOM   = 1.00
 MIN_BLOB_AREA  = 800
-MIN_CORNER_AREA = 1500
+MIN_CORNER_AREA = 6000
 CORNER_DURATION = 15   # frames de maintien virage (~1.25s @ 12fps)
 
 TRACK_WIDTH_EST_PX = 385
@@ -188,6 +188,7 @@ _placeholder = None
 _last_frame_time = [time.time()]   # watchdog : heure de la dernière frame reçue
 _watchdog_trigger = [False]        # mis à True par le watchdog pour forcer un reset
 _drive_enabled = True   # contrôlé via HTTP /stop et /go
+_go_reset = [False]         # mis à True par /go → PDController reset son état CORNER/Kalman
 _calibrate_request = [False]       # mis à True par /calibrate → PDController applique l'offset
 _calibrate_result  = [None]        # renseigné par PDController avec la valeur appliquée
 
@@ -223,6 +224,7 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             return
         if path == "/go":
             _drive_enabled = True
+            _go_reset[0] = True
             self._send_text("RUNNING")
             print("[ctrl] /go recu")
             return
@@ -643,7 +645,7 @@ def detect_corner_blob(mask):
     Retourne dict {cx, cy, area} ou None.
     """
     n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cy_min = int(CAM_H * 0.45)  # détecte coin L dans la moitié basse (élimine artefacts haut)
+    cy_min = int(CAM_H * 0.62)  # coin L visible seulement dans le bas (60%+), élimine murs/plafond
     best = None
     for i in range(1, n):
         area = stats[i, cv2.CC_STAT_AREA]
@@ -652,7 +654,7 @@ def detect_corner_blob(mask):
         asp  = w / float(h)
         cy   = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT] // 2
         cx   = stats[i, cv2.CC_STAT_LEFT] + w // 2
-        if area >= MIN_CORNER_AREA and asp < 1.8 and cy >= cy_min:
+        if area >= MIN_CORNER_AREA and asp < 1.5 and cy >= cy_min:
             if best is None or area > best["area"]:
                 best = {"cx": cx, "cy": cy, "area": area, "aspect": round(asp, 1)}
     return best
@@ -781,6 +783,15 @@ class PDController:
 
     def compute(self, mask, bgr, mask_wide=None):
         global CAMERA_OFFSET_PX
+        if _go_reset[0]:
+            _go_reset[0] = False
+            self.corner_mode  = False
+            self.corner_count = 0
+            self.prev_n_blobs = 0
+            self.kalman.reset()
+            self.err_smooth   = 0.0
+            self.prev_err     = 0.0
+            print("[ctrl] /go reset CORNER+Kalman")
         rays    = self.vr(bgr)
         blobs, rejected_blobs = get_blobs(mask)
         n_blobs = len(blobs)

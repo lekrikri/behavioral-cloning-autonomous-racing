@@ -366,6 +366,11 @@ def get_blobs(mask):
         if area > 3000 and solidity > 0.65 and aspect < 2.5:
             rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "cmp", "rect": rect})
             continue
+        # Rayons de soleil / reflets horizontaux : très larges et peu hauts (w>>h)
+        # Les lignes de piste longitudinales ont aspect < 4, les rayons > 5
+        if aspect > 5.0 and area > 1500:
+            rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "horiz", "rect": rect})
+            continue
         blobs.append({"cx": cx, "cy": cy, "area": area, "aspect": round(aspect, 1)})
 
     blobs.sort(key=lambda b: b["area"], reverse=True)
@@ -515,7 +520,7 @@ class PDController:
         # ── Err smoothing exponentiel (IA) ────────────────────────────────────
         self.err_smooth       = 0.0
         # ── Kalman 1D sur err latérale (IA multi-sources) ─────────────────────
-        self.kalman           = _Kalman1D(q=0.05, r=20.0)
+        self.kalman           = _Kalman1D(q=2.0, r=20.0)  # Q=2.0 → ~10 frames pour converger
         # ── Dérivée temporelle correcte ───────────────────────────────────────
         self.last_pd_time     = time.time()
         # ── CORNER multi-signal (IA) ──────────────────────────────────────────
@@ -721,6 +726,9 @@ class PDController:
             self.err_smooth = 0.65 * self.err_smooth + 0.35 * float(err)
             err = self.err_smooth
             # Kalman 1D : lisse davantage, robuste aux artefacts et dropouts
+            # Reset si changement de signe brutal (évite inertie après turn_boost/CORNER)
+            if self.kalman.x * float(err) < -100.0:
+                self.kalman.reset()
             err = self.kalman.update(float(err))
             # Deadband ±6px : élimine les micro-oscillations en ligne droite
             if abs(err) < 6.0:

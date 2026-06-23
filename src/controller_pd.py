@@ -488,21 +488,24 @@ def find_lane_histogram(mask):
 
 def find_lane_scanlines(mask, n_lines=6):
     """
-    Raycasts horizontaux depuis le centre vers les bords sur N lignes.
+    Raycasts horizontaux pour détecter le bord INTÉRIEUR de chaque ligne de piste.
 
-    Sur chaque scanline, on part du centre et on cherche :
-      - vers la GAUCHE : premier pixel blanc = bord intérieur de la ligne gauche
-      - vers la DROITE : premier pixel blanc = bord intérieur de la ligne droite
+    Stratégie : chercher depuis chaque moitié de l'image vers le centre.
+      - Moitié gauche (x=0 à mid-30) : le blanc le plus proche du centre = bord intérieur ligne gauche
+      - Moitié droite (x=mid+30 à CAM_W) : le blanc le plus proche du centre = bord intérieur ligne droite
 
-    Avantage vs extrêmes gauche/droite : insensible aux artefacts aux bords de l'image.
-    Les artefacts lointains ne sont jamais atteints car on s'arrête au premier blanc.
+    Avantage : insensible au bruit vert central (on ne part pas du centre, on évite cette zone).
+    Les vraies lignes de piste sont en dehors de la zone centrale.
 
     Returns: (left_cx, right_cx, scanline_rows, left_hits, right_hits)
-      left_cx / right_cx : médiane des touches, None si aucune scanline n'a touché
+      left_cx / right_cx : médiane des touches, None si aucune touche
       scanline_rows : liste des y des scanlines (pour visu)
       left_hits / right_hits : liste des touches (x, y) pour visu
     """
     mid_x = CAM_W // 2
+    MARGIN = 30   # zone morte autour du centre (30px de chaque côté)
+    MIN_WHITES = 4  # nombre minimum de pixels blancs pour valider une touche
+
     # Scanlines de 65% à 90% de la hauteur — zone proche, lignes larges et nettes
     rows = [int(CAM_H * (0.65 + i * (0.25 / max(n_lines - 1, 1)))) for i in range(n_lines)]
 
@@ -515,30 +518,20 @@ def find_lane_scanlines(mask, n_lines=6):
         r = min(r, CAM_H - 1)
         line = mask[r, :]
 
-        # Raycast vers la gauche depuis le centre
-        hit_l = None
-        for x in range(mid_x, -1, -1):
-            if line[x] > 0:
-                hit_l = x
-                break
-        if hit_l is not None:
+        # Moitié gauche : chercher le blanc le plus proche du centre (bord intérieur ligne gauche)
+        # np.where retourne les indices dans l'ordre croissant, donc [-1] = le plus proche du centre
+        whites_l = np.where(line[:mid_x - MARGIN] > 0)[0]
+        if len(whites_l) >= MIN_WHITES:
+            hit_l = int(whites_l[-1])   # le plus à droite = le plus proche du centre
             left_xs.append(hit_l)
             left_hits.append((hit_l, r))
 
-        # Raycast vers la droite depuis le centre
-        hit_r = None
-        for x in range(mid_x, CAM_W):
-            if line[x] > 0:
-                hit_r = x
-                break
-        if hit_r is not None:
+        # Moitié droite : chercher le blanc le plus proche du centre (bord intérieur ligne droite)
+        whites_r = np.where(line[mid_x + MARGIN:] > 0)[0]
+        if len(whites_r) >= MIN_WHITES:
+            hit_r = int(mid_x + MARGIN + whites_r[0])  # le plus à gauche = le plus proche du centre
             right_xs.append(hit_r)
             right_hits.append((hit_r, r))
-
-    # Filtrage : rejeter les touches trop proches du centre (bruit au milieu)
-    MIN_DIST_FROM_CENTER = 15
-    left_xs  = [x for x in left_xs  if mid_x - x > MIN_DIST_FROM_CENTER]
-    right_xs = [x for x in right_xs if x - mid_x > MIN_DIST_FROM_CENTER]
 
     left_cx  = int(np.median(left_xs))  if left_xs  else None
     right_cx = int(np.median(right_xs)) if right_xs else None
@@ -730,10 +723,12 @@ class PDController:
         m_wide = mask_wide if mask_wide is not None else mask
         corner_blob = detect_corner_blob(m_wide)
 
-        # ── Détection lignes : Histogramme + Raycasts horizontaux + Fusion ──
+        # ── Détection lignes : Histogramme (calcul) + Raycasts horizontaux (visu) ──
         hist_l, hist_r, hist_lconf, hist_rconf = find_lane_histogram(mask)
         scan_l, scan_r, scan_rows, scan_left_hits, scan_right_hits = find_lane_scanlines(mask)
-        left_cx, right_cx = fuse_lane_estimates(hist_l, hist_r, scan_l, scan_r)
+        # Histogramme seul pour le calcul d'erreur (plus robuste au bruit central)
+        # Les scanlines servent uniquement à la visualisation (points rouges dans le stream)
+        left_cx, right_cx = hist_l, hist_r
 
         # n_blobs : nombre de lignes détectées (0/1/2) — pour CORNER et COAST
         n_blobs = (1 if left_cx is not None else 0) + (1 if right_cx is not None else 0)

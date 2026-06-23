@@ -167,9 +167,9 @@ STEERING_MAX = 0.85
 STEERING_DEADZONE = 0.03
 CAMERA_OFFSET_PX = 0         # biais caméra — calibrer si la voiture dérive constamment
 
-V_MAX        = 0.14          # → ~7% duty, minimum viable
-V_TURN       = 0.14
-V_SLOW       = 0.14
+V_MAX        = 0.14          # vitesse max ligne droite (~7% duty)
+V_TURN       = 0.08          # vitesse virage (réduit pour stabilité)
+V_SLOW       = 0.10          # vitesse récupération b=1
 V_STOP       = 0.00
 
 CURVE_THRESH_HIGH = 0.30
@@ -780,6 +780,12 @@ def parse_args():
     p.add_argument("--roi-far", type=float, default=None,
                    help="Override ROI_FAR [0.0-0.9] — fraction du haut ignoree pour le masque. "
                         "Defaut: 0.65 sans crop, auto-ajuste si --cam-crop-top.")
+    p.add_argument("--camera-offset-px", type=int, default=0,
+                   help="Biais lateral camera en pixels (+ = camera decalee a droite, "
+                        "- = camera decalee a gauche). Calibrer en posant la voiture "
+                        "au centre de la piste et ajuster jusqu'a err=0.")
+    p.add_argument("--steering-max", type=float, default=None,
+                   help="Override STEERING_MAX [0.3-1.0] (defaut: 0.85).")
     return p.parse_args()
 
 
@@ -842,9 +848,14 @@ def run(args):
     else:
         print("[ctrl] DRY-RUN — VESC non commande")
 
+    global CAMERA_OFFSET_PX, STEERING_MAX
+    if args.camera_offset_px != 0:
+        CAMERA_OFFSET_PX = args.camera_offset_px
+    if args.steering_max is not None:
+        STEERING_MAX = args.steering_max
     speed_str = "fixed={:.2f}".format(args.fixed_speed) if args.fixed_speed else "adaptatif"
-    print("[ctrl] Niveau {} | {} | KP={} | offset={}px".format(
-        args.level, speed_str, KP, CAMERA_OFFSET_PX))
+    print("[ctrl] Niveau {} | {} | KP={} | offset={}px | steer_max={}".format(
+        args.level, speed_str, KP, CAMERA_OFFSET_PX, STEERING_MAX))
 
     # Watchdog : thread qui surveille les frames et force un reset si caméra gelée
     def _watchdog():

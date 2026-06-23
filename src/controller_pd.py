@@ -275,13 +275,16 @@ def push_frame(bgr, mask, info):
     green = np.zeros_like(vis)
     green[:, :, 1] = mask
     vis = cv2.addWeighted(vis, 1.0, green, 0.5, 0)
-    # Point rouge centroïde + ligne vers centre bas
-    M = cv2.moments(mask)
-    if M["m00"] > 0:
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
-        cv2.circle(vis, (cx, cy), 8, (0, 0, 255), -1)
-        cv2.line(vis, (CAM_W // 2, CAM_H - 1), (cx, cy), (255, 0, 0), 2)
+    # Ligne verticale blanche = cible (la voiture doit rester ici)
+    cv2.line(vis, (CAM_W // 2, int(CAM_H * ROI_FAR)), (CAM_W // 2, CAM_H), (255, 255, 255), 1)
+    # Point VERT = midpoint de contrôle réel (ce que suit la voiture)
+    # Le trait bleu = direction de steering, part du bas-centre vers le point vert
+    if info["err"] is not None:
+        ctrl_cx = int(CAM_W // 2 + info["err"])
+        ctrl_cx = max(0, min(CAM_W - 1, ctrl_cx))
+        ctrl_cy = int(CAM_H * 0.78)
+        cv2.circle(vis, (ctrl_cx, ctrl_cy), 10, (0, 255, 0), -1)
+        cv2.line(vis, (CAM_W // 2, CAM_H - 1), (ctrl_cx, ctrl_cy), (255, 0, 0), 2)
     # lignes bandes
     for frac, color in [(ROI_NEAR, (255, 200, 0)), (ROI_MID, (0, 200, 255)), (ROI_FAR, (0, 100, 255))]:
         cv2.line(vis, (0, int(CAM_H * frac)), (CAM_W, int(CAM_H * frac)), color, 1)

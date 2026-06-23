@@ -317,6 +317,7 @@ def get_blobs(mask):
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     cy_min     = int(CAM_H * 0.44)  # compromis vision lointaine + filtrage artefacts
     cy_max     = int(CAM_H * 0.97)  # exclut la bordure basse
+    y_bot_min  = int(CAM_H * 0.72)  # le bas du blob doit descendre sous 72% (touch bottom)
     aspect_min = 0.8                 # pieds de chaises aspect~0.05-0.3, lignes>=0.8
     w_min      = 20                  # une ligne de piste a au moins 20px de large
     blobs = []
@@ -325,10 +326,13 @@ def get_blobs(mask):
         w      = stats[i, cv2.CC_STAT_WIDTH]
         h      = max(stats[i, cv2.CC_STAT_HEIGHT], 1)
         aspect = w / float(h)
-        cx = stats[i, cv2.CC_STAT_LEFT] + w // 2
-        cy = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT] // 2
+        cx     = stats[i, cv2.CC_STAT_LEFT] + w // 2
+        cy     = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT] // 2
+        y_bot  = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT]
         if cy < cy_min or cy > cy_max:
             continue  # hors zone piste verticalement
+        if y_bot < y_bot_min:
+            continue  # artefact haut (extincteur, logo mural) — ne touche pas le bas du ROI
         if area < MIN_BLOB_AREA:
             continue
         if aspect < aspect_min:
@@ -460,6 +464,16 @@ class PDController:
         self.turn_memory_ctr  = 0     # frames restantes de mémoire
         # ── Dynamic track width : médiane des 20 dernières largeurs connues ───
         self.track_widths     = []    # largeurs réelles mesurées (n_blobs=2)
+        # ── Blob proximity tracker (IA) ───────────────────────────────────────
+        self.last_left_cx     = None  # cx du blob gauche frame précédente
+        self.last_right_cx    = None  # cx du blob droit frame précédente
+        # ── INERTIAL_COAST : maintien commande si vision perdue (IA) ──────────
+        self.blind_frames     = 0     # compteur frames sans vision
+        self.last_steering_cmd = 0.0  # dernier steering valide
+        # ── Err smoothing exponentiel (IA) ────────────────────────────────────
+        self.err_smooth       = 0.0
+        # ── CORNER multi-signal (IA) ──────────────────────────────────────────
+        self.prev_n_blobs     = 0     # pour détecter transition b=2→1
         self.vr           = VisualRays(
             img_width=CAM_W, img_height=CAM_H,
             row_band=(ROI_FAR, ROI_BOTTOM), morph_k=5,
@@ -505,21 +519,46 @@ class PDController:
         m_wide = mask_wide if mask_wide is not None else mask
         corner_blob = detect_corner_blob(m_wide)
 
-        # ── Machine à états CORNER (priorité absolue sur PD normal) ───────
+        # ── Blob proximity tracker : rejette les sauts >80px vers des artefacts ─
+        if blobs:
+            lefts  = [b for b in blobs if b["cx"] < CAM_W // 2]
+            rights = [b for b in blobs if b["cx"] >= CAM_W // 2]
+            if lefts and self.last_left_cx is not None:
+                best_l = min(lefts, key=lambda b: abs(b["cx"] - self.last_left_cx))
+                if abs(best_l["cx"] - self.last_left_cx) > 80:
+                    best_l = max(lefts, key=lambda b: b["area"])
+                blobs = [best_l] + [b for b in blobs if b["cx"] >= CAM_W // 2]
+            if rights and self.last_right_cx is not None:
+                best_r = min(rights, key=lambda b: abs(b["cx"] - self.last_right_cx))
+                if abs(best_r["cx"] - self.last_right_cx) > 80:
+                    best_r = max(rights, key=lambda b: b["area"])
+                blobs = [b for b in blobs if b["cx"] < CAM_W // 2] + [best_r]
+            n_blobs = len(blobs)
+            self.last_left_cx  = min(blobs, key=lambda b: b["cx"])["cx"] if blobs else None
+            self.last_right_cx = max(blobs, key=lambda b: b["cx"])["cx"] if blobs else None
+        else:
+            self.last_left_cx = None
+            self.last_right_cx = None
+
+        # ── Machine à états CORNER — score multi-signal ≥ 3 requis (IA) ─────
         if not self.corner_mode:
-            if corner_blob is not None and n_blobs <= 2:
-                # CORNER si blob coin L détecté (même avec b=2 — lignes en tirets en virage)
-                self.corner_dir   = 1.0 if corner_blob["cx"] > CAM_W // 2 else -1.0
+            cscore = 0
+            if corner_blob is not None:
+                cscore += 2                                  # blob compact = signal fort
+            if abs(ray_asym) > 0.35:
+                cscore += 1                                  # asymétrie raycasts
+            if self.prev_n_blobs == 2 and n_blobs <= 1:
+                cscore += 1                                  # disparition soudaine d'une ligne
+
+            if cscore >= 3:
+                if corner_blob is not None:
+                    corner_dir_cx = corner_blob["cx"]
+                else:
+                    corner_dir_cx = CAM_W // 2 + (1 if ray_asym > 0 else -1)
+                self.corner_dir   = 1.0 if corner_dir_cx > CAM_W // 2 else -1.0
                 self.corner_mode  = True
                 self.corner_count = CORNER_DURATION
-                print("[ctrl] CORNER-L cx={} asp={} dir={:+.0f}".format(
-                    corner_blob["cx"], corner_blob["aspect"], self.corner_dir))
-            elif abs(ray_asym) > 0.40 and n_blobs == 1:
-                # Raycasts très asymétriques + exactement 1 ligne → virage probable (pas si b=0)
-                self.corner_dir   = 1.0 if ray_asym > 0 else -1.0
-                self.corner_mode  = True
-                self.corner_count = CORNER_DURATION // 2
-                print("[ctrl] CORNER-ray asym={:.2f} dir={:+.0f}".format(ray_asym, self.corner_dir))
+                print("[ctrl] CORNER score={} dir={:+.0f}".format(cscore, self.corner_dir))
 
         if self.corner_mode:
             self.corner_count -= 1
@@ -582,15 +621,34 @@ class PDController:
         if self.fixed_speed is not None:
             if self.corner_mode:
                 throttle = self.fixed_speed * 0.60   # ralentir fort en virage
+                self.blind_frames = 0
             elif n_blobs == 0:
-                throttle = V_STOP
-                self.state = "BLIND"
+                self.blind_frames += 1
+                if self.blind_frames <= 10:           # ~1.7s à 6fps : INERTIAL_COAST
+                    throttle = self.fixed_speed * 0.65
+                    self.state = "COAST"
+                    steering = self.last_steering_cmd * 0.90   # décroissance douce
+                    self.prev_n_blobs = 0
+                    info = {
+                        "err": err, "steering": steering, "throttle": throttle,
+                        "state": self.state, "n_blobs": 0,
+                        "forward_clearance": forward_clearance,
+                        "blobs_cx": [], "corner": False,
+                        "ray_asym": round(ray_asym, 2), "scan_pts": [],
+                    }
+                    push_frame(bgr, mask, info)
+                    return steering, throttle, info
+                else:
+                    throttle = V_STOP
+                    self.state = "BLIND"
             elif curvature > 0.30 or (err is not None and abs(err) > 80):
                 throttle = self.fixed_speed * 0.75   # courbe détectée → ralentir
                 self.state = "FIXED"
+                self.blind_frames = 0
             else:
                 throttle = self.fixed_speed
                 self.state = "FIXED"
+                self.blind_frames = 0
         else:
             if self.corner_mode:
                 throttle = V_TURN
@@ -602,11 +660,19 @@ class PDController:
                 throttle = V_TURN + (V_MAX - V_TURN) * forward_clearance
                 self.state = "TURN" if forward_clearance < 0.5 else "STRAIGHT"
 
+        # ── Err smoothing exponentiel (IA) — lisse les tirets, évite les à-coups ─
+        if err is not None:
+            self.err_smooth = 0.65 * self.err_smooth + 0.35 * float(err)
+            err = self.err_smooth
+
+        self.prev_n_blobs = n_blobs   # pour CORNER score frame suivante
+
         # ── Steering ───────────────────────────────────────────────────────
         if err is None:
             steering = self.prev_err * KP
         else:
             steering = self._pd(float(err) - CAMERA_OFFSET_PX)
+        self.last_steering_cmd = steering   # mémoriser pour INERTIAL_COAST
 
         info = {
             "err": err, "steering": steering, "throttle": throttle,

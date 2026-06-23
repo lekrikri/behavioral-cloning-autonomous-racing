@@ -443,12 +443,12 @@ def detect_corner_blob(mask):
     return best
 
 
-def err_from_two_lines(blobs):
+def err_from_two_lines(blobs, track_width=None):
     mid_x = CAM_W // 2
-    # Zone "clairement gauche" : cx < 180 | "clairement droite" : cx > 332
-    # Entre 180-332 (zone centrale ~150px) → blob ambigu, on ignore l'estimation TRACK_WIDTH
-    CLEAR_LEFT  = mid_x - 76   # 180px
-    CLEAR_RIGHT = mid_x + 76   # 332px
+    CLEAR_LEFT  = mid_x - 76
+    CLEAR_RIGHT = mid_x + 76
+    # Largeur dynamique : utilise la mesure récente si dispo, sinon constante
+    tw_est = int(track_width) if track_width is not None else TRACK_WIDTH_EST_PX
     left_blobs  = [b for b in blobs if b["cx"] < CLEAR_LEFT]
     right_blobs = [b for b in blobs if b["cx"] > CLEAR_RIGHT]
     left  = max(left_blobs,  key=lambda b: b["area"]) if left_blobs  else None
@@ -457,18 +457,37 @@ def err_from_two_lines(blobs):
         center = (left["cx"] + right["cx"]) // 2
         return center - mid_x, right["cx"] - left["cx"]
     if left:
-        est_right = left["cx"] + TRACK_WIDTH_EST_PX
-        return (left["cx"] + est_right) // 2 - mid_x, TRACK_WIDTH_EST_PX
+        est_right = left["cx"] + tw_est
+        return (left["cx"] + est_right) // 2 - mid_x, tw_est
     if right:
-        est_left = right["cx"] - TRACK_WIDTH_EST_PX
-        return (est_left + right["cx"]) // 2 - mid_x, TRACK_WIDTH_EST_PX
-    # Blob ambigu au centre → None, le fallback err_from_mask prend le relais
+        est_left = right["cx"] - tw_est
+        return (est_left + right["cx"]) // 2 - mid_x, tw_est
     return None, None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONTRÔLEUR
 # ══════════════════════════════════════════════════════════════════════════════
+
+class _Kalman1D(object):
+    """Filtre de Kalman 1D pour l'erreur latérale. Robuste aux dropouts b=0/b=1."""
+    def __init__(self, q=0.05, r=20.0):
+        self.x = 0.0
+        self.P = 1.0
+        self.Q = q   # bruit processus (0.05 = lent à changer)
+        self.R = r   # bruit mesure   (20 = on fait confiance à la vision à ~70%)
+
+    def update(self, z):
+        self.P += self.Q
+        K = self.P / (self.P + self.R)
+        self.x += K * (z - self.x)
+        self.P = (1.0 - K) * self.P
+        return self.x
+
+    def reset(self):
+        self.x = 0.0
+        self.P = 1.0
+
 
 class PDController:
     def __init__(self, level=3, fixed_speed=None):
@@ -495,6 +514,10 @@ class PDController:
         self.last_steering_cmd = 0.0  # dernier steering valide
         # ── Err smoothing exponentiel (IA) ────────────────────────────────────
         self.err_smooth       = 0.0
+        # ── Kalman 1D sur err latérale (IA multi-sources) ─────────────────────
+        self.kalman           = _Kalman1D(q=0.05, r=20.0)
+        # ── Dérivée temporelle correcte ───────────────────────────────────────
+        self.last_pd_time     = time.time()
         # ── CORNER multi-signal (IA) ──────────────────────────────────────────
         self.prev_n_blobs     = 0     # pour détecter transition b=2→1
         self.vr           = VisualRays(
@@ -503,15 +526,21 @@ class PDController:
         )
 
     def _pd(self, err):
+        now = time.time()
+        dt  = max(now - self.last_pd_time, 0.01)
+        self.last_pd_time = now
         d_raw = err - self.prev_err
+        # Atténuer si frame droppée (dt > 2× nominal 1/6s) → évite spike dérivée
+        if dt > 0.35:
+            d_raw *= 0.5
         self.d_filtered = ALPHA_D * self.d_filtered + (1.0 - ALPHA_D) * d_raw
         self.prev_err = err
         # KP adaptatif : fort si loin du centre, doux si proche (anti-oscillation)
         abs_err = abs(err)
         if abs_err > 50:
-            kp = 0.020          # loin → correction forte
+            kp = 0.020
         elif abs_err < 15:
-            kp = 0.008          # près → correction douce (évite les micro-oscillations)
+            kp = 0.008
         else:
             kp = 0.008 + (0.020 - 0.008) * (abs_err - 15.0) / (50.0 - 15.0)
         raw = kp * err + KD * self.d_filtered
@@ -611,14 +640,22 @@ class PDController:
                 self.turn_memory_ctr = 15  # mémoriser 15 frames
 
             # ── Méthode principale : deux lignes séparées (gauche/droite) ──
+            # Largeur dynamique : médiane des 10 dernières mesures réelles (b=2)
+            last_tw = None
+            if len(self.track_widths) >= 3:
+                last_tw = float(np.median(self.track_widths[-10:]))
             if self.level >= 3 and n_blobs >= 2:
-                err_lines, tw = err_from_two_lines(blobs)
-                # Dynamic track width (Priorité 4 IA)
-                if tw is not None and tw != TRACK_WIDTH_EST_PX and tw > 100:
+                err_lines, tw = err_from_two_lines(blobs, track_width=last_tw)
+                if tw is not None and tw > 100 and tw < CAM_W - 20:
                     self.track_widths.append(tw)
                     if len(self.track_widths) > 20:
                         self.track_widths.pop(0)
                 err = err_lines
+            elif n_blobs == 1:
+                # b=1 : utilise la largeur dynamique pour mieux estimer la ligne manquante
+                err_lines, _ = err_from_two_lines(blobs, track_width=last_tw)
+                if err_lines is not None:
+                    err = err_lines
             # ── Fallback : centroïde global du masque (point rouge) ────────
             if err is None:
                 err = err_from_mask(mask)
@@ -691,10 +728,17 @@ class PDController:
                 throttle = V_TURN + (V_MAX - V_TURN) * forward_clearance
                 self.state = "TURN" if forward_clearance < 0.5 else "STRAIGHT"
 
-        # ── Err smoothing exponentiel (IA) — lisse les tirets, évite les à-coups ─
+        # ── Err smoothing → Kalman → Deadband ─────────────────────────────
         if err is not None:
             self.err_smooth = 0.65 * self.err_smooth + 0.35 * float(err)
             err = self.err_smooth
+            # Kalman 1D : lisse davantage, robuste aux artefacts et dropouts
+            err = self.kalman.update(float(err))
+            # Deadband ±6px : élimine les micro-oscillations en ligne droite
+            if abs(err) < 6.0:
+                err = 0.0
+        else:
+            self.kalman.reset()
 
         self.prev_n_blobs = n_blobs   # pour CORNER score frame suivante
 

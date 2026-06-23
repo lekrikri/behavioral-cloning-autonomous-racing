@@ -188,6 +188,8 @@ _placeholder = None
 _last_frame_time = [time.time()]   # watchdog : heure de la dernière frame reçue
 _watchdog_trigger = [False]        # mis à True par le watchdog pour forcer un reset
 _drive_enabled = True   # contrôlé via HTTP /stop et /go
+_calibrate_request = [False]       # mis à True par /calibrate → PDController applique l'offset
+_calibrate_result  = [None]        # renseigné par PDController avec la valeur appliquée
 
 def _make_placeholder():
     img = np.zeros((CAM_H, CAM_W, 3), dtype=np.uint8)
@@ -226,6 +228,20 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             return
         if path == "/status":
             self._send_text("running" if _drive_enabled else "stopped")
+            return
+        if path == "/calibrate":
+            _calibrate_request[0] = True
+            # Attendre max 2s que PDController applique l'offset
+            for _ in range(40):
+                if _calibrate_result[0] is not None:
+                    break
+                time.sleep(0.05)
+            result = _calibrate_result[0]
+            _calibrate_result[0] = None
+            if result is not None:
+                self._send_text("CAMERA_OFFSET_PX={:+d}px applique".format(result))
+            else:
+                self._send_text("ERREUR: b<2 ou pas assez de frames stables")
             return
         if path not in ("/", "/stream"):
             self.send_response(404); self.end_headers(); return
@@ -480,8 +496,50 @@ def find_lane_histogram(mask):
     left_peak  = float(np.max(left_half))
     right_peak = float(np.max(right_half))
 
-    left_cx  = int(np.argmax(left_half))        if left_peak  >= HIST_MIN else None
-    right_cx = int(mid + np.argmax(right_half)) if right_peak >= HIST_MIN else None
+    # Multi-pics : chercher le pic le plus cohérent avec la track_width et la position précédente
+    # Au lieu du simple argmax (vulnérable aux gros artefacts), on liste les pics locaux
+    # et on choisit celui dont le score est le meilleur.
+    def _best_peak(half_hist, offset, prev_cx, peer_cx, peer_side):
+        """
+        Retourne le meilleur cx dans half_hist (offset = décalage par rapport à la demi-image).
+        peer_cx : position de la ligne de l'autre côté (pour contrainte de track_width).
+        peer_side : +1 si peer est à droite de nous, -1 si à gauche.
+        """
+        best_cx = None
+        best_score = -1.0
+        n = len(half_hist)
+        for i in range(2, n - 2):
+            v = half_hist[i]
+            if v < HIST_MIN:
+                continue
+            # Pic local strict
+            if not (v > half_hist[i - 1] and v > half_hist[i + 1]):
+                continue
+            cx = i + offset
+            score = v
+            # Bonus : cohérence avec la position précédente (stabilité temporelle)
+            if prev_cx is not None:
+                score += max(0.0, 3000.0 - abs(cx - prev_cx) * 60.0)
+            # Bonus : contrainte track_width (écartement attendu entre les deux lignes)
+            if peer_cx is not None:
+                dist = abs(cx - peer_cx)
+                expected = TRACK_WIDTH_EST_PX
+                score += max(0.0, 4000.0 - abs(dist - expected) * 80.0)
+            if score > best_score:
+                best_score = score
+                best_cx = cx
+        # Fallback : argmax si aucun pic local
+        if best_cx is None and float(np.max(half_hist)) >= HIST_MIN:
+            best_cx = int(np.argmax(half_hist)) + offset
+        return best_cx
+
+    left_cx  = _best_peak(left_half,  0,   None, None, +1)
+    right_cx = _best_peak(right_half, mid, None, left_cx, -1)
+    # Deuxième passe : re-scorer left avec right connu
+    left_cx  = _best_peak(left_half,  0,   None, right_cx, +1)
+
+    left_peak  = float(left_half[left_cx]) if left_cx is not None else 0.0
+    right_peak = float(right_half[right_cx - mid]) if right_cx is not None else 0.0
 
     return left_cx, right_cx, left_peak, right_peak
 
@@ -518,20 +576,33 @@ def find_lane_scanlines(mask, n_lines=6):
         r = min(r, CAM_H - 1)
         line = mask[r, :]
 
-        # Moitié gauche : chercher le blanc le plus proche du centre (bord intérieur ligne gauche)
-        # np.where retourne les indices dans l'ordre croissant, donc [-1] = le plus proche du centre
+        # Moitié gauche : bord intérieur de la ligne gauche = blanc le plus proche du centre
         whites_l = np.where(line[:mid_x - MARGIN] > 0)[0]
         if len(whites_l) >= MIN_WHITES:
-            hit_l = int(whites_l[-1])   # le plus à droite = le plus proche du centre
-            left_xs.append(hit_l)
-            left_hits.append((hit_l, r))
+            hit_l = int(whites_l[-1])   # le plus à droite = bord intérieur
+            # Validation continuité verticale : la ligne doit exister aussi 3px au-dessus
+            if r >= 3:
+                above = int(np.sum(mask[r - 3:r, max(0, hit_l - 3):hit_l + 4]))
+                if above >= 3 * 255:  # au moins 3 pixels blancs au-dessus
+                    left_xs.append(hit_l)
+                    left_hits.append((hit_l, r))
+            else:
+                left_xs.append(hit_l)
+                left_hits.append((hit_l, r))
 
-        # Moitié droite : chercher le blanc le plus proche du centre (bord intérieur ligne droite)
+        # Moitié droite : bord intérieur de la ligne droite = blanc le plus proche du centre
         whites_r = np.where(line[mid_x + MARGIN:] > 0)[0]
         if len(whites_r) >= MIN_WHITES:
-            hit_r = int(mid_x + MARGIN + whites_r[0])  # le plus à gauche = le plus proche du centre
-            right_xs.append(hit_r)
-            right_hits.append((hit_r, r))
+            hit_r = int(mid_x + MARGIN + whites_r[0])  # le plus à gauche = bord intérieur
+            # Validation continuité verticale
+            if r >= 3:
+                above = int(np.sum(mask[r - 3:r, hit_r - 3:min(CAM_W, hit_r + 4)]))
+                if above >= 3 * 255:
+                    right_xs.append(hit_r)
+                    right_hits.append((hit_r, r))
+            else:
+                right_xs.append(hit_r)
+                right_hits.append((hit_r, r))
 
     left_cx  = int(np.median(left_xs))  if left_xs  else None
     right_cx = int(np.median(right_xs)) if right_xs else None
@@ -664,6 +735,9 @@ class PDController:
         self.last_pd_time     = time.time()
         # ── CORNER multi-signal (IA) ──────────────────────────────────────────
         self.prev_n_blobs     = 0     # pour détecter transition b=2→1
+        # ── Auto-calibration offset caméra ────────────────────────────────────
+        self.calib_err_history = []   # err brutes récentes pour calibration
+        self.auto_offset       = 0.0  # offset appris en ligne (EMA)
         self.vr           = VisualRays(
             img_width=CAM_W, img_height=CAM_H,
             row_band=(ROI_FAR, ROI_BOTTOM), morph_k=5,
@@ -870,7 +944,32 @@ class PDController:
 
         self.prev_n_blobs = n_blobs   # pour CORNER score frame suivante
 
+        # ── Auto-calibration offset caméra ────────────────────────────────
+        # Condition : b=2, pas en virage, err stable → accumule l'offset moyen
+        if n_blobs == 2 and not self.corner_mode and err is not None:
+            raw_for_calib = float(err)
+            self.calib_err_history.append(raw_for_calib)
+            if len(self.calib_err_history) > 90:  # ~15s à 6fps
+                self.calib_err_history.pop(0)
+            # EMA très lente : ne corrige que les biais persistants (pas les vraies erreurs)
+            if len(self.calib_err_history) >= 30 and abs(self.auto_offset) < 80:
+                recent_mean = sum(self.calib_err_history[-30:]) / 30.0
+                if abs(recent_mean) > 8.0:  # biais > 8px → apprendre
+                    self.auto_offset += 0.02 * recent_mean  # EMA très lente
+
+        # ── Calibration manuelle via HTTP /calibrate ──────────────────────
+        if _calibrate_request[0] and n_blobs == 2 and len(self.calib_err_history) >= 10:
+            _calibrate_request[0] = False
+            measured = int(round(sum(self.calib_err_history[-20:]) / float(min(len(self.calib_err_history), 20))))
+            global CAMERA_OFFSET_PX
+            CAMERA_OFFSET_PX = measured
+            self.auto_offset = 0.0
+            self.calib_err_history = []
+            _calibrate_result[0] = measured
+            print("[calib] CAMERA_OFFSET_PX={:+d}px".format(measured))
+
         # ── Steering ───────────────────────────────────────────────────────
+        effective_offset = CAMERA_OFFSET_PX + int(self.auto_offset)
         if self.state == "BLIND":
             steering = 0.0          # en BLIND complet : ne pas dériver sur prev_err
             self.prev_err = 0.0     # reset pour éviter spike au retour de vision
@@ -878,7 +977,7 @@ class PDController:
         elif err is None:
             steering = 0.0
         else:
-            steering = self._pd(float(err) - CAMERA_OFFSET_PX)
+            steering = self._pd(float(err) - effective_offset)
         self.last_steering_cmd = steering   # mémoriser pour INERTIAL_COAST
 
         info = {

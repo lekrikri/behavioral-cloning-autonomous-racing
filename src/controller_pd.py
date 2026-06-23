@@ -158,13 +158,13 @@ MIN_BLOB_AREA  = 800
 MIN_CORNER_AREA = 6000
 CORNER_DURATION = 15   # frames de maintien virage (~1.25s @ 12fps)
 
-TRACK_WIDTH_EST_PX = 385
+TRACK_WIDTH_EST_PX = 280     # largeur réelle piste ~280px (CAM_W=512)
 
-KP           = 0.012         # augmenté pour virages plus décisifs
+KP           = 0.010         # KP réduit pour moins d'oscillation
 KD           = 0.003
 ALPHA_D      = 0.7
 STEERING_MAX = 0.85
-STEERING_DEADZONE = 0.03
+STEERING_DEADZONE = 0.05     # deadzone plus large = moins d'oscillation autour du centre
 CAMERA_OFFSET_PX = 0         # biais caméra — calibrer si la voiture dérive constamment
 
 V_MAX        = 0.14          # vitesse max ligne droite (~7% duty)
@@ -187,6 +187,7 @@ _stream_lock = threading.Lock()
 _placeholder = None
 _last_frame_time = [time.time()]   # watchdog : heure de la dernière frame reçue
 _watchdog_trigger = [False]        # mis à True par le watchdog pour forcer un reset
+_camera_restarted = [False]        # mis à True après chaque reconnexion OAK-D → reset Kalman
 _drive_enabled = True   # contrôlé via HTTP /stop et /go
 _go_reset = [False]         # mis à True par /go → PDController reset son état CORNER/Kalman
 _calibrate_request = [False]       # mis à True par /calibrate → PDController applique l'offset
@@ -759,11 +760,11 @@ class PDController:
         # KP adaptatif : fort si loin du centre, doux si proche (anti-oscillation)
         abs_err = abs(err)
         if abs_err > 50:
-            kp = 0.020
+            kp = 0.015
         elif abs_err < 15:
             kp = 0.008
         else:
-            kp = 0.008 + (0.020 - 0.008) * (abs_err - 15.0) / (50.0 - 15.0)
+            kp = 0.008 + (0.015 - 0.008) * (abs_err - 15.0) / (50.0 - 15.0)
         raw = kp * err + KD * self.d_filtered
         raw = max(-STEERING_MAX, min(STEERING_MAX, raw))
         if abs(raw) < STEERING_DEADZONE:
@@ -793,6 +794,13 @@ class PDController:
             self.err_smooth   = 0.0
             self.prev_err     = 0.0
             print("[ctrl] /go reset CORNER+Kalman")
+        if _camera_restarted[0]:
+            _camera_restarted[0] = False
+            self.kalman.reset()
+            self.err_smooth = 0.0
+            self.prev_err   = 0.0
+            self.track_widths = []  # oublier les mesures de piste avant le crash
+            print("[ctrl] camera restart → reset Kalman+track_widths")
         rays    = self.vr(bgr)
         blobs, rejected_blobs = get_blobs(mask)
         n_blobs = len(blobs)
@@ -862,13 +870,15 @@ class PDController:
                     if len(self.track_widths) > 20:
                         self.track_widths.pop(0)
             elif left_cx is not None:
-                est_right = left_cx + int(last_tw)
+                est_right = min(left_cx + int(last_tw), CAM_W - 10)
                 center = (left_cx + est_right) // 2
                 err = center - CAM_W // 2 - effective_offset
+                n_blobs = 1  # garde la trace pour limiter steer ensuite
             elif right_cx is not None:
-                est_left = right_cx - int(last_tw)
+                est_left = max(right_cx - int(last_tw), 10)
                 center = (est_left + right_cx) // 2
                 err = center - CAM_W // 2 - effective_offset
+                n_blobs = 1
             else:
                 err = None
 
@@ -993,6 +1003,9 @@ class PDController:
             steering = 0.0
         else:
             steering = self._pd(float(err))  # offset déjà soustrait à la source
+            # blobs=1 sans track_width fiable → estimation moins sûre → limiter steer
+            if n_blobs == 1 and len(self.track_widths) < 3:
+                steering = max(-0.40, min(0.40, steering))
         self.last_steering_cmd = steering   # mémoriser pour INERTIAL_COAST
 
         info = {
@@ -1147,6 +1160,8 @@ def run(args):
 
             with dai.Device(pipeline, True) as device:
                 q = device.getOutputQueue("preview", maxSize=1, blocking=False)
+                if attempt > 1:
+                    _camera_restarted[0] = True  # signale au controller de reset Kalman
                 attempt = 0
                 t0 = time.time(); frame_n = 0
 

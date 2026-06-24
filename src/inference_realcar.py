@@ -100,6 +100,7 @@ class RealCarInference:
         servo_center: float = 0.50,
         servo_range: float  = 0.35,
         invert_steer: bool  = False,
+        invert_motor: bool  = True,
         log_csv: bool       = True,
         perception_mode: str = "depth",
         mask_mode: str       = "hsv",
@@ -148,6 +149,7 @@ class RealCarInference:
             servo_center=servo_center,
             servo_range=servo_range,
             invert_steer=invert_steer,
+            invert_motor=invert_motor,
             throttle_mode="duty",   # duty = plus smooth que current au démarrage sensorless
             max_duty=duty_max,
         )
@@ -423,6 +425,10 @@ def main():
     parser.add_argument("--servo-center", type=float, default=0.50)
     parser.add_argument("--servo-range",  type=float, default=0.35)
     parser.add_argument("--invert-steer", action="store_true")
+    parser.add_argument("--invert-motor",    dest="invert_motor", action="store_true",  default=True,
+                        help="positive accel -> forward (default; calibré mode current)")
+    parser.add_argument("--no-invert-motor", dest="invert_motor", action="store_false",
+                        help="désactive l'inversion moteur (à utiliser si la voiture recule en mode duty)")
     parser.add_argument("--no-log",          action="store_true")
     parser.add_argument("--perception-mode", choices=["depth", "visual", "fusion"], default="depth",
                         help="depth=depth map stéreo | visual=masque HSV/Canny couleur")
@@ -439,6 +445,7 @@ def main():
         servo_center = args.servo_center,
         servo_range  = args.servo_range,
         invert_steer     = args.invert_steer,
+        invert_motor     = args.invert_motor,
         log_csv          = not args.no_log,
         perception_mode  = args.perception_mode,
         mask_mode        = args.mask_mode,

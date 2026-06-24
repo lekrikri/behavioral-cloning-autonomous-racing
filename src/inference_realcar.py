@@ -106,6 +106,7 @@ class RealCarInference:
         servo_range: float  = 0.35,
         invert_steer: bool  = False,
         invert_motor: bool  = True,
+        steer_gain: float   = 1.0,
         log_csv: bool       = True,
         perception_mode: str = "depth",
         mask_mode: str       = "hsv",
@@ -160,7 +161,8 @@ class RealCarInference:
         )
         print(f"[RealCar] servo_center={servo_center:.3f} | range=±{servo_range:.3f} | invert={invert_steer} | duty_max={duty_max:.2f}")
 
-        self.smoother = SmoothingFilter()
+        self.smoother   = SmoothingFilter()
+        self.steer_gain = steer_gain
 
         self._lock              = threading.Lock()
         self._latest_rays: Optional[np.ndarray] = None
@@ -181,7 +183,7 @@ class RealCarInference:
             log_path.parent.mkdir(exist_ok=True)
             self._csv_file   = open(log_path, "w", newline="")
             self._csv_writer = csv.writer(self._csv_file)
-            self._csv_writer.writerow(["t", "steer", "accel", "front_raw", "min_ray", "fps"])
+            self._csv_writer.writerow(["t", "steer", "steer_raw", "asym", "accel", "front_raw", "min_ray", "fps"])
             print(f"[RealCar] Log CSV → {log_path}")
 
         print(f"[RealCar] CURRENT_MAX = {current_max:.1f}A | WATCHDOG = {WATCHDOG_S*1000:.0f}ms")
@@ -383,7 +385,7 @@ class RealCarInference:
             steer   = pred_s[0]
             if 0.05 < abs(steer) < 0.35:
                 steer -= 0.02 * np.sign(steer)
-            steering = float(np.clip(steer, -1.0, 1.0))
+            steering = float(np.clip(steer * self.steer_gain, -1.0, 1.0))
 
             # ── Heuristique accel (front_raw) ─────────────────────────────
             front_raw = float(rays[half - 1: half + 1].mean())
@@ -405,7 +407,8 @@ class RealCarInference:
             if self._csv_writer and self._step % 3 == 0:
                 self._csv_writer.writerow([
                     round(time.time() - self._start_time, 3),
-                    round(steering, 4), round(acceleration, 4),
+                    round(steering, 4), round(steer_raw, 4), round(float(asymmetry), 4),
+                    round(acceleration, 4),
                     round(front_raw, 4), round(float(rays.min()), 4),
                     round(fps, 1),
                 ])
@@ -467,6 +470,8 @@ def main():
                         help="positive accel -> forward (default; calibré mode current)")
     parser.add_argument("--no-invert-motor", dest="invert_motor", action="store_false",
                         help="désactive l'inversion moteur (à utiliser si la voiture recule en mode duty)")
+    parser.add_argument("--steer-gain", type=float, default=1.0,
+                        help="multiplicateur du steering (compense l'atténuation sim-to-real ; 1.0 = brut)")
     parser.add_argument("--no-log",          action="store_true")
     parser.add_argument("--perception-mode", choices=["depth", "visual", "fusion"], default="depth",
                         help="depth=depth map stéreo | visual=masque HSV/Canny couleur")
@@ -484,6 +489,7 @@ def main():
         servo_range  = args.servo_range,
         invert_steer     = args.invert_steer,
         invert_motor     = args.invert_motor,
+        steer_gain       = args.steer_gain,
         log_csv          = not args.no_log,
         perception_mode  = args.perception_mode,
         mask_mode        = args.mask_mode,

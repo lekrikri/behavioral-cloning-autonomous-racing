@@ -64,9 +64,14 @@ def main():
 
     if args.tcp:
         bind = args.host or "0.0.0.0"
+        # byte-stream + config-interval=-1 : SPS/PPS en Annex-B inline avant chaque IDR.
+        # Sans ça, h264parse sort de l'AVC (en-têtes hors-bande dans les caps) que le TCP
+        # ne transporte pas → un client qui rejoint ne peut pas décoder.
         gst = [
             "gst-launch-1.0", "-q",
-            "fdsrc", "!", "h264parse", "!",
+            "fdsrc", "!",
+            "h264parse", "config-interval=-1", "!",
+            "video/x-h264,stream-format=byte-stream,alignment=au", "!",
             "tcpserversink", "host=%s" % bind, "port=%d" % args.port,
         ]
         target = "TCP serveur %s:%d (le PC se connecte)" % (bind, args.port)

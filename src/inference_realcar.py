@@ -49,7 +49,7 @@ except ImportError:
     print("[WARNING] depthai non installé")
 
 from src.depth_to_rays import DepthToRays, create_depthai_pipeline
-from src.visual_rays   import VisualRays, create_color_pipeline_v3
+from src.visual_rays   import VisualRays, create_color_pipeline
 from src.vesc_interface import VESCInterface
 
 # ─── Configuration ────────────────────────────────────────────────────────────
@@ -223,27 +223,21 @@ class RealCarInference:
                 time.sleep(0.005)
 
     def _perception_visual(self):
-        device_info = None
-        for d in dai.Device.getAllConnectedDevices():
-            device_info = d
-            break
-        if device_info is None:
-            print("[Perception] Aucun device OAK-D trouvé")
-            return
-        with dai.Device(device_info) as device:
-            pipeline, q = create_color_pipeline_v3(device)
-            pipeline.start()
+        pipeline = create_color_pipeline()
+        with dai.Device(pipeline) as device:
+            q = device.getOutputQueue("color", maxSize=2, blocking=False)
             print("[Perception] OAK-D connectée — flux VISUAL (masque) démarré")
             self._apply_calib_fov(device, dai.CameraBoardSocket.CAM_A, self.visual_bridge, "visual")
             with self._lock:
                 self._last_frame_t     = time.time()
                 self._perception_ready = True
             while self._running:
-                msg = q.get()
-                rays = self.visual_bridge(msg.getCvFrame())
-                with self._lock:
-                    self._latest_rays  = rays
-                    self._last_frame_t = time.time()
+                msg = q.tryGet()
+                if msg is not None:
+                    rays = self.visual_bridge(msg.getCvFrame())
+                    with self._lock:
+                        self._latest_rays  = rays
+                        self._last_frame_t = time.time()
                 time.sleep(0.005)
 
     def _perception_fusion(self):
@@ -253,42 +247,30 @@ class RealCarInference:
         Depth détecte les murs/obstacles en volume.
         Visual détecte les bords de piste (lignes blanches au sol).
         """
-        device_info = None
-        for d in dai.Device.getAllConnectedDevices():
-            device_info = d
-            break
-        if device_info is None:
-            print("[Perception] Aucun device OAK-D trouvé")
-            return
+        # Un seul pipeline v2 : couleur (CAM_A, stream "color") + depth stéréo (CAM_B/C, stream "depth")
+        pipeline = create_color_pipeline()
+        mono_l = pipeline.create(dai.node.MonoCamera)
+        mono_r = pipeline.create(dai.node.MonoCamera)
+        stereo = pipeline.create(dai.node.StereoDepth)
+        xout_d = pipeline.create(dai.node.XLinkOut)
+        mono_l.setBoardSocket(dai.CameraBoardSocket.CAM_B)
+        mono_r.setBoardSocket(dai.CameraBoardSocket.CAM_C)
+        mono_l.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+        mono_r.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+        stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
+        stereo.setLeftRightCheck(True)
+        stereo.setMedianFilter(dai.MedianFilter.KERNEL_7x7)
+        mono_l.out.link(stereo.left)
+        mono_r.out.link(stereo.right)
+        stereo.depth.link(xout_d.input)
+        xout_d.setStreamName("depth")
 
-        import depthai as dai_mod
-        # Pipeline couleur + depth sur le même device
-        with dai_mod.Device(device_info) as device:
-            # Couleur
-            pipeline_color, q_color = create_color_pipeline_v3(device)
-
-            # Depth (ajout au même pipeline)
-            mono_l = pipeline_color.create(dai_mod.node.MonoCamera)
-            mono_r = pipeline_color.create(dai_mod.node.MonoCamera)
-            stereo  = pipeline_color.create(dai_mod.node.StereoDepth)
-            xout_d  = pipeline_color.create(dai_mod.node.XLinkOut)
-            mono_l.setBoardSocket(dai_mod.CameraBoardSocket.CAM_B)
-            mono_r.setBoardSocket(dai_mod.CameraBoardSocket.CAM_C)
-            mono_l.setResolution(dai_mod.MonoCameraProperties.SensorResolution.THE_400_P)
-            mono_r.setResolution(dai_mod.MonoCameraProperties.SensorResolution.THE_400_P)
-            stereo.setDefaultProfilePreset(dai_mod.node.StereoDepth.PresetMode.HIGH_DENSITY)
-            stereo.setLeftRightCheck(True)
-            stereo.setMedianFilter(dai_mod.MedianFilter.KERNEL_7x7)
-            mono_l.out.link(stereo.left)
-            mono_r.out.link(stereo.right)
-            stereo.depth.link(xout_d.input)
-            xout_d.setStreamName("depth")
+        with dai.Device(pipeline) as device:
+            q_color = device.getOutputQueue("color", maxSize=2, blocking=False)
             q_depth = device.getOutputQueue("depth", maxSize=1, blocking=False)
-
-            pipeline_color.start()
             print("[Perception] OAK-D connectée — flux FUSION (depth + masque) démarré")
-            self._apply_calib_fov(device, dai_mod.CameraBoardSocket.CAM_B, self.depth_bridge,  "depth")
-            self._apply_calib_fov(device, dai_mod.CameraBoardSocket.CAM_A, self.visual_bridge, "visual")
+            self._apply_calib_fov(device, dai.CameraBoardSocket.CAM_B, self.depth_bridge,  "depth")
+            self._apply_calib_fov(device, dai.CameraBoardSocket.CAM_A, self.visual_bridge, "visual")
             with self._lock:
                 self._last_frame_t     = time.time()
                 self._perception_ready = True

@@ -170,16 +170,25 @@ class VisualRays:
         return self._mask(bgr_frame)
 
 
-# ── Utilitaire : créer le pipeline depthai couleur (3.x) ─────────────────────
-def create_color_pipeline_v3(device, width: int = 512, height: int = 256):
-    """Pipeline depthai 3.x — caméra couleur uniquement."""
+# ── Utilitaire : créer le pipeline depthai couleur (API v2 / depthai 2.x) ────
+def create_color_pipeline(width: int = 512, height: int = 256, fps: int = 30):
+    """Pipeline depthai 2.x — caméra couleur CAM_A, sortie BGR sur le stream 'color'.
+
+    Flow v2 : retourne le pipeline ; l'appelant ouvre `dai.Device(pipeline)` puis
+    `device.getOutputQueue("color")` (pas de .start() en v2).
+    """
     import depthai as dai
-    pipeline = dai.Pipeline(device)
-    cam = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
-    q   = cam.requestOutput(
-        (width, height), dai.ImgFrame.Type.BGR888p
-    ).createOutputQueue(maxSize=2, blocking=False)
-    return pipeline, q
+    pipeline = dai.Pipeline()
+    cam = pipeline.create(dai.node.ColorCamera)
+    cam.setBoardSocket(dai.CameraBoardSocket.CAM_A)
+    cam.setPreviewSize(width, height)
+    cam.setInterleaved(False)
+    cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
+    cam.setFps(fps)
+    xout = pipeline.create(dai.node.XLinkOut)
+    xout.setStreamName("color")
+    cam.preview.link(xout.input)
+    return pipeline
 
 
 # ── Test standalone ───────────────────────────────────────────────────────────
@@ -201,17 +210,9 @@ if __name__ == "__main__":
     print(f"VisualRays mode={args.mode} | {args.width}x{args.height} | 20 rays")
     print(f"Colonnes angles : {vr.cols}")
 
-    device_info = None
-    for d in dai.Device.getAllConnectedDevices():
-        device_info = d
-        break
-    if device_info is None:
-        print("Aucun device OAK-D")
-        sys.exit(1)
-
-    with dai.Device(device_info) as device:
-        pipeline, q = create_color_pipeline_v3(device, args.width, args.height)
-        pipeline.start()
+    pipeline = create_color_pipeline(args.width, args.height)
+    with dai.Device(pipeline) as device:
+        q = device.getOutputQueue("color", maxSize=2, blocking=False)
         print("Flux actif — Q pour quitter")
 
         while True:

@@ -61,8 +61,10 @@ CURRENT_MAX         = 5.0    # A — courant max moteur (8A normal, 5A conservat
 WATCHDOG_S          = 0.50   # 500ms — tolérance OAK-D démarrage
 CONTROL_HZ          = 30
 # Arrêt d'urgence obstacle (modes depth/fusion uniquement)
-EMERGENCY_NEAR_MM     = 500.0  # obstacle mesuré plus proche que ça (zone centrale) -> stop
-EMERGENCY_DEADZONE_FR = 0.85   # part de pixels centraux sans disparité (objet collé sous le MinZ stéréo) -> stop
+EMERGENCY_NEAR_MM       = 500.0   # obstacle mesuré plus proche que ça (zone centrale) -> stop
+EMERGENCY_VALID_FRAC_MIN = 0.003  # "blackout" : objet collé qui occulte la lentille.
+                                  # Seuil bas car la stéréo OAK-D Lite est déjà éparse
+                                  # (~1% de pixels valides en usage normal -> marge x3).
 
 
 class SmoothingFilter:
@@ -189,9 +191,11 @@ class RealCarInference:
         """Obstacle trop proche dans la bande centrale ? (depth uint16, mm)
 
         Deux déclencheurs, car la stéréo a un angle mort sous ~35cm (MinZ) :
-          1. obstacle MESURÉ proche  : médiane des pixels valides < EMERGENCY_NEAR_MM
-          2. zone morte stéréo       : trop de pixels sans disparité (objet collé)
-             -> sinon l'obstacle "disparaît" (rayon=1.0) et la voiture réaccélère.
+          1. obstacle MESURÉ proche : médiane des pixels valides < EMERGENCY_NEAR_MM
+          2. "blackout"             : quasi aucun pixel valide (objet collé qui
+             occulte la lentille) -> sinon l'obstacle "disparaît" et la voiture réaccélère.
+        On teste la fraction de pixels VALIDES (pas l'inverse) : la depth OAK-D Lite
+        est déjà éparse (~1% valides en normal), donc seul un blackout total discrimine.
         """
         b = self.depth_bridge
         c0, c1 = int(b.W * 0.40), int(b.W * 0.60)
@@ -199,8 +203,7 @@ class RealCarInference:
         valid = roi[(roi >= b.min_valid_mm) & (roi <= b.max_dist_mm)]
         if valid.size and float(np.median(valid)) < EMERGENCY_NEAR_MM:
             return True
-        no_measure = (roi == 0) | (roi < b.min_valid_mm)
-        return float(no_measure.mean()) > EMERGENCY_DEADZONE_FR
+        return (valid.size / float(roi.size)) < EMERGENCY_VALID_FRAC_MIN
 
     def _apply_calib_fov(self, device, socket, bridge, label):
         """Applique le FOV usine du capteur au bridge (fallback = constante codée)."""

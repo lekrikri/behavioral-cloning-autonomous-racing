@@ -114,12 +114,22 @@ class VisualRays:
         self.row_end   = int(img_height * row_band[1])
         self.roi_h     = self.row_end - self.row_start
 
-        # Mêmes colonnes d'angle que DepthToRays
-        focal_px   = img_width / (2.0 * np.tan(np.radians(fov_deg / 2.0)))
-        angles_deg = np.linspace(-fov_deg / 2.0, fov_deg / 2.0, n_rays)
+        # fov_deg de la caméra COULEUR (CAM_A), distinct du FOV depth (mono).
+        # Fallback ; remplacé au runtime par getFov(CAM_A) — cf. set_fov.
+        self.set_fov(fov_deg)
+
+    def set_fov(self, fov_deg: float) -> None:
+        """Recalcule les colonnes d'échantillonnage pour un FOV donné.
+
+        Appelé au runtime avec calib.getFov(CAM_A) pour coller au capteur
+        couleur réel plutôt qu'au 68.8° codé en dur.
+        """
+        self.fov_deg = fov_deg
+        focal_px   = self.W / (2.0 * np.tan(np.radians(fov_deg / 2.0)))
+        angles_deg = np.linspace(-fov_deg / 2.0, fov_deg / 2.0, self.n_rays)
         self.cols  = np.clip(
-            (img_width / 2.0 + np.tan(np.deg2rad(angles_deg)) * focal_px).astype(int),
-            0, img_width - 1,
+            (self.W / 2.0 + np.tan(np.deg2rad(angles_deg)) * focal_px).astype(int),
+            0, self.W - 1,
         )
 
     # ── Masque binaire ─────────────────────────────────────────────────────────

@@ -179,6 +179,15 @@ class RealCarInference:
         print(f"[RealCar] CURRENT_MAX = {current_max:.1f}A | WATCHDOG = {WATCHDOG_S*1000:.0f}ms")
         print("[RealCar] ✅ Prêt. Lance run() pour démarrer.\n")
 
+    def _apply_calib_fov(self, device, socket, bridge, label):
+        """Applique le FOV usine du capteur au bridge (fallback = constante codée)."""
+        try:
+            fov = device.readCalibration().getFov(socket)
+            bridge.set_fov(fov)
+            print(f"[Perception] FOV {label} = {fov:.1f}° (calibration usine)")
+        except Exception as e:
+            print(f"[Perception] FOV {label} : getFov indisponible ({e}) — fallback {bridge.fov_deg:.1f}°")
+
     def _perception_thread(self):
         if not _DAI_AVAILABLE:
             print("[Perception] depthai non disponible")
@@ -195,6 +204,7 @@ class RealCarInference:
         with dai.Device(pipeline) as device:
             q = device.getOutputQueue("depth", maxSize=1, blocking=False)
             print("[Perception] OAK-D connectée — flux DEPTH démarré")
+            self._apply_calib_fov(device, dai.CameraBoardSocket.CAM_B, self.depth_bridge, "depth")
             with self._lock:
                 self._last_frame_t     = time.time()
                 self._perception_ready = True
@@ -224,6 +234,7 @@ class RealCarInference:
             pipeline, q = create_color_pipeline_v3(device)
             pipeline.start()
             print("[Perception] OAK-D connectée — flux VISUAL (masque) démarré")
+            self._apply_calib_fov(device, dai.CameraBoardSocket.CAM_A, self.visual_bridge, "visual")
             with self._lock:
                 self._last_frame_t     = time.time()
                 self._perception_ready = True
@@ -276,6 +287,8 @@ class RealCarInference:
 
             pipeline_color.start()
             print("[Perception] OAK-D connectée — flux FUSION (depth + masque) démarré")
+            self._apply_calib_fov(device, dai_mod.CameraBoardSocket.CAM_B, self.depth_bridge,  "depth")
+            self._apply_calib_fov(device, dai_mod.CameraBoardSocket.CAM_A, self.visual_bridge, "visual")
             with self._lock:
                 self._last_frame_t     = time.time()
                 self._perception_ready = True

@@ -60,6 +60,9 @@ VESC_PORT           = "/dev/ttyACM0"
 CURRENT_MAX         = 5.0    # A — courant max moteur (8A normal, 5A conservateur 1er test)
 WATCHDOG_S          = 0.50   # 500ms — tolérance OAK-D démarrage
 CONTROL_HZ          = 30
+# Arrêt d'urgence obstacle (modes depth/fusion uniquement)
+EMERGENCY_NEAR_MM     = 500.0  # obstacle mesuré plus proche que ça (zone centrale) -> stop
+EMERGENCY_DEADZONE_FR = 0.85   # part de pixels centraux sans disparité (objet collé sous le MinZ stéréo) -> stop
 
 
 class SmoothingFilter:
@@ -161,6 +164,7 @@ class RealCarInference:
         self._latest_rays: Optional[np.ndarray] = None
         self._last_frame_t      = time.time()
         self._perception_ready  = False   # True quand OAK-D envoie des frames
+        self._proximity_blocked = False   # True = obstacle trop proche (arrêt d'urgence)
         self._running           = False
         self._step         = 0
         self._fps_times    = deque(maxlen=50)
@@ -180,6 +184,23 @@ class RealCarInference:
 
         print(f"[RealCar] CURRENT_MAX = {current_max:.1f}A | WATCHDOG = {WATCHDOG_S*1000:.0f}ms")
         print("[RealCar] ✅ Prêt. Lance run() pour démarrer.\n")
+
+    def _check_proximity(self, depth_frame) -> bool:
+        """Obstacle trop proche dans la bande centrale ? (depth uint16, mm)
+
+        Deux déclencheurs, car la stéréo a un angle mort sous ~35cm (MinZ) :
+          1. obstacle MESURÉ proche  : médiane des pixels valides < EMERGENCY_NEAR_MM
+          2. zone morte stéréo       : trop de pixels sans disparité (objet collé)
+             -> sinon l'obstacle "disparaît" (rayon=1.0) et la voiture réaccélère.
+        """
+        b = self.depth_bridge
+        c0, c1 = int(b.W * 0.40), int(b.W * 0.60)
+        roi = depth_frame[b.row_start:b.row_end, c0:c1]
+        valid = roi[(roi >= b.min_valid_mm) & (roi <= b.max_dist_mm)]
+        if valid.size and float(np.median(valid)) < EMERGENCY_NEAR_MM:
+            return True
+        no_measure = (roi == 0) | (roi < b.min_valid_mm)
+        return float(no_measure.mean()) > EMERGENCY_DEADZONE_FR
 
     def _apply_calib_fov(self, device, socket, bridge, label):
         """Applique le FOV usine du capteur au bridge (fallback = constante codée)."""
@@ -219,9 +240,11 @@ class RealCarInference:
                         self.vesc.stop()
                     else:
                         rays = self.depth_bridge(frame)
+                        prox = self._check_proximity(frame)
                         with self._lock:
-                            self._latest_rays  = rays
-                            self._last_frame_t = time.time()
+                            self._latest_rays       = rays
+                            self._proximity_blocked = prox
+                            self._last_frame_t      = time.time()
                 time.sleep(0.005)
 
     def _perception_visual(self):
@@ -283,10 +306,12 @@ class RealCarInference:
 
                 rays_visual = self.visual_bridge(bgr_msg.getCvFrame())
 
+                prox = False
                 if depth_msg is not None:
                     frame = depth_msg.getFrame()
                     if frame.max() >= 200:
                         rays_depth = self.depth_bridge(frame)
+                        prox = self._check_proximity(frame)
                         # Fusion : minimum → le signal le plus contraignant
                         rays_fused = np.minimum(rays_depth, rays_visual)
                     else:
@@ -295,8 +320,9 @@ class RealCarInference:
                     rays_fused = rays_visual       # fallback si pas de frame depth
 
                 with self._lock:
-                    self._latest_rays  = rays_fused
-                    self._last_frame_t = time.time()
+                    self._latest_rays       = rays_fused
+                    self._proximity_blocked = prox
+                    self._last_frame_t      = time.time()
                 time.sleep(0.005)
 
     def _control_thread(self):
@@ -309,6 +335,7 @@ class RealCarInference:
             with self._lock:
                 rays       = self._latest_rays
                 last_frame = self._last_frame_t
+                blocked    = self._proximity_blocked
 
             # ── Watchdog : inactif tant que OAK-D pas prête ───────────────
             if not self._perception_ready:
@@ -322,6 +349,14 @@ class RealCarInference:
 
             if rays is None:
                 time.sleep(0.01)
+                continue
+
+            # ── Arrêt d'urgence : obstacle trop proche (depth/fusion) ─────
+            if blocked:
+                self.vesc.stop()
+                if self._step % 30 == 0:
+                    print("\r[Control] ⛔ OBSTACLE PROCHE — arrêt d'urgence            ", end="", flush=True)
+                time.sleep(0.02)
                 continue
 
             # ── Z-score ───────────────────────────────────────────────────

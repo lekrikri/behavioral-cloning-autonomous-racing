@@ -101,6 +101,8 @@ class RealCarInference:
         servo_range: float  = 0.35,
         invert_steer: bool  = False,
         log_csv: bool       = True,
+        perception_mode: str = "depth",
+        mask_mode: str       = "hsv",
     ):
         print("\n[RealCar] ══════════════════════════════════════════")
         print("[RealCar]  Behavioral Cloning — Voiture Réelle v18  ")
@@ -135,9 +137,9 @@ class RealCarInference:
         self.ray_mu    = np.array(stats["mean"], dtype=np.float32)
         self.ray_sigma = np.array(stats["std"],  dtype=np.float32)
 
-        self.perception_mode = kwargs.get("perception_mode", "depth")
+        self.perception_mode = perception_mode
         self.depth_bridge    = DepthToRays()
-        self.visual_bridge   = VisualRays(mode=kwargs.get("mask_mode", "hsv"))
+        self.visual_bridge   = VisualRays(mode=mask_mode)
 
         # ── VESC avec params calibrés ─────────────────────────────────────────
         self.vesc = VESCInterface(
@@ -248,7 +250,7 @@ class RealCarInference:
             print("[Perception] Aucun device OAK-D trouvé")
             return
 
-        import depthai as dai as dai_mod
+        import depthai as dai_mod
         # Pipeline couleur + depth sur le même device
         with dai_mod.Device(device_info) as device:
             # Couleur

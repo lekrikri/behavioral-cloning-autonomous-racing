@@ -576,7 +576,10 @@ def clean_mask_artifacts(mask, bgr=None):
                         if _ang < 15.0 and bw > 100:
                             reason = "horizontal"
 
-                if reason is None and sobel_mag is not None and area < 8000:
+                # Sobel uniquement sur blobs MOYENS non proches
+                # Les lignes proches (y_bot bas, asp≈1) ont bords Sobel mous → faux rejets
+                _proche = (y_bot > int(CAM_H * 0.75) or asp < 1.5)
+                if reason is None and sobel_mag is not None and area < 8000 and not _proche:
                     kernel3 = np.ones((3, 3), np.uint8)
                     blob_u8 = blob_mask.astype(np.uint8) * 255
                     border  = cv2.dilate(blob_u8, kernel3) - blob_u8

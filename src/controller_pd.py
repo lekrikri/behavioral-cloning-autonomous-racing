@@ -1630,6 +1630,8 @@ def parse_args():
     p.add_argument("--baud",         type=int, default=115200)
     p.add_argument("--level",        type=int, default=3, choices=[1, 2, 3, 4])
     p.add_argument("--dry-run",      action="store_true")
+    p.add_argument("--max-duty",     type=float, default=0.20,
+                   help="Duty cycle max VESC [0-1] (défaut: 0.20 = prudent)")
     p.add_argument("--fixed-speed",  type=float, default=None,
                    help="Vitesse constante [0-1] — bypass machine a etats (calibration)")
     p.add_argument("--stream-port",  type=int, default=5601,
@@ -1733,7 +1735,7 @@ def run(args):
             print("[ctrl] ERREUR : vesc_interface non disponible"); sys.exit(1)
         vesc = VescInterface(port=args.port, baudrate=args.baud,
                              current_max=CURRENT_MAX,
-                             throttle_mode="duty", max_duty=0.50,
+                             throttle_mode="duty", max_duty=args.max_duty,
                              invert_motor=False)
         print("[ctrl] VESC connecte sur {}".format(args.port))
     else:

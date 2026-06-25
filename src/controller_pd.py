@@ -187,8 +187,9 @@ ROI_BOTTOM   = 1.00
 MIN_BLOB_AREA  = 1250   # prop. 800 * 640*320/(512*256)
 MIN_CORNER_AREA = 9375  # prop. 6000 * 1.5625
 CORNER_DURATION = 32   # frames de maintien virage (~2.5s @ 13fps) — virages serrés piste V
-CORNER_INNER_BIAS_S = 25   # px vers intérieur virage simple (évite de prendre l'extérieur)
+CORNER_INNER_BIAS_S = 25   # px vers intérieur virage simple
 CORNER_INNER_BIAS_U = 55   # px vers intérieur U-turn
+CURV_PIX_PER_RAD    = 300.0  # déplacement apparent ligne (px) par rad/s gyro
 U_DETECT_ANGLE  = 1.35  # rad (~77°) → début détection virage en U
 U_GYRO_ACCUM    = 2.20  # rad accumulés → U confirmé
 U_ERR_FORCE     = 250.0 # erreur forcée en U (vs 220 virage simple)
@@ -894,6 +895,8 @@ class PDController:
         self.is_u_turn         = False  # virage en U détecté (angle > 77°)
         self.gyro_accum_corner = 0.0    # gyro cumulé depuis début CORNER (rad)
         self.u_exit_prepared   = False  # flag sortie U prête
+        self.scanline_curv     = 0.0    # courbure estimée par polyfit scanlines
+        self.curv_class        = "straight"  # straight/medium/tight/uturn
         # ── Calibration biais gyroscope en ligne (Q1 — EMA conditionnelle) ──────
         self.gyro_bias_z      = 0.0   # biais estimé gyro_z (rad/s)
         self.gyro_calib_n     = 0     # compteur phases stables
@@ -1030,6 +1033,41 @@ class PDController:
             mask_clean, prev_left=self.hist_prev_left, prev_right=self.hist_prev_right)
         scan_l, scan_r, scan_rows, scan_left_hits, scan_right_hits = find_lane_scanlines(mask_clean)
 
+        # ── Estimation courbure polyfit scanlines (anticipation virage) ──────
+        if not self.corner_mode:
+            _sld = {y: x for x, y in scan_left_hits}
+            _srd = {y: x for x, y in scan_right_hits}
+            _smid = []
+            for _sy in set(_sld.keys()) & set(_srd.keys()):
+                _smid.append((_sy / float(max(CAM_H, 1)),
+                              (_sld[_sy] + _srd[_sy]) / 2.0))
+            if len(_smid) < 3:
+                for _sx, _sy in scan_left_hits:
+                    _smid.append((_sy / float(max(CAM_H, 1)),
+                                  _sx + TRACK_WIDTH_EST_PX / 2.0))
+            if len(_smid) < 3:
+                for _sx, _sy in scan_right_hits:
+                    _smid.append((_sy / float(max(CAM_H, 1)),
+                                  _sx - TRACK_WIDTH_EST_PX / 2.0))
+            if len(_smid) >= 4:
+                try:
+                    _pys = np.array([p[0] for p in _smid], dtype=np.float32)
+                    _pxs = np.array([p[1] for p in _smid], dtype=np.float32)
+                    _coef = np.polyfit(_pys, _pxs, 2)
+                    self.scanline_curv = float(_coef[0])
+                except Exception:
+                    self.scanline_curv = 0.0
+            # Classification (y normalisé 0-1, x en px 0-640)
+            _ac = abs(self.scanline_curv)
+            if _ac < 60.0:
+                self.curv_class = "straight"
+            elif _ac < 200.0:
+                self.curv_class = "medium"
+            elif _ac < 450.0:
+                self.curv_class = "tight"
+            else:
+                self.curv_class = "uturn"
+
         # Confiance scanlines : nb hits / 6 scanlines
         conf_scan_l = len(scan_left_hits)  / 6.0
         conf_scan_r = len(scan_right_hits) / 6.0
@@ -1090,6 +1128,10 @@ class PDController:
                 self.corner_accum += 2                      # perte soudaine d'une ligne
             if self.prev_n_blobs >= 1 and n_blobs == 0:
                 self.corner_accum += 3                      # perte totale des lignes
+            if self.curv_class == "tight":
+                self.corner_accum += 2                      # courbure forte anticipée
+            elif self.curv_class == "uturn":
+                self.corner_accum += 4                      # épingle détectée → déclenche tôt
 
             if self.corner_accum >= 5:
                 if corner_blob is not None:
@@ -1184,6 +1226,12 @@ class PDController:
             last_tw_c = (float(np.median(self.track_widths[-10:]))
                          if len(self.track_widths) >= 3 else float(TRACK_WIDTH_EST_PX))
 
+            # Correction IMU : les lignes se déplacent en sens inverse de la rotation
+            # gyro_z > 0 (droite) → lignes dérivent vers la gauche (cx diminue)
+            _imu_dt = 1.0 / 13.0
+            _imu_dx_l = -gyro_z_cal * float(self.left_age)  * _imu_dt * CURV_PIX_PER_RAD
+            _imu_dx_r = -gyro_z_cal * float(self.right_age) * _imu_dt * CURV_PIX_PER_RAD
+
             if left_cx is None and self.left_cx_hist and self.left_age <= _MAX_PRED_AGE_CRN:
                 if len(self.left_cx_hist) >= 3:
                     _vel_l = (self.left_cx_hist[-1] - self.left_cx_hist[-3]) / 2.0
@@ -1192,7 +1240,7 @@ class PDController:
                 else:
                     _vel_l = 0.0
                 _w = max(0.0, 1.0 - float(self.left_age) / _MAX_PRED_AGE_CRN)
-                _pred_l_vel = self.left_cx_hist[-1] + _vel_l * self.left_age
+                _pred_l_vel = self.left_cx_hist[-1] + _vel_l * self.left_age + _imu_dx_l
                 _pred_l_tw  = (right_cx - int(last_tw_c)) if right_cx is not None else _pred_l_vel
                 left_cx = max(10, min(CAM_W // 2 - 5,
                               int(round(_w * _pred_l_vel + (1.0 - _w) * _pred_l_tw))))
@@ -1206,7 +1254,7 @@ class PDController:
                 else:
                     _vel_r = 0.0
                 _w = max(0.0, 1.0 - float(self.right_age) / _MAX_PRED_AGE_CRN)
-                _pred_r_vel = self.right_cx_hist[-1] + _vel_r * self.right_age
+                _pred_r_vel = self.right_cx_hist[-1] + _vel_r * self.right_age + _imu_dx_r
                 _pred_r_tw  = (left_cx + int(last_tw_c)) if left_cx is not None else _pred_r_vel
                 right_cx = max(CAM_W // 2 + 5, min(CAM_W - 10,
                                int(round(_w * _pred_r_vel + (1.0 - _w) * _pred_r_tw))))
@@ -1228,7 +1276,11 @@ class PDController:
                                   and _tw_c > 80)
                 if _car_between_c:
                     _center_c = (left_cx + right_cx) // 2
-                    _inner_bias = CORNER_INNER_BIAS_U if self.is_u_turn else CORNER_INNER_BIAS_S
+                    # Apex dynamique selon courbure mesurée (racing line)
+                    _bias_map = {"straight": 15, "medium": 30, "tight": 50, "uturn": 80}
+                    _inner_bias = _bias_map.get(self.curv_class,
+                                                CORNER_INNER_BIAS_U if self.is_u_turn
+                                                else CORNER_INNER_BIAS_S)
                     err = (_center_c - CAM_W // 2 - effective_offset) - _inner_bias * self.corner_dir
                     _center_used = True
             if not _center_used:
@@ -1404,11 +1456,14 @@ class PDController:
                     throttle = V_STOP
                     self.state = "BLIND"
             elif curvature > 0.30 or (err is not None and abs(err) > 80):
-                throttle = self.fixed_speed * 0.75   # courbe détectée → ralentir
+                throttle = self.fixed_speed * 0.75
                 self.state = "FIXED"
                 self.blind_frames = 0
             else:
-                throttle = self.fixed_speed
+                # Pré-freinage anticipé selon courbure polyfit (avant même CORNER)
+                _pre = {"medium": 0.88, "tight": 0.72, "uturn": 0.58}.get(
+                    self.curv_class, 1.0)
+                throttle = self.fixed_speed * _pre
                 self.state = "FIXED"
                 self.blind_frames = 0
         else:

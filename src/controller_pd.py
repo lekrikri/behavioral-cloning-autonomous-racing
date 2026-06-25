@@ -12,7 +12,7 @@ Usage (Jetson Nano) :
   --stream-port  : port HTTP stream MJPEG (défaut : 5601, 0 = désactivé)
 """
 
-import sys, time, argparse, os, threading, struct, socket, csv, glob, fcntl
+import sys, time, argparse, os, threading, struct, socket, csv, glob, fcntl, math
 import numpy as np
 import cv2
 
@@ -840,6 +840,12 @@ class PDController:
         self.corner_mode      = False
         self.corner_dir       = 0.0
         self.corner_count     = 0
+        self.corner_accum     = 0     # accumulateur multi-signal (détection anticipée)
+        self.prev_ray_asym    = 0.0   # dérivée ray_asym entre frames
+        self.corner_imu_angle = 0.0   # angle intégré IMU depuis début virage (rad)
+        self.corner_imu_t     = 0.0   # timestamp pour dt IMU
+        self.corner_release   = 0     # fading sortie CORNER (frames restantes)
+        self.last_corner_steer = 0.0  # dernier steering CORNER pour fading
         # ── Priorité 4 : mémoire de direction (IA suggestion) ────────────────
         self.last_turn_dir    = 0.0   # dernière direction forte mémorisée
         self.turn_memory_ctr  = 0     # frames restantes de mémoire
@@ -909,13 +915,17 @@ class PDController:
         total_w = sum(w for _, w in valid)
         return sum(e * w for e, w in valid) / total_w
 
-    def compute(self, mask, bgr, mask_wide=None):
+    def compute(self, mask, bgr, mask_wide=None, gyro_z=0.0):
         global CAMERA_OFFSET_PX
         if _go_reset[0]:
             _go_reset[0] = False
-            self.corner_mode  = False
-            self.corner_count = 0
-            self.prev_n_blobs = 0
+            self.corner_mode      = False
+            self.corner_count     = 0
+            self.prev_n_blobs     = 0
+            self.corner_accum     = 0
+            self.corner_release   = 0
+            self.prev_ray_asym    = 0.0
+            self.corner_imu_angle = 0.0
             self.kalman.reset()
             self.err_smooth   = 0.0
             self.prev_err     = 0.0
@@ -988,19 +998,26 @@ class PDController:
         # n_blobs : nombre de lignes détectées (0/1/2) — pour CORNER et COAST
         n_blobs = (1 if left_cx is not None else 0) + (1 if right_cx is not None else 0)
 
-        # ── Machine à états CORNER — score ≥ 3 requis ───────────────────────
-        if not self.corner_mode and not self.no_corner:
-            cscore = 0
-            if corner_blob is not None:
-                cscore += 2                                  # blob compact L = signal fort
-            if abs(ray_asym) > 0.35:
-                cscore += 1                                  # asymétrie raycasts
-            if self.prev_n_blobs == 2 and n_blobs <= 1:
-                cscore += 1                                  # disparition soudaine d'une ligne
-            if self.prev_n_blobs >= 1 and n_blobs == 0:
-                cscore += 1                                  # perte totale des lignes
+        # ── Machine à états CORNER — accumulateur multi-signal + dérivée ray_asym ──
+        d_asym = ray_asym - self.prev_ray_asym
+        self.prev_ray_asym = ray_asym
 
-            if cscore >= 3:
+        if not self.corner_mode and not self.no_corner:
+            # Décrémentation naturelle : rémanence ~10 frames
+            self.corner_accum = max(0, self.corner_accum - 1)
+            # Accumulation multi-signal
+            if corner_blob is not None:
+                self.corner_accum += 3                      # blob compact L = signal fort
+            if abs(ray_asym) > 0.28:
+                self.corner_accum += 1                      # asymétrie raycasts
+            if abs(d_asym) > 0.12:
+                self.corner_accum += 1                      # dérivée : courbe s'amorce tôt
+            if self.prev_n_blobs == 2 and n_blobs == 1:
+                self.corner_accum += 2                      # perte soudaine d'une ligne
+            if self.prev_n_blobs >= 1 and n_blobs == 0:
+                self.corner_accum += 3                      # perte totale des lignes
+
+            if self.corner_accum >= 5:
                 if corner_blob is not None:
                     corner_dir_cx = corner_blob["cx"]
                 elif ray_asym != 0:
@@ -1009,23 +1026,39 @@ class PDController:
                     corner_dir_cx = CAM_W // 2 + (1 if err > 0 else -1)
                 else:
                     corner_dir_cx = CAM_W // 2 + 1
-                self.corner_dir   = 1.0 if corner_dir_cx > CAM_W // 2 else -1.0
-                self.corner_mode  = True
-                self.corner_count = CORNER_DURATION
-                print("[ctrl] CORNER score={} dir={:+.0f}".format(cscore, self.corner_dir))
+                self.corner_dir       = 1.0 if corner_dir_cx > CAM_W // 2 else -1.0
+                self.corner_mode      = True
+                self.corner_count     = CORNER_DURATION
+                self.corner_imu_angle = 0.0
+                self.corner_imu_t     = time.time()
+                self.corner_accum     = 0
+                print("[ctrl] CORNER accum d_asym={:.2f} asym={:.2f} dir={:+.0f}".format(
+                    d_asym, ray_asym, self.corner_dir))
 
         # Offset effectif calculé ici pour être appliqué à l'erreur BRUTE
         effective_offset = CAMERA_OFFSET_PX + int(self.auto_offset) + int(self.servo_bias)
 
         if self.corner_mode:
+            # ── IMU : intégration angle depuis début du virage ─────────────
+            now_imu = time.time()
+            dt_imu  = min(now_imu - self.corner_imu_t, 0.3)  # clamp si frame droppée
+            self.corner_imu_t = now_imu
+            self.corner_imu_angle += abs(gyro_z) * dt_imu
+
+            # ── Condition de sortie : timer OU angle IMU ≥ 80° ─────────────
             self.corner_count -= 1
-            if self.corner_count <= 0:
+            imu_done = self.corner_imu_angle >= 1.396  # 1.396 rad ≈ 80°
+            if self.corner_count <= 0 or imu_done:
                 self.corner_mode = False
-                print("[ctrl] CORNER termine")
-            # Steering : max entre err réel et 160px dans la direction du virage
+                self.corner_release = 6
+                self.last_corner_steer = self.last_steering_cmd
+                print("[ctrl] CORNER fin angle={:.0f}deg frames_restants={}".format(
+                    math.degrees(self.corner_imu_angle), self.corner_count))
+
+            # ── Steering : b=0/1 → pleine force 180px ; b=2 → conserver err réel
             base_err = abs(err) if (err is not None and
                                     (err * self.corner_dir) > 0) else 0.0
-            err = self.corner_dir * max(base_err, 160.0)
+            err = self.corner_dir * max(base_err, 180.0)
             self.state = "CORNER"
         else:
             # ── Calcul erreur depuis positions fusionnées ──────────────────
@@ -1178,6 +1211,14 @@ class PDController:
             if n_blobs == 1 and len(self.track_widths) < 3:
                 steering = max(-0.40, min(0.40, steering))
         self.last_steering_cmd = steering   # mémoriser pour INERTIAL_COAST
+
+        # ── Fading sortie CORNER : blend progressif → PD normal ────────────
+        if self.corner_release > 0:
+            blend = float(self.corner_release) / 6.0
+            steering = blend * self.last_corner_steer + (1.0 - blend) * steering
+            self.corner_release -= 1
+            self.state = "CORNER_EXIT"
+            self.last_steering_cmd = steering
 
         # ── Servo bias : apprentissage biais mécanique châssis ────────────────
         # Si err≈0 (voiture centrée) mais steer≠0, c'est un défaut physique du servo
@@ -1534,7 +1575,8 @@ def run(args):
                         for pkt in imu_data.packets:
                             _last_gyro_z[0] = pkt.gyroscope.z
 
-                    steering, throttle, info = ctrl.compute(mask, bgr, mask_wide)
+                    steering, throttle, info = ctrl.compute(mask, bgr, mask_wide,
+                                                              gyro_z=_last_gyro_z[0])
 
                     # ── MODE MAPPING : enregistrement de la piste ─────────────
                     if mapper is not None:

@@ -1,0 +1,6 @@
+# Laptop-side viewer deps for tools/rerun_bridge.py (NOT for the Jetson).
+# Install in a project venv pinned to Python 3.12 (rerun has no Arch package):
+#   uv venv --python 3.12 .venv
+#   uv pip install --python .venv/bin/python -r tools/requirements-bridge.txt
+rerun-sdk==0.33.1
+numpy

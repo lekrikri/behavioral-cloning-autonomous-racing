@@ -1,7 +1,12 @@
 # Commandes — G-CAR-000 Robocar
 
-> Référence complète de toutes les commandes disponibles.
+> Référence complète des commandes du **nouveau pipeline controller_pd** (PD + vision + IMU).
 > Jetson Nano IP Tailscale : `100.112.10.119` | user : `robocar` | pass : `robocar`
+>
+> Voir aussi :
+> - [`COMMANDS.md`](COMMANDS.md) — simulation Unity + entraînement Behavioral Cloning + ancien pipeline inference_realcar
+> - [`CONTROL_STACK.md`](CONTROL_STACK.md) — architecture VESC bas niveau (protocole, venv, pyserial)
+> - [`HARDWARE_DIAGNOSTICS.md`](HARDWARE_DIAGNOSTICS.md) — pannes matérielles et solutions (reboot 20min, brownout OAK-D)
 
 ---
 

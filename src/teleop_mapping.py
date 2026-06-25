@@ -384,11 +384,13 @@ def main():
     p = argparse.ArgumentParser(description="Teleop + mapping assisté IMU")
     p.add_argument("--port",        default="/dev/ttyACM0")
     p.add_argument("--js",          default="/dev/input/js0")
-    p.add_argument("--max-current",  type=float, default=25.0,
-                   help="A — identique teleop_gamepad.py")
-    p.add_argument("--max-throttle", type=float, default=0.22,
-                   help="scale gaz avant [0..1] — 0.22 = ~22%% (mapping lent, max 5.5A)")
-    p.add_argument("--max-reverse",  type=float, default=0.15,
+    p.add_argument("--max-current",  type=float, default=3.0,
+                   help="A cap pour mode current")
+    p.add_argument("--max-duty",     type=float, default=0.08,
+                   help="duty cycle max [0..1] — 0.08 = 8%% très lent pour mapping")
+    p.add_argument("--max-throttle", type=float, default=1.0,
+                   help="scale gaz avant [0..1]")
+    p.add_argument("--max-reverse",  type=float, default=0.60,
                    help="scale marche arrière")
     p.add_argument("--servo-center", type=float, default=0.5)
     p.add_argument("--servo-range",  type=float, default=0.40)
@@ -433,8 +435,9 @@ def main():
                 servo_range=args.servo_range,
                 current_max=args.max_current,
                 invert_steer=args.invert_steer,
-                invert_motor=False,          # identique teleop_gamepad.py
+                invert_motor=False,
                 throttle_mode=args.throttle_mode,
+                max_duty=args.max_duty,
             )
             print("[teleop_map] VESC connecté sur {}".format(args.port))
         except Exception as e:

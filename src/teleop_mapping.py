@@ -179,7 +179,7 @@ _TYPE_BUTTON = 0x01
 _TYPE_AXIS   = 0x02
 _TYPE_INIT   = 0x80
 
-AXIS_STEER  = 6   # left stick X
+AXIS_STEER  = 0   # left stick X (xpad standard, Mode LED éteint)
 AXIS_ACCEL  = 5   # R2
 AXIS_BRAKE  = 2   # L2
 BTN_SELECT  = 6   # SELECT → start mapping

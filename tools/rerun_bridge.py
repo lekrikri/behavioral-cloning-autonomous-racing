@@ -129,6 +129,7 @@ def main():
         if not chunk:
             print("[bridge] disconnected — reconnecting")
             sock.close()
+            time.sleep(0.5)   # avoid a tight loop when ssh -L accepts then EOFs (Jetson side down)
             sock = connect(args.host, args.port)
             buf = b""
             continue

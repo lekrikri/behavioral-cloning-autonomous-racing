@@ -1374,12 +1374,16 @@ def run(args):
             # ── Détection + recovery automatique du device OAK-D ──────────────
             # Séquence : getAllConnectedDevices → si UNBOOTED → hub rebind →
             #            bootMemory → device passe en BOOTLOADER → pipeline OK
+            _last_frame_time[0] = time.time()  # neutralise le watchdog pendant recovery
+
             _all_devs = dai.Device.getAllConnectedDevices()
             _dev_info = _all_devs[0] if _all_devs else None
+            _did_boot_memory = False
 
             if _dev_info is None or "UNBOOTED" in str(getattr(_dev_info, 'state', '')):
                 # Device invisible ou UNBOOTED : tenter hub rebind pour forcer ré-énumération
                 print("[ctrl] Device invisible/UNBOOTED — hub rebind 1-2.1...")
+                _last_frame_time[0] = time.time()
                 _usb_reset_method4_parent_hub()
                 _all_devs = dai.Device.getAllConnectedDevices()
                 if not _all_devs:
@@ -1391,27 +1395,33 @@ def run(args):
 
             print("[ctrl] Device: {0} state={1}".format(_dev_info.getMxId(), _dev_info.state))
 
-            # Si UNBOOTED ou BOOTLOADER : bootMemory pour charger le FW en RAM
+            # Si UNBOOTED : bootMemory pour charger le FW bootloader en RAM
             _state_str = str(getattr(_dev_info, 'state', ''))
-            if "UNBOOTED" in _state_str or "BOOTLOADER" in _state_str:
-                print("[ctrl] {} → bootMemory en cours...".format(_state_str))
+            if "UNBOOTED" in _state_str:
+                print("[ctrl] UNBOOTED → bootMemory en cours...")
                 try:
+                    _last_frame_time[0] = time.time()
                     _bl = dai.DeviceBootloader(_dev_info, allowFlashingBootloader=True)
                     _fw = dai.DeviceBootloader.getEmbeddedBootloaderBinary(
                         dai.DeviceBootloader.Type.USB)
                     _bl.bootMemory(_fw)
                     del _bl
-                    print("[ctrl] bootMemory OK — attente 12s reboot MyriadX...")
-                    time.sleep(12.0)
-                    # Re-chercher le device post-bootMemory
-                    _all_devs = dai.Device.getAllConnectedDevices()
-                    _dev_info = _all_devs[0] if _all_devs else _dev_info
-                    print("[ctrl] Post-bootMemory state={0}".format(
-                        getattr(_dev_info, 'state', '?')))
+                    _did_boot_memory = True
+                    print("[ctrl] bootMemory OK — attente 15s reboot MyriadX...")
+                    _last_frame_time[0] = time.time()
+                    time.sleep(15.0)
+                    _last_frame_time[0] = time.time()
+                    print("[ctrl] Ouverture pipeline en auto-discover post-bootMemory...")
                 except Exception as _bme:
                     print("[ctrl] bootMemory erreur: {0}".format(_bme))
 
-            with dai.Device(pipeline, _dev_info, True) as device:   # True = USB 2.0
+            # Ouverture pipeline : auto-discover après bootMemory, sinon dev_info explicite
+            if _did_boot_memory:
+                _device_ctx = dai.Device(pipeline, True)   # auto-discover BOOTLOADER
+            else:
+                _device_ctx = dai.Device(pipeline, _dev_info, True)  # USB 2.0
+
+            with _device_ctx as device:
                 q        = device.getOutputQueue("preview", maxSize=1, blocking=False)
                 imu_q    = device.getOutputQueue("imu",     maxSize=50, blocking=False)
                 _last_gyro_z = [0.0]   # partagé entre lecture IMU et boucle vision

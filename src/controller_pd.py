@@ -1405,8 +1405,12 @@ def run(args):
             _state_str = str(getattr(_dev_info, 'state', ''))
             _post_recovery = os.environ.get('OAKD_POST_RECOVERY', '0') == '1'
 
+            _need_execve = ("UNBOOTED" in _state_str or "BOOTLOADER" in _state_str) \
+                           and not _post_recovery
+
             if "UNBOOTED" in _state_str and not _post_recovery:
-                print("[ctrl] UNBOOTED → bootMemory subprocess + restart process...")
+                # Device UNBOOTED → subprocess bootMemory pour le passer en BOOTLOADER
+                print("[ctrl] UNBOOTED → bootMemory subprocess...")
                 import subprocess as _sp
                 _bootmem_code = (
                     "import depthai as dai, time, sys\n"
@@ -1435,24 +1439,26 @@ def run(args):
                     _out, _err = _proc.communicate(timeout=90)
                     print("[ctrl] bootMem: {}".format(_out.decode().strip()))
                     _did_boot_memory = True
+                    _need_execve = True
                 except Exception as _bme:
                     print("[ctrl] bootMemory subprocess erreur: {0}".format(_bme))
+                    _need_execve = False
 
-                if _did_boot_memory:
-                    # Relancer ce process avec XLink vierge (os.execve remplace l'image)
-                    _env_exec = dict(os.environ)
-                    _env_exec['OAKD_POST_RECOVERY'] = '1'
-                    _env_exec['OPENBLAS_CORETYPE'] = 'ARMV8'
-                    print("[ctrl] Restart process XLink-clean (OAKD_POST_RECOVERY=1)...")
-                    time.sleep(1)
-                    os.execve(sys.executable, [sys.executable] + sys.argv, _env_exec)
-                    # os.execve ne revient pas
+            if _need_execve:
+                # Device en BOOTLOADER ou post-bootMemory → XLink corrodé → execve
+                _env_exec = dict(os.environ)
+                _env_exec['OAKD_POST_RECOVERY'] = '1'
+                _env_exec['OPENBLAS_CORETYPE'] = 'ARMV8'
+                print("[ctrl] Restart process XLink-clean (OAKD_POST_RECOVERY=1)...")
+                time.sleep(1)
+                os.execve(sys.executable, [sys.executable] + sys.argv, _env_exec)
+                # os.execve ne revient pas
 
             # Ouverture pipeline
-            # - post-recovery avec BOOTLOADER : XLink vierge → auto-discover marche
-            # - cas normal : passer dev_info explicitement
-            if _post_recovery and ("BOOTLOADER" in _state_str or "UNBOOTED" in _state_str):
-                print("[ctrl] Post-recovery auto-discover pipeline...")
+            # - post-recovery (XLink vierge) : auto-discover → trouve le device BOOTLOADER/BOOTED
+            # - cas normal/BOOTED : passer dev_info explicitement
+            if _post_recovery:
+                print("[ctrl] Post-recovery auto-discover pipeline (XLink vierge)...")
                 _device_ctx = dai.Device(pipeline, True)
             else:
                 _device_ctx = dai.Device(pipeline, _dev_info, True)  # USB 2.0

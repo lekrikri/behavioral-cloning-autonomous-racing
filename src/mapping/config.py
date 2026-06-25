@@ -14,9 +14,15 @@ class MappingConfig:
         gyro_yaw_sign=1.0,      # flip if positive yaw_rate turns the wrong way
         # --- steering (for teleop while mapping) ---
         servo_center=0.53,      # nominal straight; linkage has mechanical backlash (see plan)
-        # --- ray geometry (must match visual_rays/depth_to_rays output) ---
+        # --- ray geometry ---
+        # Do NOT hardcode the FOV here. The real ray angles are OWNED by the ray
+        # producer (depth_to_rays / visual_rays), whose FOV is being harmonised on
+        # branch feat/oak-camera-stream. drive_and_map must source the angles from
+        # that producer (single source of truth); fov_deg stays None unless a caller
+        # deliberately overrides it. config.json fov=180 is the SIM lidar fan, not
+        # the camera.
         n_rays=20,
-        fov_deg=180.0,
+        fov_deg=None,
         ray_max_m=3.0,          # TODO reconcile with depth_to_rays clamp / config.json rayMaxDistance(=300)
         # --- occupancy grid ---
         grid_res_m=0.05,
@@ -37,6 +43,6 @@ class MappingConfig:
 
     def __repr__(self):
         return ("MappingConfig(k_erpm_to_ms=%g, servo_center=%.3f, n_rays=%d, "
-                "fov_deg=%.0f, ray_max_m=%.2f, grid_res_m=%.3f, grid_size_m=%.1f)"
+                "fov_deg=%s, ray_max_m=%.2f, grid_res_m=%.3f, grid_size_m=%.1f)"
                 % (self.k_erpm_to_ms, self.servo_center, self.n_rays, self.fov_deg,
                    self.ray_max_m, self.grid_res_m, self.grid_size_m))

@@ -988,19 +988,19 @@ class PDController:
         # n_blobs : nombre de lignes détectées (0/1/2) — pour CORNER et COAST
         n_blobs = (1 if left_cx is not None else 0) + (1 if right_cx is not None else 0)
 
-        # ── Machine à états CORNER — score ≥ 2 requis ───────────────────────
+        # ── Machine à états CORNER — score ≥ 3 requis ───────────────────────
         if not self.corner_mode and not self.no_corner:
             cscore = 0
             if corner_blob is not None:
                 cscore += 2                                  # blob compact L = signal fort
-            if abs(ray_asym) > 0.30:
-                cscore += 1                                  # asymétrie raycasts (seuil abaissé)
+            if abs(ray_asym) > 0.35:
+                cscore += 1                                  # asymétrie raycasts
             if self.prev_n_blobs == 2 and n_blobs <= 1:
                 cscore += 1                                  # disparition soudaine d'une ligne
-            if err is not None and abs(err) > 55 and n_blobs == 2:
-                cscore += 1                                  # grand écart visible = virage imminent
+            if self.prev_n_blobs >= 1 and n_blobs == 0:
+                cscore += 1                                  # perte totale des lignes
 
-            if cscore >= 2:
+            if cscore >= 3:
                 if corner_blob is not None:
                     corner_dir_cx = corner_blob["cx"]
                 elif ray_asym != 0:

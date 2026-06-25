@@ -569,9 +569,13 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
         blob_mask = (labels == i)
 
         reason = None
+        # Coin supérieur gauche (x<160, y<80) = zone mur/décor → toujours rejeter
+        _in_wall_zone = (bx + bw < CAM_W * 0.25 and by + bh < CAM_H * 0.40)
 
         if area < _area_min:
             reason = "small"
+        elif _in_wall_zone:
+            reason = "wall_zone"
         elif y_bot < _y_bot_thresh:
             reason = "high"
         else:

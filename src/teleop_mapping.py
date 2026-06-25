@@ -21,9 +21,12 @@ Dataset sauvegardé dans : data/mapping_YYYYMMDD_HHMMSS/
 
 import argparse
 import csv
+import fcntl
+import glob
 import math
 import os
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -50,6 +53,118 @@ try:
 except ImportError:
     _DAI_OK = False
     print("[teleop_map] ATTENTION: depthai non installe — mode dry-run")
+
+
+# ─── Recovery OAK-D (identique à controller_pd.py) ───────────────────────────
+
+def _find_oak_sysfs():
+    for vendor_path in glob.glob('/sys/bus/usb/devices/*/idVendor'):
+        try:
+            with open(vendor_path) as f:
+                if f.read().strip() != '03e7':
+                    continue
+        except Exception:
+            continue
+        dir_path = os.path.dirname(vendor_path)
+        return dir_path, os.path.basename(dir_path)
+    return None, None
+
+
+def _hub_rebind():
+    HUB_NAME = '1-2.1'
+    hub_driver = '/sys/bus/usb/drivers/usb'
+    try:
+        with open(os.path.join(hub_driver, 'unbind'), 'w') as f:
+            f.write(HUB_NAME)
+        print("[map] USB hub {} unbind".format(HUB_NAME))
+        time.sleep(3.0)
+        with open(os.path.join(hub_driver, 'bind'), 'w') as f:
+            f.write(HUB_NAME)
+        print("[map] USB hub {} bind".format(HUB_NAME))
+        time.sleep(5.0)
+        return True
+    except Exception as e:
+        print("[map] hub rebind err: {}".format(e))
+    return False
+
+
+def _open_oak_pipeline(pipeline):
+    """Ouvre le device OAK-D avec recovery automatique UNBOOTED → bootMemory → execve."""
+    _all_devs = dai.Device.getAllConnectedDevices()
+    _dev_info = _all_devs[0] if _all_devs else None
+
+    if _dev_info is None or "UNBOOTED" in str(getattr(_dev_info, 'state', '')):
+        print("[map] Device UNBOOTED/invisible — hub rebind...")
+        _hub_rebind()
+        _all_devs = dai.Device.getAllConnectedDevices()
+        if not _all_devs:
+            _all_devs = dai.DeviceBootloader.getAllAvailableDevices()
+        _dev_info = _all_devs[0] if _all_devs else None
+
+    _forced_unbooted = False
+    if _dev_info is None:
+        try:
+            _dev_info = dai.DeviceInfo("1.2.1.4")
+            _forced_unbooted = True
+            print("[map] Fallback DeviceInfo hardcode 1.2.1.4")
+        except Exception as e:
+            raise RuntimeError("OAK-D introuvable: {}".format(e))
+
+    _state_str     = str(getattr(_dev_info, 'state', ''))
+    _recovery_count = int(os.environ.get('OAKD_POST_RECOVERY', '0'))
+    _post_recovery  = _recovery_count >= 1
+    _need_execve    = False
+    _did_boot_memory = False
+
+    if "BOOTLOADER" in _state_str and not _post_recovery:
+        _need_execve = True
+
+    if ("UNBOOTED" in _state_str or _forced_unbooted) and _recovery_count < 3:
+        print("[map] UNBOOTED → bootMemory subprocess...")
+        _bootmem_code = (
+            "import depthai as dai, time, sys\n"
+            "bls = []\n"
+            "for _r in range(6):\n"
+            "    bls = dai.DeviceBootloader.getAllAvailableDevices()\n"
+            "    if not bls: bls = dai.Device.getAllConnectedDevices()\n"
+            "    if bls: break\n"
+            "    time.sleep(3)\n"
+            "if not bls:\n"
+            "    try:\n"
+            "        bls = [dai.DeviceInfo('1.2.1.4')]\n"
+            "    except: sys.exit(1)\n"
+            "bl = dai.DeviceBootloader(bls[0], allowFlashingBootloader=True)\n"
+            "fw = dai.DeviceBootloader.getEmbeddedBootloaderBinary("
+            "dai.DeviceBootloader.Type.USB)\n"
+            "bl.bootMemory(fw)\n"
+            "del bl\n"
+            "print('bootMemory_OK')\n"
+            "time.sleep(2)\n"
+        )
+        _env_bm = dict(os.environ)
+        _env_bm['OPENBLAS_CORETYPE'] = 'ARMV8'
+        try:
+            _proc = subprocess.Popen(
+                ['python3', '-c', _bootmem_code],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_env_bm)
+            _out, _ = _proc.communicate(timeout=90)
+            _did_boot_memory = b"bootMemory_OK" in _out or _proc.returncode == 0
+            print("[map] bootMem: {}".format(_out.decode().strip()))
+            _need_execve = True
+        except Exception as e:
+            print("[map] bootMemory err: {}".format(e))
+
+    _can_execve = _did_boot_memory or ("BOOTLOADER" in _state_str)
+    if _need_execve and _can_execve:
+        _env_exec = dict(os.environ)
+        _env_exec['OAKD_POST_RECOVERY'] = str(_recovery_count + 1)
+        _env_exec['OPENBLAS_CORETYPE']  = 'ARMV8'
+        print("[map] Restart XLink-clean (OAKD_POST_RECOVERY={})...".format(
+            _recovery_count + 1))
+        os.execve(sys.executable, [sys.executable, '-u'] + sys.argv, _env_exec)
+
+    print("[map] Device: {} state={}".format(_dev_info.getMxId(), _dev_info.state))
+    return dai.Device(pipeline, _dev_info, True)
 
 try:
     from vesc_interface import VESCInterface
@@ -370,7 +485,7 @@ def main():
     print("[teleop_map] Ouverture OAK-D Lite...")
 
     try:
-        with dai.Device(pipeline) as device:
+        with _open_oak_pipeline(pipeline) as device:
             q_cam = device.getOutputQueue("preview", maxSize=1, blocking=False)
             q_imu = device.getOutputQueue("imu",     maxSize=50, blocking=False)
 

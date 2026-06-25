@@ -590,9 +590,6 @@ def clean_mask_artifacts(mask, bgr=None):
                             reason = "diffuse"
 
         if reason is not None:
-            if area > 2000:
-                print("[artifact] REJECT area={} bw={} bh={} asp={:.1f} y_bot={} reason={}".format(
-                    area, bw, bh, float(max(bw,bh))/max(min(bw,bh),1), y_bot, reason))
             rejected[blob_mask] = 255
         else:
             clean[blob_mask] = 255
@@ -1375,14 +1372,14 @@ class PDController:
             steering = 0.0
         else:
             steering = self._pd(float(err))  # offset déjà soustrait à la source
-            # blobs=1 sans track_width fiable → estimation moins sûre → limiter steer
-            if n_blobs == 1 and len(self.track_widths) < 3:
-                steering = max(-0.40, min(0.40, steering))
-        # Rate limiter anti-oscillation : max delta 0.18/frame hors CORNER/transitions
+            # b=1 : estimation moins fiable → braquage max limité pour éviter crash mur
+            if n_blobs == 1:
+                steering = max(-0.65, min(0.65, steering))
+        # Rate limiter anti-oscillation : max delta 0.13/frame hors CORNER/transitions
         if self.state not in ("CORNER", "CORNER_EXIT", "COAST", "BLIND"):
             _ds = steering - self.last_steering_cmd
-            if abs(_ds) > 0.18:
-                steering = self.last_steering_cmd + (0.18 if _ds > 0 else -0.18)
+            if abs(_ds) > 0.13:
+                steering = self.last_steering_cmd + (0.13 if _ds > 0 else -0.13)
         self.last_steering_cmd = steering   # mémoriser pour INERTIAL_COAST
 
         # ── Fading sortie CORNER : blend progressif → PD normal ────────────
@@ -1407,6 +1404,7 @@ class PDController:
             else:
                 blend = float(self.corner_release) / 6.0
                 steering = blend * self.last_corner_steer + (1.0 - blend) * steering
+                throttle = throttle * 0.70  # sortie virage lente → évite crash mur
                 self.corner_release -= 1
                 self.state = "CORNER_EXIT"
                 self.last_steering_cmd = steering

@@ -1347,7 +1347,7 @@ def run(args):
             imu_xout.setStreamName("imu")
             imu_node.out.link(imu_xout.input)
 
-            with dai.Device(pipeline, False) as device:  # False = USB 3.0 auto (hub alimenté)
+            with dai.Device(pipeline, True) as device:   # True = USB 2.0 stable (OAK-D sur bus 480M)
                 q        = device.getOutputQueue("preview", maxSize=1, blocking=False)
                 imu_q    = device.getOutputQueue("imu",     maxSize=50, blocking=False)
                 _last_gyro_z = [0.0]   # partagé entre lecture IMU et boucle vision

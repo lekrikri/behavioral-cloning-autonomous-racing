@@ -190,6 +190,11 @@ CAM_W   = 640
 CAM_H   = 320
 CAM_FPS = 13
 
+# Filtre EMA sur gyro_z (lisse le bruit de conduite manuelle basse vitesse)
+# IMU 100 Hz → tau ≈ 200ms : bruit <100ms atténué à ~20%, vrais virages >500ms conservés
+GYRO_EMA_ALPHA  = 0.05   # 0.0=figé | 1.0=pas de filtre | augmenter si trop lent à réagir
+GYRO_DEADZONE_Z = 0.03   # rad/s — bruit de fond à l'arrêt complet
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Gamepad (non-bloquant, identique à teleop_gamepad.py)
@@ -497,8 +502,9 @@ def main():
             q_cam = device.getOutputQueue("preview", maxSize=1, blocking=False)
             q_imu = device.getOutputQueue("imu",     maxSize=50, blocking=False)
 
-            gyro_z   = 0.0
-            last_bgr = None
+            gyro_z_raw = 0.0   # lecture brute OAK-D BMI270
+            gyro_z     = 0.0   # signal lissé EMA (utilisé par mapper + recorder)
+            last_bgr   = None
 
             print("[teleop_map] OK — prêt. SELECT=démarrer, START=finir+sauver.")
 
@@ -517,7 +523,10 @@ def main():
                 pkt_imu = q_imu.tryGet()
                 if pkt_imu is not None:
                     for pkt in pkt_imu.packets:
-                        gyro_z = pkt.gyroscope.z
+                        gyro_z_raw = pkt.gyroscope.z
+                        gyro_z = GYRO_EMA_ALPHA * gyro_z_raw + (1.0 - GYRO_EMA_ALPHA) * gyro_z
+                        if abs(gyro_z) < GYRO_DEADZONE_Z:
+                            gyro_z = 0.0
 
                 # ── Lecture gamepad ───────────────────────────────────────────
                 pad.poll()
@@ -574,8 +583,8 @@ def main():
 
                 # ── Log terminal ─────────────────────────────────────────────
                 rec_tag = "REC" if mapping_on else "---"
-                print("\r [{}] steer={:+.2f} thr={:+.2f} gyro={:+.3f} seg={}   ".format(
-                    rec_tag, steer, throttle, gyro_z, segment), end="", flush=True)
+                print("\r [{}] steer={:+.2f} thr={:+.2f} raw={:+.3f} ema={:+.3f} seg={}   ".format(
+                    rec_tag, steer, throttle, gyro_z_raw, gyro_z, segment), end="", flush=True)
 
                 time.sleep(dt_ctrl)
 

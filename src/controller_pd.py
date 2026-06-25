@@ -1451,8 +1451,14 @@ def run(args):
                     _proc = _sp.Popen(['python3', '-c', _bootmem_code],
                                       stdout=_sp.PIPE, stderr=_sp.PIPE, env=_env_bm)
                     _out, _err = _proc.communicate(timeout=90)
-                    print("[ctrl] bootMem: {}".format(_out.decode().strip()))
-                    _did_boot_memory = True
+                    _out_str = _out.decode().strip()
+                    print("[ctrl] bootMem: {}".format(_out_str))
+                    if _err:
+                        _err_tail = _err.decode()[-200:]
+                        if 'warning' not in _err_tail.lower():
+                            print("[ctrl] bootMem stderr: {}".format(_err_tail))
+                    _did_boot_memory = (b"bootMemory_OK" in _out
+                                        or _proc.returncode == 0)
                     _need_execve = True
                 except Exception as _bme:
                     print("[ctrl] bootMemory subprocess erreur: {0}".format(_bme))
@@ -1467,7 +1473,7 @@ def run(args):
                 _env_exec['OAKD_POST_RECOVERY'] = '1'
                 _env_exec['OPENBLAS_CORETYPE'] = 'ARMV8'
                 print("[ctrl] Restart process XLink-clean (OAKD_POST_RECOVERY=1)...")
-                os.execve(sys.executable, [sys.executable] + sys.argv, _env_exec)
+                os.execve(sys.executable, [sys.executable, '-u'] + sys.argv, _env_exec)
                 # os.execve ne revient pas
 
             # Ouverture pipeline

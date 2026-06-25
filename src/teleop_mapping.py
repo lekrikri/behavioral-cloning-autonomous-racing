@@ -384,11 +384,11 @@ def main():
     p = argparse.ArgumentParser(description="Teleop + mapping assisté IMU")
     p.add_argument("--port",        default="/dev/ttyACM0")
     p.add_argument("--js",          default="/dev/input/js0")
-    p.add_argument("--max-current",  type=float, default=8.0,
-                   help="A — vitesse faible pour mapping (teleop_gamepad=25A)")
-    p.add_argument("--max-throttle", type=float, default=0.35,
-                   help="scale gaz avant [0..1] — 0.35 = 35%% pour mapping lent")
-    p.add_argument("--max-reverse",  type=float, default=0.20,
+    p.add_argument("--max-current",  type=float, default=25.0,
+                   help="A — identique teleop_gamepad.py")
+    p.add_argument("--max-throttle", type=float, default=0.22,
+                   help="scale gaz avant [0..1] — 0.22 = ~22%% (mapping lent, max 5.5A)")
+    p.add_argument("--max-reverse",  type=float, default=0.15,
                    help="scale marche arrière")
     p.add_argument("--servo-center", type=float, default=0.5)
     p.add_argument("--servo-range",  type=float, default=0.40)
@@ -420,6 +420,7 @@ def main():
     print("  Calibration triggers — ne pas toucher R2/L2...")
     rest = calibrate_triggers(pad, [AXIS_ACCEL, AXIS_BRAKE])
     print("  rest R2={:.2f} L2={:.2f}".format(rest[AXIS_ACCEL], rest[AXIS_BRAKE]))
+    pad._just_pressed.clear()  # vider les events init pour éviter REC automatique
     print("═" * 65)
 
     # ── VESC ─────────────────────────────────────────────────────────────────

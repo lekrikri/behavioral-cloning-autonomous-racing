@@ -190,10 +190,11 @@ CAM_W   = 640
 CAM_H   = 320
 CAM_FPS = 13
 
-# Filtre EMA sur gyro_z (lisse le bruit de conduite manuelle basse vitesse)
-# IMU 100 Hz → tau ≈ 200ms : bruit <100ms atténué à ~20%, vrais virages >500ms conservés
-GYRO_EMA_ALPHA  = 0.05   # 0.0=figé | 1.0=pas de filtre | augmenter si trop lent à réagir
-GYRO_DEADZONE_Z = 0.03   # rad/s — bruit de fond à l'arrêt complet
+# Filtre EMA sur l'AMPLITUDE |gyro_z| — robuste aux oscillations gauche/droite du pilote
+# alpha=0.10 → tau≈95ms à 100Hz : bruit oscillant atténué, virages soutenus conservés
+GYRO_EMA_ALPHA  = 0.10   # EMA sur |gyro_z_raw| (amplitude, pas signe)
+GYRO_SIGN_ALPHA = 0.30   # EMA sur le signe (direction prédominante)
+GYRO_DEADZONE_Z = 0.05   # rad/s — bruit de fond à l'arrêt
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -502,9 +503,11 @@ def main():
             q_cam = device.getOutputQueue("preview", maxSize=1, blocking=False)
             q_imu = device.getOutputQueue("imu",     maxSize=50, blocking=False)
 
-            gyro_z_raw = 0.0   # lecture brute OAK-D BMI270
-            gyro_z     = 0.0   # signal lissé EMA (utilisé par mapper + recorder)
-            last_bgr   = None
+            gyro_z_raw  = 0.0   # lecture brute OAK-D BMI270
+            gyro_z      = 0.0   # amplitude-EMA × signe (mapper + recorder)
+            _gyro_amp   = 0.0   # EMA sur |gyro_z_raw|
+            _gyro_sign  = 0.0   # EMA du signe (-1..+1)
+            last_bgr    = None
 
             print("[teleop_map] OK — prêt. SELECT=démarrer, START=finir+sauver.")
 
@@ -524,9 +527,14 @@ def main():
                 if pkt_imu is not None:
                     for pkt in pkt_imu.packets:
                         gyro_z_raw = pkt.gyroscope.z
-                        gyro_z = GYRO_EMA_ALPHA * gyro_z_raw + (1.0 - GYRO_EMA_ALPHA) * gyro_z
-                        if abs(gyro_z) < GYRO_DEADZONE_Z:
+                        # EMA amplitude : robuste aux oscillations +/- du pilote
+                        _gyro_amp  = GYRO_EMA_ALPHA * abs(gyro_z_raw) + (1.0 - GYRO_EMA_ALPHA) * _gyro_amp
+                        # EMA signe : direction prédominante
+                        _gyro_sign = GYRO_SIGN_ALPHA * (1.0 if gyro_z_raw >= 0 else -1.0) + (1.0 - GYRO_SIGN_ALPHA) * _gyro_sign
+                        if _gyro_amp < GYRO_DEADZONE_Z:
                             gyro_z = 0.0
+                        else:
+                            gyro_z = _gyro_amp * (1.0 if _gyro_sign >= 0 else -1.0)
 
                 # ── Lecture gamepad ───────────────────────────────────────────
                 pad.poll()

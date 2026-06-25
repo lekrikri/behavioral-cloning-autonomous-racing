@@ -27,6 +27,12 @@ except ImportError:
 sys.path.insert(0, os.path.dirname(__file__))
 from visual_rays import white_line_mask, VisualRays
 try:
+    from track_mapper    import TrackMapper
+    from track_navigator import TrackNavigator
+    _TRACK_MODULES_OK = True
+except ImportError:
+    _TRACK_MODULES_OK = False
+try:
     from vesc_interface import VESCInterface as VescInterface
 except ImportError:
     VescInterface = None
@@ -196,6 +202,7 @@ _drive_enabled = True   # contrôlé via HTTP /stop et /go
 _go_reset = [False]         # mis à True par /go → PDController reset son état CORNER/Kalman
 _calibrate_request = [False]       # mis à True par /calibrate → PDController applique l'offset
 _calibrate_result  = [None]        # renseigné par PDController avec la valeur appliquée
+_finish_map_request = [False]      # mis à True par /finish_map → sauvegarde track_map.json
 
 def _make_placeholder():
     img = np.zeros((CAM_H, CAM_W, 3), dtype=np.uint8)
@@ -249,6 +256,11 @@ class MJPEGHandler(BaseHTTPRequestHandler):
                 self._send_text("CAMERA_OFFSET_PX={:+d}px applique".format(result))
             else:
                 self._send_text("ERREUR: b<2 ou pas assez de frames stables")
+            return
+        if path == "/finish_map":
+            _finish_map_request[0] = True
+            self._send_text("MAPPING_FINISH_REQUESTED")
+            print("[track] /finish_map recu")
             return
         if path not in ("/", "/stream"):
             self.send_response(404); self.end_headers(); return
@@ -1203,6 +1215,12 @@ def parse_args():
                    help="Override STEERING_MAX [0.3-1.0] (defaut: 0.85).")
     p.add_argument("--no-corner",   action="store_true",
                    help="Desactive la detection de coin L (mode ligne droite / test).")
+    p.add_argument("--mapping",     action="store_true",
+                   help="Phase 1 : enregistre un tour de piste (IMU) -> track_map.json")
+    p.add_argument("--racing",      action="store_true",
+                   help="Phase 2 : charge track_map.json et pilote en anticipation IMU")
+    p.add_argument("--map-file",    default="track_map.json",
+                   help="Chemin du fichier carte (defaut: track_map.json)")
     return p.parse_args()
 
 
@@ -1234,6 +1252,23 @@ def run(args):
         ROI_FAR, ROI_MID, ROI_NEAR))
 
     ctrl = PDController(level=args.level, fixed_speed=args.fixed_speed, no_corner=args.no_corner)
+
+    # ── Modules cartographie / navigation prédictive ──────────────────
+    mapper    = None
+    navigator = None
+    if _TRACK_MODULES_OK:
+        if args.mapping:
+            mapper = TrackMapper()
+            mapper.start()
+            print("[track] Mode MAPPING actif -> {}".format(args.map_file))
+        elif args.racing:
+            navigator = TrackNavigator()
+            ok = navigator.load(args.map_file)
+            if not ok:
+                print("[track] WARN: carte non chargée — mode racing désactivé")
+                navigator = None
+            else:
+                print("[track] Mode RACING actif")
 
     # Mode replay : charge le CSV de piste enregistrée
     replay_data = None
@@ -1303,8 +1338,19 @@ def run(args):
             xout.setStreamName("preview")
             cam.preview.link(xout.input)
 
+            # IMU node (gyroscope pour mapping/racing)
+            imu_node = pipeline.create(dai.node.IMU)
+            imu_node.enableIMUSensor([dai.IMUSensor.GYROSCOPE_CALIBRATED], 100)
+            imu_node.setBatchReportThreshold(1)
+            imu_node.setMaxBatchReports(10)
+            imu_xout = pipeline.create(dai.node.XLinkOut)
+            imu_xout.setStreamName("imu")
+            imu_node.out.link(imu_xout.input)
+
             with dai.Device(pipeline, True) as device:
-                q = device.getOutputQueue("preview", maxSize=1, blocking=False)
+                q        = device.getOutputQueue("preview", maxSize=1, blocking=False)
+                imu_q    = device.getOutputQueue("imu",     maxSize=50, blocking=False)
+                _last_gyro_z = [0.0]   # partagé entre lecture IMU et boucle vision
                 if attempt > 1:
                     _camera_restarted[0] = True  # signale au controller de reset Kalman
                 attempt = 0
@@ -1330,7 +1376,38 @@ def run(args):
                     # Masque normal (ROI 65%) pour lignes sans bruit fond
                     mask[:int(CAM_H * ROI_FAR), :] = 0
 
+                    # ── Lecture IMU (gyro_z pour mapping/racing) ──────────────
+                    imu_data = imu_q.tryGet()
+                    if imu_data:
+                        for pkt in imu_data.packets:
+                            _last_gyro_z[0] = pkt.gyroscope.z
+
                     steering, throttle, info = ctrl.compute(mask, bgr, mask_wide)
+
+                    # ── MODE MAPPING : enregistrement de la piste ─────────────
+                    if mapper is not None:
+                        mapper.process_frame(_last_gyro_z[0])
+                        if _finish_map_request[0]:
+                            _finish_map_request[0] = False
+                            mapper.save_map(args.map_file)
+                            mapper.summary()
+
+                    # ── MODE RACING : anticipation IMU prédictive ─────────────
+                    if navigator is not None:
+                        nav = navigator.update(
+                            _last_gyro_z[0], info["n_blobs"], info["err"])
+                        # Vision stable → réduit drift odométrique
+                        if info["n_blobs"] == 2 and info["err"] is not None:
+                            navigator.notify_vision_stable(info["n_blobs"], info["err"])
+                        # Sortir du fallback si vision récupérée
+                        if info["n_blobs"] == 2:
+                            navigator.recover_from_fallback()
+                        # Fusion additive : PD + bias carte (jamais remplacement)
+                        if nav["action"] != "FALLBACK" and nav["action"] != "STRAIGHT":
+                            steering = steering + nav["steering_bias"]
+                            steering = max(-STEERING_MAX, min(STEERING_MAX, steering))
+                            throttle = throttle * nav["throttle_scale"]
+                            info["state"] = "NAV_" + nav["action"].upper()[:8]
 
                     # ── MODE REPLAY : feedforward + correction PD ──────────────
                     if replay_data is not None:

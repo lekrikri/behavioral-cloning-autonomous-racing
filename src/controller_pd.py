@@ -846,6 +846,10 @@ class PDController:
         self.corner_imu_t     = 0.0   # timestamp pour dt IMU
         self.corner_release   = 0     # fading sortie CORNER (frames restantes)
         self.last_corner_steer = 0.0  # dernier steering CORNER pour fading
+        self.corner_sanity_ctr = 0    # watchdog contradiction direction (Q5)
+        # ── Calibration biais gyroscope en ligne (Q1 — EMA conditionnelle) ──────
+        self.gyro_bias_z      = 0.0   # biais estimé gyro_z (rad/s)
+        self.gyro_calib_n     = 0     # compteur phases stables
         # ── Priorité 4 : mémoire de direction (IA suggestion) ────────────────
         self.last_turn_dir    = 0.0   # dernière direction forte mémorisée
         self.turn_memory_ctr  = 0     # frames restantes de mémoire
@@ -867,6 +871,11 @@ class PDController:
         self.prev_n_blobs     = 0     # pour détecter transition b=2→1
         # ── Auto-calibration offset caméra ────────────────────────────────────
         self.calib_err_history = []   # err brutes récentes pour calibration
+        # ── Prédiction ligne disparue : historique velocity ───────────────────
+        self.left_cx_hist  = []   # N dernières positions ligne gauche détectées
+        self.right_cx_hist = []   # N dernières positions ligne droite détectées
+        self.left_age      = 0    # frames depuis dernière détection ligne gauche
+        self.right_age     = 0    # frames depuis dernière détection ligne droite
         self.auto_offset       = 0.0  # offset appris en ligne (EMA)
         # ── Servo bias : biais mécanique châssis ──────────────────────────────
         self.servo_bias        = 0.0  # offset px appris (steering résiduel quand err≈0)
@@ -926,6 +935,11 @@ class PDController:
             self.corner_release   = 0
             self.prev_ray_asym    = 0.0
             self.corner_imu_angle = 0.0
+            self.corner_sanity_ctr = 0
+            self.left_cx_hist     = []
+            self.right_cx_hist    = []
+            self.left_age         = 0
+            self.right_age        = 0
             self.kalman.reset()
             self.err_smooth   = 0.0
             self.prev_err     = 0.0
@@ -998,6 +1012,16 @@ class PDController:
         # n_blobs : nombre de lignes détectées (0/1/2) — pour CORNER et COAST
         n_blobs = (1 if left_cx is not None else 0) + (1 if right_cx is not None else 0)
 
+        # Ages de prédiction : toujours mis à jour (CORNER inclus)
+        if left_cx is not None:
+            self.left_age = 0
+        else:
+            self.left_age += 1
+        if right_cx is not None:
+            self.right_age = 0
+        else:
+            self.right_age += 1
+
         # ── Machine à états CORNER — accumulateur multi-signal + dérivée ray_asym ──
         d_asym = ray_asym - self.prev_ray_asym
         self.prev_ray_asym = ray_asym
@@ -1038,19 +1062,40 @@ class PDController:
         # Offset effectif calculé ici pour être appliqué à l'erreur BRUTE
         effective_offset = CAMERA_OFFSET_PX + int(self.auto_offset) + int(self.servo_bias)
 
+        # ── Q1 : Calibration biais gyroscope en ligne (EMA conditionnelle) ──────
+        # N'apprend que sur phases b=2 stables (voiture droite, err faible, asym nulle)
+        if n_blobs == 2 and abs(ray_asym) < 0.08 and err is not None and abs(err) < 15 and not self.corner_mode:
+            if self.gyro_calib_n < 60:   # initialisation rapide : alpha=0.05
+                self.gyro_bias_z = 0.95 * self.gyro_bias_z + 0.05 * gyro_z
+                self.gyro_calib_n += 1
+            else:                        # tracking lent : alpha=0.003
+                self.gyro_bias_z = 0.997 * self.gyro_bias_z + 0.003 * gyro_z
+        gyro_z_cal = gyro_z - self.gyro_bias_z
+
         if self.corner_mode:
             # ── IMU : intégration angle depuis début du virage ─────────────
             now_imu = time.time()
             dt_imu  = min(now_imu - self.corner_imu_t, 0.3)  # clamp si frame droppée
             self.corner_imu_t = now_imu
-            self.corner_imu_angle += abs(gyro_z) * dt_imu
+            self.corner_imu_angle += abs(gyro_z_cal) * dt_imu
 
-            # ── Condition de sortie : timer OU angle IMU ≥ 80° ─────────────
+            # ── Q5 : Watchdog cohérence direction CORNER via ray_asym ──────
+            if ray_asym * self.corner_dir < -0.30:
+                self.corner_sanity_ctr += 1
+                if self.corner_sanity_ctr >= 5:
+                    self.corner_dir = -self.corner_dir
+                    self.corner_sanity_ctr = 0
+                    print("[ctrl] CORNER watchdog inversion dir={:+.0f}".format(self.corner_dir))
+            else:
+                self.corner_sanity_ctr = max(0, self.corner_sanity_ctr - 1)
+
+            # ── Condition de sortie : timer OU angle IMU ≥ 100° ─────────────
             self.corner_count -= 1
             imu_done = self.corner_imu_angle >= 1.745  # 1.745 rad ≈ 100° (virages serrés piste V)
             if self.corner_count <= 0 or imu_done:
                 self.corner_mode = False
                 self.corner_release = 4
+                self.corner_sanity_ctr = 0
                 self.last_corner_steer = self.last_steering_cmd
                 print("[ctrl] CORNER fin angle={:.0f}deg frames_restants={}".format(
                     math.degrees(self.corner_imu_angle), self.corner_count))
@@ -1064,6 +1109,14 @@ class PDController:
             # ── Calcul erreur depuis positions fusionnées ──────────────────
             last_tw = float(np.median(self.track_widths[-10:])) if len(self.track_widths) >= 3 else float(TRACK_WIDTH_EST_PX)
 
+            # Historique velocity : mémoriser positions brutes avant rejet (pour extrapolation)
+            if left_cx is not None:
+                self.left_cx_hist.append(left_cx)
+                if len(self.left_cx_hist) > 5: self.left_cx_hist.pop(0)
+            if right_cx is not None:
+                self.right_cx_hist.append(right_cx)
+                if len(self.right_cx_hist) > 5: self.right_cx_hist.pop(0)
+
             # Rejeter cx extrêmes : ligne à <25px du bord = perspective aberrante en virage
             if left_cx is not None and left_cx < 25:
                 left_cx = None
@@ -1071,6 +1124,42 @@ class PDController:
             if right_cx is not None and right_cx > CAM_W - 25:
                 right_cx = None
                 n_blobs = max(0, n_blobs - 1)
+
+            # ── Prédiction ligne manquante par extrapolation velocity + fallback track_width ──
+            # Quand une ligne disparaît, on extrapole sa trajectoire depuis l'historique.
+            # En virage à droite : ligne droite se déplace vers la droite avant de sortir →
+            #   vel > 0 → pred_vel sort de l'image → center estimé se décale à droite (correct).
+            # Fusion : velocity fiable les premières frames, track_width prend le relais ensuite.
+            _MAX_PRED_AGE = 7  # ~0.54s max de prédiction
+            if left_cx is None and self.left_cx_hist and self.left_age <= _MAX_PRED_AGE:
+                if len(self.left_cx_hist) >= 3:
+                    _vel_l = (self.left_cx_hist[-1] - self.left_cx_hist[-3]) / 2.0
+                elif len(self.left_cx_hist) == 2:
+                    _vel_l = float(self.left_cx_hist[-1] - self.left_cx_hist[0])
+                else:
+                    _vel_l = 0.0
+                _pred_l_vel = self.left_cx_hist[-1] + _vel_l * self.left_age
+                _pred_l_vel = max(10, min(CAM_W // 2 - 5, int(_pred_l_vel)))
+                _pred_l_tw  = (right_cx - int(last_tw)) if right_cx is not None else _pred_l_vel
+                _pred_l_tw  = max(10, min(CAM_W // 2 - 5, _pred_l_tw))
+                _w_vel_l    = max(0.0, 1.0 - float(self.left_age) / _MAX_PRED_AGE)
+                left_cx = int(round(_w_vel_l * _pred_l_vel + (1.0 - _w_vel_l) * _pred_l_tw))
+                n_blobs += 1
+
+            if right_cx is None and self.right_cx_hist and self.right_age <= _MAX_PRED_AGE:
+                if len(self.right_cx_hist) >= 3:
+                    _vel_r = (self.right_cx_hist[-1] - self.right_cx_hist[-3]) / 2.0
+                elif len(self.right_cx_hist) == 2:
+                    _vel_r = float(self.right_cx_hist[-1] - self.right_cx_hist[0])
+                else:
+                    _vel_r = 0.0
+                _pred_r_vel = self.right_cx_hist[-1] + _vel_r * self.right_age
+                _pred_r_vel = max(CAM_W // 2 + 5, min(CAM_W - 10, int(_pred_r_vel)))
+                _pred_r_tw  = (left_cx + int(last_tw)) if left_cx is not None else _pred_r_vel
+                _pred_r_tw  = max(CAM_W // 2 + 5, min(CAM_W - 10, _pred_r_tw))
+                _w_vel_r    = max(0.0, 1.0 - float(self.right_age) / _MAX_PRED_AGE)
+                right_cx = int(round(_w_vel_r * _pred_r_vel + (1.0 - _w_vel_r) * _pred_r_tw))
+                n_blobs += 1
 
             if left_cx is not None and right_cx is not None:
                 tw = right_cx - left_cx
@@ -1251,15 +1340,29 @@ class PDController:
             # blobs=1 sans track_width fiable → estimation moins sûre → limiter steer
             if n_blobs == 1 and len(self.track_widths) < 3:
                 steering = max(-0.40, min(0.40, steering))
+        # Rate limiter anti-oscillation : max delta 0.18/frame hors CORNER/transitions
+        if self.state not in ("CORNER", "CORNER_EXIT", "COAST", "BLIND"):
+            _ds = steering - self.last_steering_cmd
+            if abs(_ds) > 0.18:
+                steering = self.last_steering_cmd + (0.18 if _ds > 0 else -0.18)
         self.last_steering_cmd = steering   # mémoriser pour INERTIAL_COAST
 
         # ── Fading sortie CORNER : blend progressif → PD normal ────────────
         if self.corner_release > 0:
-            blend = float(self.corner_release) / 6.0
-            steering = blend * self.last_corner_steer + (1.0 - blend) * steering
-            self.corner_release -= 1
-            self.state = "CORNER_EXIT"
-            self.last_steering_cmd = steering
+            # Q6 : Cascade V — gyro encore fort dans le même sens → re-CORNER immédiat
+            if abs(gyro_z_cal) > 1.0 and gyro_z_cal * self.corner_dir > 0:
+                self.corner_mode      = True
+                self.corner_count     = CORNER_DURATION
+                self.corner_imu_angle = 0.0
+                self.corner_imu_t     = time.time()
+                self.corner_release   = 0
+                print("[ctrl] CASCADE_V gyro={:.2f} dir={:+.0f}".format(gyro_z_cal, self.corner_dir))
+            else:
+                blend = float(self.corner_release) / 6.0
+                steering = blend * self.last_corner_steer + (1.0 - blend) * steering
+                self.corner_release -= 1
+                self.state = "CORNER_EXIT"
+                self.last_steering_cmd = steering
 
         # ── Servo bias : apprentissage biais mécanique châssis ────────────────
         # Si err≈0 (voiture centrée) mais steer≠0, c'est un défaut physique du servo

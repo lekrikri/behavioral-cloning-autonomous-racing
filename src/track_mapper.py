@@ -13,10 +13,10 @@ import time
 import math
 
 # Seuils hystérésis pour détecter les virages (rad/s)
-# Calibrés sur signal EMA filtré (alpha=0.05, tau~200ms à 100Hz IMU)
-# Vrais virages EMA peak=0.18-0.22, bruit court EMA < 0.10
-GYRO_ENTER = 0.16   # au-dessus = virage détecté (signal EMA, pas brut !)
-GYRO_EXIT  = 0.07   # en-dessous = retour ligne droite
+# Calibrés sur fenêtre glissante 25 paquets @ 100Hz (250ms)
+# Vrais virages filtré peak=0.20-0.33, ligne droite filtré < 0.15
+GYRO_ENTER = 0.20   # au-dessus = virage détecté
+GYRO_EXIT  = 0.09   # en-dessous = retour ligne droite
 MIN_SEGMENT_FRAMES = 12  # filtre les micro-corrections manuelles (< 12fr = bruit)
 
 

@@ -555,16 +555,15 @@ def clean_mask_artifacts(mask, bgr=None):
 
         if area < 800:
             reason = "small"
-        elif y_bot < int(CAM_H * 0.65):
+        elif y_bot < int(CAM_H * 0.62):
             reason = "high"
         else:
             asp = float(max(bw, bh)) / max(min(bw, bh), 1)
             if asp < 2.5 and area < 4000:
                 reason = "compact"  # trop carré → reflet, logo, chaussure, mur compact
             else:
-                # Filtre orientation PCA : les murs sont horizontaux (angle < 15°)
-                # les vraies lignes de piste sont diagonales (perspective)
-                if bw > 80 and area > 800:
+                # PCA orientation : blobs MOYENS seulement (les vraies lignes ont area > 5000)
+                if bw > 80 and 800 < area < 5000:
                     roi_m = blob_mask[by:by + bh, bx:bx + bw].astype(np.uint8)
                     _m = cv2.moments(roi_m)
                     if _m["m00"] > 0:
@@ -574,11 +573,10 @@ def clean_mask_artifacts(mask, bgr=None):
                         _denom = _mu20 - _mu02
                         if abs(_denom) < 1e-6: _denom = 1e-6
                         _ang = abs(math.degrees(0.5 * math.atan2(2.0 * _mu11, _denom)))
-                        # angle < 15° = quasi-horizontal = mur blanc ou planche
                         if _ang < 15.0 and bw > 100:
                             reason = "horizontal"
 
-                if reason is None and sobel_mag is not None and area < 12000:
+                if reason is None and sobel_mag is not None and area < 8000:
                     kernel3 = np.ones((3, 3), np.uint8)
                     blob_u8 = blob_mask.astype(np.uint8) * 255
                     border  = cv2.dilate(blob_u8, kernel3) - blob_u8

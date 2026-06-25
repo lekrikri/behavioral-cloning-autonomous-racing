@@ -179,11 +179,11 @@ _TYPE_BUTTON = 0x01
 _TYPE_AXIS   = 0x02
 _TYPE_INIT   = 0x80
 
-AXIS_STEER  = 6   # left stick X (F710 XInput, Mode LED allumé — comme teleop_gamepad.py)
-AXIS_ACCEL  = 5   # R2
-AXIS_BRAKE  = 2   # L2
-BTN_SELECT  = 6   # SELECT → start mapping
-BTN_START   = 7   # START  → finish + save + quit
+AXIS_STEER  = 3   # right stick X (analogique confirmé jstest — AXIS 6 = D-pad digital)
+AXIS_ACCEL  = 5   # R2 (rest = -1.0)
+AXIS_BRAKE  = 2   # L2 (rest = -1.0)
+BTN_SELECT  = 6   # BACK  → start mapping
+BTN_START   = 7   # START → finish + save + quit (seulement si mapping actif)
 
 # ─── Caméra ──────────────────────────────────────────────────────────────────
 CAM_W   = 640
@@ -530,6 +530,9 @@ def main():
                         print("[teleop_map] Mapping déjà actif — appuie START pour terminer")
 
                 if pad.just_pressed(BTN_START):
+                    if not mapping_on:
+                        print("[teleop_map] START ignoré — appuie d'abord BACK pour démarrer")
+                        continue
                     print("[teleop_map] *** FIN MAPPING *** sauvegarde...")
                     if mapping_on:
                         recorder.stop()

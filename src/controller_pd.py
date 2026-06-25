@@ -545,9 +545,9 @@ def clean_mask_artifacts(mask, bgr=None):
 
         if area < 550:   # prop. 350*1.5625
             reason = "small"
-        elif y_bot < int(CAM_H * 0.50):
-            # Le bas du blob est entièrement dans la moitié haute → mur/fond de salle
-            # Une vraie ligne vue de loin a quand même son bas dans la moitié basse
+        elif y_bot < int(CAM_H * 0.62):
+            # Le bas du blob est trop haut → ligne lointaine (voie adjacente, mur)
+            # Les vraies lignes de bordure descendent jusqu'à ≥ 62% de l'image
             reason = "high"
         else:
             asp = float(max(bw, bh)) / max(min(bw, bh), 1)
@@ -1064,13 +1064,26 @@ class PDController:
             # ── Calcul erreur depuis positions fusionnées ──────────────────
             last_tw = float(np.median(self.track_widths[-10:])) if len(self.track_widths) >= 3 else float(TRACK_WIDTH_EST_PX)
             if left_cx is not None and right_cx is not None:
-                center = (left_cx + right_cx) // 2
-                err = center - CAM_W // 2 - effective_offset  # offset soustrait à la SOURCE
                 tw = right_cx - left_cx
-                if 100 < tw < CAM_W - 20:
-                    self.track_widths.append(tw)
-                    if len(self.track_widths) > 20:
-                        self.track_widths.pop(0)
+                # Voiture entre les deux lignes : left à gauche du centre, right à droite
+                car_between = (left_cx < CAM_W // 2 and right_cx > CAM_W // 2 and tw > 150)
+                if car_between:
+                    center = (left_cx + right_cx) // 2
+                    err = center - CAM_W // 2 - effective_offset
+                    if tw < CAM_W - 20:
+                        self.track_widths.append(tw)
+                        if len(self.track_widths) > 20:
+                            self.track_widths.pop(0)
+                else:
+                    # Config invalide (ligne parasite ou voiture hors piste) → b=1
+                    n_blobs = 1
+                    if abs(left_cx - CAM_W // 2) < abs(right_cx - CAM_W // 2):
+                        est_right = min(left_cx + int(last_tw), CAM_W - 10)
+                        center = (left_cx + est_right) // 2
+                    else:
+                        est_left = max(right_cx - int(last_tw), 10)
+                        center = (est_left + right_cx) // 2
+                    err = center - CAM_W // 2 - effective_offset
             elif left_cx is not None:
                 est_right = min(left_cx + int(last_tw), CAM_W - 10)
                 center = (left_cx + est_right) // 2

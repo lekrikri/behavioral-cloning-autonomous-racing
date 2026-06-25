@@ -135,56 +135,71 @@ def main():
         prev_t = None
         dt_loop = 1.0 / args.hz
         step = 0
+        consec_err = 0
 
         try:
             while True:
                 t_loop = time.time()
-                pad.poll()
-                if pad.button(BTN_QUIT):
-                    print("\n[map] START -> quit")
-                    break
+                try:
+                    pad.poll()
+                    if pad.button(BTN_QUIT):
+                        print("\n[map] START -> quit")
+                        break
 
-                steer = deadzone(pad.axis(AXIS_STEER), args.deadzone)
-                rt = trigger_fraction(pad, AXIS_ACCEL, rest[AXIS_ACCEL])
-                lt = trigger_fraction(pad, AXIS_BRAKE, rest[AXIS_BRAKE])
-                throttle = rt - lt
-                if not args.no_motor:
-                    vesc.drive(steer, throttle)
+                    steer = deadzone(pad.axis(AXIS_STEER), args.deadzone)
+                    rt = trigger_fraction(pad, AXIS_ACCEL, rest[AXIS_ACCEL])
+                    lt = trigger_fraction(pad, AXIS_BRAKE, rest[AXIS_BRAKE])
+                    throttle = rt - lt
+                    if not args.no_motor:
+                        vesc.drive(steer, throttle)
 
-                depth = q_depth.tryGet()
-                if depth is not None:
-                    latest_rays = bridge(depth.getFrame())
+                    depth = q_depth.tryGet()
+                    if depth is not None:
+                        latest_rays = bridge(depth.getFrame())
 
-                # speed from wheel eRPM (forward -> +speed via erpm_sign).
-                # One blocking serial read per loop — reused for telemetry below.
-                erpm = vesc.get_rpm()
-                speed = args.k * erpm * args.erpm_sign
+                    # one blocking serial read per loop, reused for telemetry
+                    erpm = vesc.get_rpm()
+                    speed = args.k * erpm * args.erpm_sign
 
-                # integrate pose at IMU sample rate using the per-sample dt
-                for s in imu.drain():
-                    if prev_t is not None:
-                        dt = s[0] - prev_t
-                        if 0.0 < dt < 0.1:
-                            dr.update(imu.yaw_rate(s), speed, dt)
-                    prev_t = s[0]
+                    for s in imu.drain():
+                        if prev_t is not None:
+                            dt = s[0] - prev_t
+                            if 0.0 < dt < 0.1:
+                                dr.update(imu.yaw_rate(s), speed, dt)
+                        prev_t = s[0]
 
-                if latest_rays is not None:
-                    grid.integrate_scan(dr.pose, latest_rays * ray_max_m, angles)
+                    if latest_rays is not None:
+                        grid.integrate_scan(dr.pose, latest_rays * ray_max_m, angles)
 
-                tel.publish({
-                    "t": t_loop,
-                    "pose": [dr.x, dr.y, dr.theta],
-                    "rays": latest_rays.tolist() if latest_rays is not None else None,
-                    "ray_angles": angles.tolist(),
-                    "ray_max_m": ray_max_m,
-                    "speed": speed,
-                    "erpm": erpm,
-                })
+                    tel.publish({
+                        "t": t_loop,
+                        "pose": [dr.x, dr.y, dr.theta],
+                        "rays": latest_rays.tolist() if latest_rays is not None else None,
+                        "ray_angles": angles.tolist(),
+                        "ray_max_m": ray_max_m,
+                        "speed": speed,
+                        "erpm": erpm,
+                    })
 
-                if step % 30 == 0:
-                    print("\r x=%+.2f y=%+.2f th=%+.1f deg  v=%+.2f m/s   " %
-                          (dr.x, dr.y, np.degrees(dr.theta), speed), end="", flush=True)
-                step += 1
+                    if step % 30 == 0:
+                        print("\r x=%+.2f y=%+.2f th=%+.1f deg  v=%+.2f m/s   " %
+                              (dr.x, dr.y, np.degrees(dr.theta), speed), end="", flush=True)
+                    step += 1
+                    consec_err = 0
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    # Transient OAK/serial hiccup: drop this iteration, keep mapping.
+                    consec_err += 1
+                    print("\n[map] loop error (%d): %s" % (consec_err, e))
+                    if not args.no_motor:
+                        try:
+                            vesc.stop()
+                        except Exception:
+                            pass
+                    if consec_err >= 50:
+                        print("[map] too many consecutive errors -> abort")
+                        break
 
                 sleep = dt_loop - (time.time() - t_loop)
                 if sleep > 0:

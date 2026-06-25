@@ -548,7 +548,8 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
     # Seuils adaptés selon l'état de virage
     _area_min       = 400  if corner_mode else 800
     _y_bot_thresh   = int(CAM_H * 0.40) if corner_mode else int(CAM_H * 0.62)
-    _compact_thresh = 6000 if corner_mode else 4000
+    _compact_thresh = 4000  # inutilisé en CORNER (asp assoupli)
+    _asp_compact    = 1.3  if corner_mode else 2.5  # CORNER : seulement blobs carrés/ronds
 
     # Pré-calcul Sobel sur image grise (une seule fois pour toutes les composantes)
     sobel_mag = None
@@ -575,7 +576,7 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
             reason = "high"
         else:
             asp = float(max(bw, bh)) / max(min(bw, bh), 1)
-            if asp < 2.5 and area < _compact_thresh:
+            if asp < _asp_compact and area < _compact_thresh:
                 reason = "compact"  # trop carré → reflet, logo, chaussure, mur compact
             else:
                 # PCA orientation : blobs MOYENS seulement (les vraies lignes ont area > 5000)
@@ -592,10 +593,9 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
                         if _ang < 15.0 and bw > 100:
                             reason = "horizontal"
 
-                # Sobel uniquement sur blobs MOYENS non proches
-                # Les lignes proches (y_bot bas, asp≈1) ont bords Sobel mous → faux rejets
+                # Sobel : désactivé en CORNER (lignes courbées ont gradient plus doux)
                 _proche = (y_bot > int(CAM_H * 0.75) or asp < 1.5)
-                if reason is None and sobel_mag is not None and area < 8000 and not _proche:
+                if reason is None and not corner_mode and sobel_mag is not None and area < 8000 and not _proche:
                     kernel3 = np.ones((3, 3), np.uint8)
                     blob_u8 = blob_mask.astype(np.uint8) * 255
                     border  = cv2.dilate(blob_u8, kernel3) - blob_u8

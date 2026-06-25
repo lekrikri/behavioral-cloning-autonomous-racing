@@ -1395,29 +1395,51 @@ def run(args):
 
             print("[ctrl] Device: {0} state={1}".format(_dev_info.getMxId(), _dev_info.state))
 
-            # Si UNBOOTED : bootMemory pour charger le FW bootloader en RAM
+            # Si UNBOOTED : bootMemory via subprocess Python isolé (XLink clean state)
+            # Le long-running process a un XLink "corrodé" après resets → subprocess frais
             _state_str = str(getattr(_dev_info, 'state', ''))
             if "UNBOOTED" in _state_str:
-                print("[ctrl] UNBOOTED → bootMemory en cours...")
+                print("[ctrl] UNBOOTED → bootMemory subprocess...")
+                import subprocess as _sp
+                _bootmem_code = (
+                    "import depthai as dai, time, sys\n"
+                    "bls = dai.DeviceBootloader.getAllAvailableDevices()\n"
+                    "if not bls:\n"
+                    "    c = dai.Device.getAllConnectedDevices()\n"
+                    "    if not c: sys.exit(1)\n"
+                    "    bls = c\n"
+                    "bl = dai.DeviceBootloader(bls[0], allowFlashingBootloader=True)\n"
+                    "print('BL v'+str(bl.getVersion()))\n"
+                    "fw = dai.DeviceBootloader.getEmbeddedBootloaderBinary("
+                    "    dai.DeviceBootloader.Type.USB)\n"
+                    "bl.bootMemory(fw)\n"
+                    "del bl\n"
+                    "print('bootMemory_OK')\n"
+                    "time.sleep(15)\n"
+                    "devs = dai.Device.getAllConnectedDevices()\n"
+                    "print(str(devs[0].state) if devs else 'empty_after')\n"
+                )
+                _env_bm = dict(os.environ)
+                _env_bm['OPENBLAS_CORETYPE'] = 'ARMV8'
                 try:
                     _last_frame_time[0] = time.time()
-                    _bl = dai.DeviceBootloader(_dev_info, allowFlashingBootloader=True)
-                    _fw = dai.DeviceBootloader.getEmbeddedBootloaderBinary(
-                        dai.DeviceBootloader.Type.USB)
-                    _bl.bootMemory(_fw)
-                    del _bl
+                    _proc = _sp.Popen(['python3', '-c', _bootmem_code],
+                                      stdout=_sp.PIPE, stderr=_sp.PIPE, env=_env_bm)
+                    _out, _err = _proc.communicate(timeout=90)
+                    print("[ctrl] bootMem: {}".format(_out.decode().strip()))
+                    if _err:
+                        _err_tail = _err.decode()[-150:]
+                        if 'warning' not in _err_tail.lower():
+                            print("[ctrl] bootMem stderr: {}".format(_err_tail))
                     _did_boot_memory = True
-                    print("[ctrl] bootMemory OK — attente 15s reboot MyriadX...")
                     _last_frame_time[0] = time.time()
-                    time.sleep(15.0)
-                    _last_frame_time[0] = time.time()
-                    print("[ctrl] Ouverture pipeline en auto-discover post-bootMemory...")
                 except Exception as _bme:
-                    print("[ctrl] bootMemory erreur: {0}".format(_bme))
+                    print("[ctrl] bootMemory subprocess erreur: {0}".format(_bme))
 
-            # Ouverture pipeline : auto-discover après bootMemory, sinon dev_info explicite
+            # Ouverture pipeline : auto-discover si bootMemory fait, sinon dev_info explicite
             if _did_boot_memory:
-                _device_ctx = dai.Device(pipeline, True)   # auto-discover BOOTLOADER
+                print("[ctrl] Auto-discover pipeline (post-bootMemory subprocess)...")
+                _device_ctx = dai.Device(pipeline, True)
             else:
                 _device_ctx = dai.Device(pipeline, _dev_info, True)  # USB 2.0
 

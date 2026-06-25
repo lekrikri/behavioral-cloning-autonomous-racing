@@ -187,6 +187,13 @@ ROI_BOTTOM   = 1.00
 MIN_BLOB_AREA  = 1250   # prop. 800 * 640*320/(512*256)
 MIN_CORNER_AREA = 9375  # prop. 6000 * 1.5625
 CORNER_DURATION = 32   # frames de maintien virage (~2.5s @ 13fps) — virages serrés piste V
+U_DETECT_ANGLE  = 1.35  # rad (~77°) → début détection virage en U
+U_GYRO_ACCUM    = 2.20  # rad accumulés → U confirmé
+U_ERR_FORCE     = 250.0 # erreur forcée en U (vs 220 virage simple)
+U_THROTTLE      = 0.35  # throttle U (vs 0.50 virage simple)
+U_CORNER_MAX    = 50    # frames max U-turn (vs 32 virage simple)
+U_EXIT_FADE     = 8     # frames fading sortie U (vs 4 virage simple)
+U_SEARCH_FRAMES = 18    # frames SEARCH post-U (vs 10)
 
 TRACK_WIDTH_EST_PX = 350     # largeur réelle piste ~350px (CAM_W=640, prop. 512→640)
 SLIDE_WIN    = 88            # fenêtre ±px pour sliding windows (prop. 70/512*640)
@@ -871,6 +878,9 @@ class PDController:
         self.search_frames    = 0     # frames restantes en mode SEARCH (post-CORNER_EXIT)
         self.last_corner_steer = 0.0  # dernier steering CORNER pour fading
         self.corner_sanity_ctr = 0    # watchdog contradiction direction (Q5)
+        self.is_u_turn         = False  # virage en U détecté (angle > 77°)
+        self.gyro_accum_corner = 0.0    # gyro cumulé depuis début CORNER (rad)
+        self.u_exit_prepared   = False  # flag sortie U prête
         # ── Calibration biais gyroscope en ligne (Q1 — EMA conditionnelle) ──────
         self.gyro_bias_z      = 0.0   # biais estimé gyro_z (rad/s)
         self.gyro_calib_n     = 0     # compteur phases stables
@@ -960,6 +970,9 @@ class PDController:
             self.prev_ray_asym    = 0.0
             self.corner_imu_angle = 0.0
             self.corner_sanity_ctr = 0
+            self.is_u_turn         = False
+            self.gyro_accum_corner = 0.0
+            self.u_exit_prepared   = False
             self.left_cx_hist     = []
             self.right_cx_hist    = []
             self.left_age         = 0
@@ -1074,12 +1087,15 @@ class PDController:
                     corner_dir_cx = CAM_W // 2 + (1 if err > 0 else -1)
                 else:
                     corner_dir_cx = CAM_W // 2 + 1
-                self.corner_dir       = 1.0 if corner_dir_cx > CAM_W // 2 else -1.0
-                self.corner_mode      = True
-                self.corner_count     = CORNER_DURATION
-                self.corner_imu_angle = 0.0
-                self.corner_imu_t     = time.time()
-                self.corner_accum     = 0
+                self.corner_dir        = 1.0 if corner_dir_cx > CAM_W // 2 else -1.0
+                self.corner_mode       = True
+                self.corner_count      = CORNER_DURATION
+                self.corner_imu_angle  = 0.0
+                self.corner_imu_t      = time.time()
+                self.corner_accum      = 0
+                self.is_u_turn         = False
+                self.gyro_accum_corner = 0.0
+                self.u_exit_prepared   = False
                 print("[ctrl] CORNER accum d_asym={:.2f} asym={:.2f} dir={:+.0f}".format(
                     d_asym, ray_asym, self.corner_dir))
 
@@ -1104,10 +1120,21 @@ class PDController:
             now_imu = time.time()
             dt_imu  = min(now_imu - self.corner_imu_t, 0.3)  # clamp si frame droppée
             self.corner_imu_t = now_imu
-            self.corner_imu_angle += abs(gyro_z_cal) * dt_imu
+            self.corner_imu_angle  += abs(gyro_z_cal) * dt_imu
+            self.gyro_accum_corner += abs(gyro_z_cal) * dt_imu
 
-            # ── Q5 : Watchdog cohérence direction CORNER via ray_asym ──────
-            if ray_asym * self.corner_dir < -0.30:
+            # ── Détection virage en U (~77° ou gyro accumulé > 2.2 rad) ─────
+            if (not self.is_u_turn and
+                    (self.corner_imu_angle > U_DETECT_ANGLE or
+                     self.gyro_accum_corner > U_GYRO_ACCUM)):
+                self.is_u_turn = True
+                self.corner_count = max(self.corner_count, U_CORNER_MAX)
+                print("[ctrl] U-TURN détecté angle={:.0f}deg accum={:.2f}".format(
+                    math.degrees(self.corner_imu_angle), self.gyro_accum_corner))
+
+            # ── Q5 : Watchdog cohérence direction (désactivé en U-turn profond) ──
+            _q5_active = not (self.is_u_turn and self.corner_imu_angle > 1.0)
+            if _q5_active and ray_asym * self.corner_dir < -0.30:
                 self.corner_sanity_ctr += 1
                 if self.corner_sanity_ctr >= 5:
                     self.corner_dir = -self.corner_dir
@@ -1116,25 +1143,37 @@ class PDController:
             else:
                 self.corner_sanity_ctr = max(0, self.corner_sanity_ctr - 1)
 
-            # ── Condition de sortie : timer OU angle IMU ≥ 100° ─────────────
+            # ── Condition de sortie : timer OU angle IMU (100° simple / 180° U) ──
             self.corner_count -= 1
-            imu_done = self.corner_imu_angle >= 1.745  # 1.745 rad ≈ 100° (virages serrés piste V)
+            _exit_angle = math.pi if self.is_u_turn else 1.745  # 180° U / 100° simple
+            imu_done = self.corner_imu_angle >= _exit_angle
             if self.corner_count <= 0 or imu_done:
                 self.corner_mode = False
-                self.corner_release = 4
+                self.corner_release = U_EXIT_FADE if self.is_u_turn else 4
                 self.corner_sanity_ctr = 0
                 self.last_corner_steer = self.last_steering_cmd
-                # Reset ages : active immédiatement la prédiction post-CORNER
-                # (les histos contiennent les dernières positions pré-CORNER)
                 self.left_age  = min(self.left_age, 3)
                 self.right_age = min(self.right_age, 3)
-                print("[ctrl] CORNER fin angle={:.0f}deg frames_restants={}".format(
+                print("[ctrl] CORNER fin {} angle={:.0f}deg frames_restants={}".format(
+                    "U" if self.is_u_turn else "S",
                     math.degrees(self.corner_imu_angle), self.corner_count))
 
-            # ── Steering : b=0/1 → pleine force ; b=2 → conserver err réel
-            base_err = abs(err) if (err is not None and
-                                    (err * self.corner_dir) > 0) else 0.0
-            err = self.corner_dir * max(base_err, 220.0)
+            # ── Steering : centrage si b=2 visible, sinon err forcée ──────────
+            # b=2 entre les lignes → utiliser le centre réel (voiture entre les lignes)
+            _center_used = False
+            if left_cx is not None and right_cx is not None:
+                _tw_c = right_cx - left_cx
+                _car_between_c = (left_cx < CAM_W // 2 and right_cx > CAM_W // 2
+                                  and _tw_c > 100)
+                if _car_between_c:
+                    _center_c = (left_cx + right_cx) // 2
+                    err = _center_c - CAM_W // 2 - effective_offset
+                    _center_used = True
+            if not _center_used:
+                _err_force = U_ERR_FORCE if self.is_u_turn else 220.0
+                base_err = abs(err) if (err is not None and
+                                        (err * self.corner_dir) > 0) else 0.0
+                err = self.corner_dir * max(base_err, _err_force)
             self.state = "CORNER"
         else:
             # ── Calcul erreur depuis positions fusionnées ──────────────────
@@ -1275,7 +1314,8 @@ class PDController:
         curvature = float(np.std(rays))  # std des rays = indicateur de courbure
         if self.fixed_speed is not None:
             if self.corner_mode:
-                throttle = self.fixed_speed * 0.50   # ralentir fort en virage (épingle U)
+                _t_ratio = U_THROTTLE if self.is_u_turn else 0.50
+                throttle = self.fixed_speed * _t_ratio
                 self.blind_frames = 0
             elif n_blobs == 0:
                 self.blind_frames += 1
@@ -1408,19 +1448,22 @@ class PDController:
                 throttle = throttle * 0.70  # sortie virage lente → évite crash mur
                 self.corner_release -= 1
                 if self.corner_release == 0 and n_blobs < 2:
-                    self.search_frames = 10  # prépare SEARCH si encore aveugle
+                    self.search_frames = U_SEARCH_FRAMES if self.is_u_turn else 10
                 self.state = "CORNER_EXIT"
                 self.last_steering_cmd = steering
 
         # ── SEARCH : après CORNER_EXIT si b<2, maintenir cap dans direction du virage ──
         if (not self.corner_mode and self.corner_release == 0
                 and self.search_frames > 0 and n_blobs < 2):
-            steering = self.last_corner_steer * 0.40
-            throttle = self.fixed_speed * 0.60
+            _s_factor = 0.35 if self.is_u_turn else 0.40
+            _t_factor = 0.55 if self.is_u_turn else 0.60
+            steering = self.last_corner_steer * _s_factor
+            throttle = self.fixed_speed * _t_factor
             self.search_frames -= 1
             self.state = "SEARCH"
         elif self.search_frames > 0 and n_blobs >= 2:
             self.search_frames = 0  # 2 lignes visibles → sortir de SEARCH immédiatement
+            self.is_u_turn = False  # reset U-turn après retour vision complète
 
         # ── Servo bias : apprentissage biais mécanique châssis ────────────────
         # Si err≈0 (voiture centrée) mais steer≠0, c'est un défaut physique du servo

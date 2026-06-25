@@ -112,6 +112,10 @@ def connect(host, port):
 
 def main():
     args = parse_args()
+    # Make the bundled Rerun viewer findable even when the venv isn't activated
+    # (running `.venv/bin/python` doesn't put .venv/bin on PATH).
+    _bin = os.path.dirname(sys.executable)
+    os.environ["PATH"] = _bin + os.pathsep + os.environ.get("PATH", "")
     rr.init("robocar/live_map", spawn=not args.no_spawn)
     bridge = Bridge(args.grid_res, args.grid_size, args.map_every)
 

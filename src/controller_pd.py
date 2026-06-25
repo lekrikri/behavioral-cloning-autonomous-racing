@@ -553,28 +553,40 @@ def clean_mask_artifacts(mask, bgr=None):
 
         reason = None
 
-        if area < 550:   # prop. 350*1.5625
+        if area < 800:
             reason = "small"
-        elif y_bot < int(CAM_H * 0.62):
-            # Le bas du blob est trop haut → ligne lointaine (voie adjacente, mur)
-            # Les vraies lignes de bordure descendent jusqu'à ≥ 62% de l'image
+        elif y_bot < int(CAM_H * 0.65):
             reason = "high"
         else:
             asp = float(max(bw, bh)) / max(min(bw, bh), 1)
-            if asp < 1.8 and area < 2350:  # prop. 1500*1.5625
-                reason = "compact"  # carré compact petit → reflet, logo, chaussure
-            elif sobel_mag is not None and area < 6250:  # prop. 4000*1.5625
-                # Sobel uniquement sur les blobs de taille MOYENNE.
-                # Les vraies lignes proches sont grandes (area >> 6250) → jamais filtrées ici.
-                # Le filtre cible les artefacts moyens diffus : mur lointain, reflet de sol.
-                kernel3 = np.ones((3, 3), np.uint8)
-                blob_u8 = blob_mask.astype(np.uint8) * 255
-                border  = cv2.dilate(blob_u8, kernel3) - blob_u8
-                border_pixels = sobel_mag[border > 0]
-                if len(border_pixels) > 0:
-                    mean_grad = float(np.mean(border_pixels))
-                    if mean_grad < 10.0:  # seuls les reflets vraiment flous sont rejetés
-                        reason = "diffuse"
+            if asp < 2.5 and area < 4000:
+                reason = "compact"  # trop carré → reflet, logo, chaussure, mur compact
+            else:
+                # Filtre orientation PCA : les murs sont horizontaux (angle < 15°)
+                # les vraies lignes de piste sont diagonales (perspective)
+                if bw > 80 and area > 800:
+                    roi_m = blob_mask[by:by + bh, bx:bx + bw].astype(np.uint8)
+                    _m = cv2.moments(roi_m)
+                    if _m["m00"] > 0:
+                        _mu20 = _m["mu20"] / _m["m00"]
+                        _mu02 = _m["mu02"] / _m["m00"]
+                        _mu11 = _m["mu11"] / _m["m00"]
+                        _denom = _mu20 - _mu02
+                        if abs(_denom) < 1e-6: _denom = 1e-6
+                        _ang = abs(math.degrees(0.5 * math.atan2(2.0 * _mu11, _denom)))
+                        # angle < 15° = quasi-horizontal = mur blanc ou planche
+                        if _ang < 15.0 and bw > 100:
+                            reason = "horizontal"
+
+                if reason is None and sobel_mag is not None and area < 12000:
+                    kernel3 = np.ones((3, 3), np.uint8)
+                    blob_u8 = blob_mask.astype(np.uint8) * 255
+                    border  = cv2.dilate(blob_u8, kernel3) - blob_u8
+                    border_pixels = sobel_mag[border > 0]
+                    if len(border_pixels) > 0:
+                        mean_grad = float(np.mean(border_pixels))
+                        if mean_grad < 20.0:
+                            reason = "diffuse"
 
         if reason is not None:
             rejected[blob_mask] = 255

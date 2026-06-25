@@ -1414,9 +1414,13 @@ def run(args):
             _recovery_count = int(os.environ.get('OAKD_POST_RECOVERY', '0'))
             _post_recovery = _recovery_count >= 1
 
-            # execve autorisé tant qu'on n'a pas dépassé 3 tentatives (évite boucle infinie)
-            _need_execve = ("UNBOOTED" in _state_str or "BOOTLOADER" in _state_str
-                            or _forced_unbooted) and _recovery_count < 3
+            # execve seulement si : (a) on vient de faire bootMemory, OU
+            # (b) device déjà BOOTLOADER sans recovery en cours (cas rare)
+            # En post-recovery avec device BOOTLOADER → ouvrir directement, pas d'execve
+            # En post-recovery avec device UNBOOTED → refaire bootMemory + execve (count < 3)
+            _need_execve = False
+            if "BOOTLOADER" in _state_str and not _post_recovery:
+                _need_execve = True  # déjà BOOTLOADER avant toute tentative → XLink frais requis
 
             if ("UNBOOTED" in _state_str or _forced_unbooted) and _recovery_count < 3:
                 # Device UNBOOTED → subprocess bootMemory pour le passer en BOOTLOADER

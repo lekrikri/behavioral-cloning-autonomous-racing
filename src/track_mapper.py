@@ -137,7 +137,9 @@ class TrackMapper(object):
             self._close_segment()
 
         total_yaw_deg = round(math.degrees(self._global_yaw), 1)
-        loop_closed = abs(abs(total_yaw_deg) - 360.0) < 30.0  # tolérance ±30°
+        turns = [e for e in self.events if e["type"] == "turn"]
+        # loop_closed = True si au moins 2 virages détectés (carte exploitable)
+        loop_closed = len(turns) >= 2
 
         data = {
             "version": 1,

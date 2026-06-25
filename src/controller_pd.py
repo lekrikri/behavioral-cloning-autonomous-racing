@@ -1347,7 +1347,13 @@ def run(args):
             imu_xout.setStreamName("imu")
             imu_node.out.link(imu_xout.input)
 
-            with dai.Device(pipeline, True) as device:   # True = USB 2.0 stable (OAK-D sur bus 480M)
+            # Cherche le device même s'il est UNBOOTED (évite le skip depthai)
+            _all_devs = dai.Device.getAllConnectedDevices()
+            _dev_info = _all_devs[0] if _all_devs else None
+            if _dev_info is None:
+                raise RuntimeError("Aucun device OAK-D détecté (getAllConnectedDevices vide)")
+            print("[ctrl] Device: {0} state={1}".format(_dev_info.getMxId(), _dev_info.state))
+            with dai.Device(pipeline, _dev_info, True) as device:   # True = USB 2.0
                 q        = device.getOutputQueue("preview", maxSize=1, blocking=False)
                 imu_q    = device.getOutputQueue("imu",     maxSize=50, blocking=False)
                 _last_gyro_z = [0.0]   # partagé entre lecture IMU et boucle vision

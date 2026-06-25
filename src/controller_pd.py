@@ -587,6 +587,9 @@ def clean_mask_artifacts(mask, bgr=None):
                             reason = "diffuse"
 
         if reason is not None:
+            if area > 2000:
+                print("[artifact] REJECT area={} bw={} bh={} asp={:.1f} y_bot={} reason={}".format(
+                    area, bw, bh, float(max(bw,bh))/max(min(bw,bh),1), y_bot, reason))
             rejected[blob_mask] = 255
         else:
             clean[blob_mask] = 255

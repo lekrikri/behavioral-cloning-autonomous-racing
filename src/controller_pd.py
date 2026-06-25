@@ -186,7 +186,7 @@ ROI_NEAR     = 0.92
 ROI_BOTTOM   = 1.00
 MIN_BLOB_AREA  = 1250   # prop. 800 * 640*320/(512*256)
 MIN_CORNER_AREA = 9375  # prop. 6000 * 1.5625
-CORNER_DURATION = 22   # frames de maintien virage (~1.7s @ 13fps)
+CORNER_DURATION = 32   # frames de maintien virage (~2.5s @ 13fps) — virages serrés piste V
 
 TRACK_WIDTH_EST_PX = 350     # largeur réelle piste ~350px (CAM_W=640, prop. 512→640)
 SLIDE_WIN    = 88            # fenêtre ±px pour sliding windows (prop. 70/512*640)
@@ -1047,10 +1047,10 @@ class PDController:
 
             # ── Condition de sortie : timer OU angle IMU ≥ 80° ─────────────
             self.corner_count -= 1
-            imu_done = self.corner_imu_angle >= 1.396  # 1.396 rad ≈ 80°
+            imu_done = self.corner_imu_angle >= 1.745  # 1.745 rad ≈ 100° (virages serrés piste V)
             if self.corner_count <= 0 or imu_done:
                 self.corner_mode = False
-                self.corner_release = 6
+                self.corner_release = 4
                 self.last_corner_steer = self.last_steering_cmd
                 print("[ctrl] CORNER fin angle={:.0f}deg frames_restants={}".format(
                     math.degrees(self.corner_imu_angle), self.corner_count))

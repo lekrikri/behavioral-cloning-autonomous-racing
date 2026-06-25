@@ -1714,6 +1714,8 @@ def run(args):
             cam.setInterleaved(False)
             cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
             cam.setFps(CAM_FPS)
+            # Désactiver l'autofocus : focus fixe à ~70cm (piste devant la voiture)
+            cam.initialControl.setManualFocus(130)   # 0=infini, 255=proche; ~130 ≈ 50-80cm
             xout = pipeline.create(dai.node.XLinkOut)
             xout.setStreamName("preview")
             cam.preview.link(xout.input)

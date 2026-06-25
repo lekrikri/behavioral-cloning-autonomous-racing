@@ -1117,10 +1117,10 @@ class PDController:
                 print("[ctrl] CORNER fin angle={:.0f}deg frames_restants={}".format(
                     math.degrees(self.corner_imu_angle), self.corner_count))
 
-            # ── Steering : b=0/1 → pleine force 180px ; b=2 → conserver err réel
+            # ── Steering : b=0/1 → pleine force ; b=2 → conserver err réel
             base_err = abs(err) if (err is not None and
                                     (err * self.corner_dir) > 0) else 0.0
-            err = self.corner_dir * max(base_err, 180.0)
+            err = self.corner_dir * max(base_err, 220.0)
             self.state = "CORNER"
         else:
             # ── Calcul erreur depuis positions fusionnées ──────────────────
@@ -1261,7 +1261,7 @@ class PDController:
         curvature = float(np.std(rays))  # std des rays = indicateur de courbure
         if self.fixed_speed is not None:
             if self.corner_mode:
-                throttle = self.fixed_speed * 0.60   # ralentir fort en virage
+                throttle = self.fixed_speed * 0.50   # ralentir fort en virage (épingle U)
                 self.blind_frames = 0
             elif n_blobs == 0:
                 self.blind_frames += 1
@@ -1371,7 +1371,7 @@ class PDController:
 
         # ── Fading sortie CORNER : blend progressif → PD normal ────────────
         if self.corner_release > 0:
-            # Q6 : Cascade V — gyro encore fort dans le même sens → re-CORNER immédiat
+            # Q6 : Cascade V/U — gyro encore fort → re-CORNER immédiat
             if abs(gyro_z_cal) > 1.0 and gyro_z_cal * self.corner_dir > 0:
                 self.corner_mode      = True
                 self.corner_count     = CORNER_DURATION
@@ -1379,6 +1379,15 @@ class PDController:
                 self.corner_imu_t     = time.time()
                 self.corner_release   = 0
                 print("[ctrl] CASCADE_V gyro={:.2f} dir={:+.0f}".format(gyro_z_cal, self.corner_dir))
+            # Accum signal fort pendant le fading → épingle détectée → re-CORNER sans attendre
+            elif self.corner_accum >= 5:
+                self.corner_mode      = True
+                self.corner_count     = CORNER_DURATION
+                self.corner_imu_angle = 0.0
+                self.corner_imu_t     = time.time()
+                self.corner_release   = 0
+                self.corner_accum     = 0
+                print("[ctrl] CASCADE_ACCUM pendant fading dir={:+.0f}".format(self.corner_dir))
             else:
                 blend = float(self.corner_release) / 6.0
                 steering = blend * self.last_corner_steer + (1.0 - blend) * steering

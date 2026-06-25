@@ -1422,11 +1422,17 @@ def run(args):
                 import subprocess as _sp
                 _bootmem_code = (
                     "import depthai as dai, time, sys\n"
-                    "bls = dai.DeviceBootloader.getAllAvailableDevices()\n"
+                    "bls = []\n"
+                    "for _r in range(6):\n"
+                    "    bls = dai.DeviceBootloader.getAllAvailableDevices()\n"
+                    "    if not bls: bls = dai.Device.getAllConnectedDevices()\n"
+                    "    if bls: break\n"
+                    "    time.sleep(3)\n"
                     "if not bls:\n"
-                    "    c = dai.Device.getAllConnectedDevices()\n"
-                    "    if not c: sys.exit(1)\n"
-                    "    bls = c\n"
+                    "    try:\n"
+                    "        bls = [dai.DeviceInfo('1.2.1.4')]\n"
+                    "        print('BL hardcode fallback')\n"
+                    "    except: sys.exit(1)\n"
                     "bl = dai.DeviceBootloader(bls[0], allowFlashingBootloader=True)\n"
                     "print('BL v'+str(bl.getVersion()))\n"
                     "fw = dai.DeviceBootloader.getEmbeddedBootloaderBinary("
@@ -1452,8 +1458,11 @@ def run(args):
                     print("[ctrl] bootMemory subprocess erreur: {0}".format(_bme))
                     _need_execve = False
 
-            if _need_execve:
-                # Device en BOOTLOADER ou post-bootMemory → XLink corrodé → execve
+            # execve seulement si le bootMemory a réussi OU si le device était déjà BOOTLOADER
+            # (évite d'execve en boucle si le subprocess a échoué sans avoir booté quoi que ce soit)
+            _can_execve = _did_boot_memory or ("BOOTLOADER" in _state_str)
+            if _need_execve and _can_execve:
+                # Device en BOOTLOADER post-bootMemory → XLink corrodé → execve pour XLink propre
                 _env_exec = dict(os.environ)
                 _env_exec['OAKD_POST_RECOVERY'] = '1'
                 _env_exec['OPENBLAS_CORETYPE'] = 'ARMV8'

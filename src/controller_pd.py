@@ -192,7 +192,7 @@ TRACK_WIDTH_EST_PX = 350     # largeur réelle piste ~350px (CAM_W=640, prop. 51
 SLIDE_WIN    = 88            # fenêtre ±px pour sliding windows (prop. 70/512*640)
 
 KP           = 0.006         # réduit : 6fps = 167ms par frame, évite sur-braquage
-KD           = 0.005         # augmenté : amortit l'oscillation due au retard visuel
+KD           = 0.007         # augmenté : amortit l'oscillation due au retard visuel
 ALPHA_D      = 0.7
 STEERING_MAX = 0.85
 STEERING_DEADZONE = 0.05
@@ -868,6 +868,7 @@ class PDController:
         self.corner_imu_angle = 0.0   # angle intégré IMU depuis début virage (rad)
         self.corner_imu_t     = 0.0   # timestamp pour dt IMU
         self.corner_release   = 0     # fading sortie CORNER (frames restantes)
+        self.search_frames    = 0     # frames restantes en mode SEARCH (post-CORNER_EXIT)
         self.last_corner_steer = 0.0  # dernier steering CORNER pour fading
         self.corner_sanity_ctr = 0    # watchdog contradiction direction (Q5)
         # ── Calibration biais gyroscope en ligne (Q1 — EMA conditionnelle) ──────
@@ -1406,8 +1407,20 @@ class PDController:
                 steering = blend * self.last_corner_steer + (1.0 - blend) * steering
                 throttle = throttle * 0.70  # sortie virage lente → évite crash mur
                 self.corner_release -= 1
+                if self.corner_release == 0 and n_blobs < 2:
+                    self.search_frames = 10  # prépare SEARCH si encore aveugle
                 self.state = "CORNER_EXIT"
                 self.last_steering_cmd = steering
+
+        # ── SEARCH : après CORNER_EXIT si b<2, maintenir cap dans direction du virage ──
+        if (not self.corner_mode and self.corner_release == 0
+                and self.search_frames > 0 and n_blobs < 2):
+            steering = self.last_corner_steer * 0.40
+            throttle = self.fixed_speed * 0.60
+            self.search_frames -= 1
+            self.state = "SEARCH"
+        elif self.search_frames > 0 and n_blobs >= 2:
+            self.search_frames = 0  # 2 lignes visibles → sortir de SEARCH immédiatement
 
         # ── Servo bias : apprentissage biais mécanique châssis ────────────────
         # Si err≈0 (voiture centrée) mais steer≠0, c'est un défaut physique du servo

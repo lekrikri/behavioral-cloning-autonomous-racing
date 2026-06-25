@@ -5,10 +5,11 @@ occupancy grid with the SAME OccupancyGrid the car uses (so the live map matches
 the on-board one), and logs trajectory + live scan + occupancy image + scalar
 plots into the Rerun viewer.
 
-Networking: the Jetson->laptop direction is blocked (asymmetric Tailscale share),
-so forward the port and connect to localhost:
-    ssh -L 5602:127.0.0.1:5602 robocar       # in another terminal
-    .venv/bin/python tools/rerun_bridge.py    # then run this
+Networking: connect directly to the Jetson over Tailscale — laptop->Jetson is the
+allowed direction (only Jetson->laptop is blocked), so no tunnel is needed:
+    .venv/bin/python tools/rerun_bridge.py --host 100.112.10.119
+Fallback if a Tailscale ACL ever blocks the port:
+    ssh -L 5602:127.0.0.1:5602 robocar       # then run with default --host 127.0.0.1
 
 Runs on the laptop in the project venv (rerun-sdk). Pure numpy occupancy import
 works fine under Python 3.12.

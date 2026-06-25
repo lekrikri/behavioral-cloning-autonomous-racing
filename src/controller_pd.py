@@ -356,6 +356,15 @@ def push_frame(bgr, mask, info, rejected_blobs=None):
         cv2.line(vis, (info["hist_left_cx"], y_hist), (info["hist_left_cx"], CAM_H), (0, 220, 255), 2)
     if info.get("hist_right_cx") is not None:
         cv2.line(vis, (info["hist_right_cx"], y_hist), (info["hist_right_cx"], CAM_H), (0, 220, 255), 2)
+    # Lignes ORANGE POINTILLÉES = positions PRÉDITES (ligne disparue, extrapolée par velocity)
+    for _pcx in [info.get("pred_left_cx"), info.get("pred_right_cx")]:
+        if _pcx is not None:
+            _pcx = max(0, min(CAM_W - 1, _pcx))
+            for _ys in range(y_hist, CAM_H, 10):
+                cv2.line(vis, (_pcx, _ys), (_pcx, min(_ys + 6, CAM_H - 1)), (0, 140, 255), 2)
+            cv2.circle(vis, (_pcx, int(CAM_H * 0.75)), 6, (0, 140, 255), -1)
+            cv2.putText(vis, "P", (_pcx + 4, int(CAM_H * 0.72)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 140, 255), 1)
     # Raycasts HORIZONTAUX : tirets depuis le centre + cercle rouge sur la touche
     mid_x = CAM_W // 2
     for (hx, hy) in info.get("scan_left_hits", []):
@@ -1137,6 +1146,8 @@ class PDController:
             # Fusion : velocity fiable les premières frames, track_width prend le relais.
             _MAX_PRED_AGE = 7  # ~0.54s max de prédiction
             n_pred = 0         # nombre de lignes prédites cette frame
+            pred_left_cx  = None   # cx prédit gauche (pour visualisation stream)
+            pred_right_cx = None   # cx prédit droite
 
             if left_cx is None and self.left_cx_hist and self.left_age <= _MAX_PRED_AGE:
                 if len(self.left_cx_hist) >= 3:
@@ -1151,6 +1162,7 @@ class PDController:
                 _pred_l_tw  = max(10, min(CAM_W // 2 - 5, _pred_l_tw))
                 _w_vel_l    = max(0.0, 1.0 - float(self.left_age) / _MAX_PRED_AGE)
                 left_cx = int(round(_w_vel_l * _pred_l_vel + (1.0 - _w_vel_l) * _pred_l_tw))
+                pred_left_cx = left_cx
                 n_blobs += 1
                 n_pred  += 1
 
@@ -1167,6 +1179,7 @@ class PDController:
                 _pred_r_tw  = max(CAM_W // 2 + 5, min(CAM_W - 10, _pred_r_tw))
                 _w_vel_r    = max(0.0, 1.0 - float(self.right_age) / _MAX_PRED_AGE)
                 right_cx = int(round(_w_vel_r * _pred_r_vel + (1.0 - _w_vel_r) * _pred_r_tw))
+                pred_right_cx = right_cx
                 n_blobs += 1
                 n_pred  += 1
 
@@ -1395,6 +1408,8 @@ class PDController:
             "err": err, "steering": steering, "throttle": throttle,
             "state": self.state, "n_blobs": n_blobs,
             "n_pred": n_pred,
+            "pred_left_cx": pred_left_cx,
+            "pred_right_cx": pred_right_cx,
             "forward_clearance": forward_clearance,
             "blobs_cx": [],
             "corner": corner_blob is not None,

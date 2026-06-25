@@ -1440,7 +1440,7 @@ def run(args):
                     "bl.bootMemory(fw)\n"
                     "del bl\n"
                     "print('bootMemory_OK')\n"
-                    "time.sleep(15)\n"
+                    "time.sleep(5)\n"
                     "devs = dai.Device.getAllConnectedDevices()\n"
                     "print(str(devs[0].state) if devs else 'empty_after')\n"
                 )
@@ -1467,7 +1467,6 @@ def run(args):
                 _env_exec['OAKD_POST_RECOVERY'] = '1'
                 _env_exec['OPENBLAS_CORETYPE'] = 'ARMV8'
                 print("[ctrl] Restart process XLink-clean (OAKD_POST_RECOVERY=1)...")
-                time.sleep(1)
                 os.execve(sys.executable, [sys.executable] + sys.argv, _env_exec)
                 # os.execve ne revient pas
 

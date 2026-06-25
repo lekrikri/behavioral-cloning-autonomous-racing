@@ -1364,7 +1364,7 @@ def run(args):
 
             # IMU node (gyroscope pour mapping/racing)
             imu_node = pipeline.create(dai.node.IMU)
-            imu_node.enableIMUSensor([dai.IMUSensor.GYROSCOPE_CALIBRATED], 100)
+            imu_node.enableIMUSensor([dai.IMUSensor.GYROSCOPE_RAW], 100)
             imu_node.setBatchReportThreshold(1)
             imu_node.setMaxBatchReports(10)
             imu_xout = pipeline.create(dai.node.XLinkOut)

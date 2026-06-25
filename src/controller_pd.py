@@ -186,7 +186,7 @@ ROI_NEAR     = 0.92
 ROI_BOTTOM   = 1.00
 MIN_BLOB_AREA  = 1250   # prop. 800 * 640*320/(512*256)
 MIN_CORNER_AREA = 9375  # prop. 6000 * 1.5625
-CORNER_DURATION = 15   # frames de maintien virage (~1.25s @ 12fps)
+CORNER_DURATION = 22   # frames de maintien virage (~1.7s @ 13fps)
 
 TRACK_WIDTH_EST_PX = 350     # largeur réelle piste ~350px (CAM_W=640, prop. 512→640)
 SLIDE_WIN    = 88            # fenêtre ±px pour sliding windows (prop. 70/512*640)
@@ -988,21 +988,27 @@ class PDController:
         # n_blobs : nombre de lignes détectées (0/1/2) — pour CORNER et COAST
         n_blobs = (1 if left_cx is not None else 0) + (1 if right_cx is not None else 0)
 
-        # ── Machine à états CORNER — score multi-signal ≥ 4 requis ─────────
+        # ── Machine à états CORNER — score ≥ 2 requis ───────────────────────
         if not self.corner_mode and not self.no_corner:
             cscore = 0
             if corner_blob is not None:
-                cscore += 2                                  # blob compact = signal fort
-            if abs(ray_asym) > 0.40:
-                cscore += 1                                  # asymétrie raycasts
+                cscore += 2                                  # blob compact L = signal fort
+            if abs(ray_asym) > 0.30:
+                cscore += 1                                  # asymétrie raycasts (seuil abaissé)
             if self.prev_n_blobs == 2 and n_blobs <= 1:
                 cscore += 1                                  # disparition soudaine d'une ligne
+            if err is not None and abs(err) > 55 and n_blobs == 2:
+                cscore += 1                                  # grand écart visible = virage imminent
 
-            if cscore >= 4:
+            if cscore >= 2:
                 if corner_blob is not None:
                     corner_dir_cx = corner_blob["cx"]
-                else:
+                elif ray_asym != 0:
                     corner_dir_cx = CAM_W // 2 + (1 if ray_asym > 0 else -1)
+                elif err is not None:
+                    corner_dir_cx = CAM_W // 2 + (1 if err > 0 else -1)
+                else:
+                    corner_dir_cx = CAM_W // 2 + 1
                 self.corner_dir   = 1.0 if corner_dir_cx > CAM_W // 2 else -1.0
                 self.corner_mode  = True
                 self.corner_count = CORNER_DURATION
@@ -1016,7 +1022,10 @@ class PDController:
             if self.corner_count <= 0:
                 self.corner_mode = False
                 print("[ctrl] CORNER termine")
-            err = self.corner_dir * 200.0
+            # Steering : max entre err réel et 160px dans la direction du virage
+            base_err = abs(err) if (err is not None and
+                                    (err * self.corner_dir) > 0) else 0.0
+            err = self.corner_dir * max(base_err, 160.0)
             self.state = "CORNER"
         else:
             # ── Calcul erreur depuis positions fusionnées ──────────────────

@@ -1614,7 +1614,8 @@ def run(args):
         except KeyboardInterrupt:
             print("[ctrl] Arret."); break
         except Exception as e:
-            print("[ctrl] Erreur ({}) — coast mode + reset USB + reconnexion".format(type(e).__name__))
+            print("[ctrl] Erreur ({}) — {!s:.200}".format(type(e).__name__, e))
+            print("[ctrl] coast mode + reset USB + reconnexion")
             _coast_crash_t[0] = time.time()
             _usb_reset_oak()
             delay = max(5, min(5 * attempt, 30))

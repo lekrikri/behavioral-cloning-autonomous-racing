@@ -7,7 +7,7 @@ Custom, dependency-free joystick reader: it parses the Linux joystick API
 type: 0x01 = button, 0x02 = axis, bit 0x80 = synthetic "init" event.
 
 Controls (F710, XInput / mode switch on 'X'):
-    Left stick X    -> steering
+    Right stick X   -> steering
     R2 (RT)         -> forward throttle   (analog, fine speed control)
     L2 (LT)         -> reverse throttle    (analog)
     START           -> quit (also Ctrl-C)
@@ -46,7 +46,8 @@ _TYPE_INIT = 0x80
 # F710 (XInput) mapping under the xpad js driver, confirmed on this car. This file is
 # the source of truth for the js0 teleop; src/input_manager.py is a separate pygame path
 # (used by data_collector) with its own mapping — don't assume the two match.
-AXIS_STEER = 6      # left stick X (confirmed analog on this F710)
+AXIS_STEER = 3      # right stick X — the only analog horizontal axis on this pad
+                    # (axis 6 is the digital D-pad, axis 0/left stick reads tri-state here)
 AXIS_ACCEL = 5      # R2 / right trigger
 AXIS_BRAKE = 2      # L2 / left trigger
 BTN_QUIT = 7        # START
@@ -168,7 +169,7 @@ def main():
             pad.close()
         return
 
-    print("  Left stick=steer | R2=forward | L2=reverse | START=quit")
+    print("  Right stick=steer | R2=forward | L2=reverse | START=quit")
     print("  max_current=%.1f A | fwd=%.0f%% | rev=%.0f%%"
           % (args.max_current, args.max_throttle * 100, args.max_reverse * 100))
     print("  Calibrating triggers — don't touch R2/L2...")

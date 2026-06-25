@@ -1063,6 +1063,15 @@ class PDController:
         else:
             # ── Calcul erreur depuis positions fusionnées ──────────────────
             last_tw = float(np.median(self.track_widths[-10:])) if len(self.track_widths) >= 3 else float(TRACK_WIDTH_EST_PX)
+
+            # Rejeter cx extrêmes : ligne à <25px du bord = perspective aberrante en virage
+            if left_cx is not None and left_cx < 25:
+                left_cx = None
+                n_blobs = max(0, n_blobs - 1)
+            if right_cx is not None and right_cx > CAM_W - 25:
+                right_cx = None
+                n_blobs = max(0, n_blobs - 1)
+
             if left_cx is not None and right_cx is not None:
                 tw = right_cx - left_cx
                 # Voiture entre les deux lignes : left à gauche du centre, right à droite
@@ -1087,12 +1096,31 @@ class PDController:
             elif left_cx is not None:
                 est_right = min(left_cx + int(last_tw), CAM_W - 10)
                 center = (left_cx + est_right) // 2
-                err = center - CAM_W // 2 - effective_offset
-                n_blobs = 1  # garde la trace pour limiter steer ensuite
+                err_line = center - CAM_W // 2 - effective_offset
+                # Fusion ray_asym : en virage (fort asym), l'estimation de ligne est peu fiable
+                # ray_asym>0 = espace à droite = voiture trop à gauche = err doit être positif
+                if abs(ray_asym) > 0.20:
+                    err_ray = ray_asym * 220.0
+                    w_ray = min(0.80, abs(ray_asym) * 2.0)
+                    err = w_ray * err_ray + (1.0 - w_ray) * err_line
+                    if abs(ray_asym) > 0.30 and not self.corner_mode and not self.no_corner:
+                        # Fort asym + b=1 = virage certain → CORNER immédiat
+                        self.corner_accum = max(self.corner_accum, 5)
+                else:
+                    err = err_line
+                n_blobs = 1
             elif right_cx is not None:
                 est_left = max(right_cx - int(last_tw), 10)
                 center = (est_left + right_cx) // 2
-                err = center - CAM_W // 2 - effective_offset
+                err_line = center - CAM_W // 2 - effective_offset
+                if abs(ray_asym) > 0.20:
+                    err_ray = ray_asym * 220.0
+                    w_ray = min(0.80, abs(ray_asym) * 2.0)
+                    err = w_ray * err_ray + (1.0 - w_ray) * err_line
+                    if abs(ray_asym) > 0.30 and not self.corner_mode and not self.no_corner:
+                        self.corner_accum = max(self.corner_accum, 5)
+                else:
+                    err = err_line
                 n_blobs = 1
             else:
                 err = None

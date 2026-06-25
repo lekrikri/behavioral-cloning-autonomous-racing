@@ -1395,11 +1395,18 @@ def run(args):
 
             print("[ctrl] Device: {0} state={1}".format(_dev_info.getMxId(), _dev_info.state))
 
-            # Si UNBOOTED : bootMemory via subprocess Python isolé (XLink clean state)
-            # Le long-running process a un XLink "corrodé" après resets → subprocess frais
+            # Si UNBOOTED : bootMemory via subprocess Python isolé + os.execve pour XLink clean
+            # XLink d'un long-running process est définitivement "corrodé" après resets.
+            # Stratégie : subprocess bootMemory (XLink vierge) → device BOOTLOADER
+            #             → os.execve pour relancer ce script avec XLink frais → pipeline OK
+            # La var env OAKD_POST_RECOVERY=1 évite la boucle infinie :
+            #   - 1er process (non marqué) : fait le bootMemory + execve
+            #   - 2ème process (post-recovery) : trouve BOOTLOADER → ouvre normalement
             _state_str = str(getattr(_dev_info, 'state', ''))
-            if "UNBOOTED" in _state_str:
-                print("[ctrl] UNBOOTED → bootMemory subprocess...")
+            _post_recovery = os.environ.get('OAKD_POST_RECOVERY', '0') == '1'
+
+            if "UNBOOTED" in _state_str and not _post_recovery:
+                print("[ctrl] UNBOOTED → bootMemory subprocess + restart process...")
                 import subprocess as _sp
                 _bootmem_code = (
                     "import depthai as dai, time, sys\n"
@@ -1411,7 +1418,7 @@ def run(args):
                     "bl = dai.DeviceBootloader(bls[0], allowFlashingBootloader=True)\n"
                     "print('BL v'+str(bl.getVersion()))\n"
                     "fw = dai.DeviceBootloader.getEmbeddedBootloaderBinary("
-                    "    dai.DeviceBootloader.Type.USB)\n"
+                    "dai.DeviceBootloader.Type.USB)\n"
                     "bl.bootMemory(fw)\n"
                     "del bl\n"
                     "print('bootMemory_OK')\n"
@@ -1427,18 +1434,25 @@ def run(args):
                                       stdout=_sp.PIPE, stderr=_sp.PIPE, env=_env_bm)
                     _out, _err = _proc.communicate(timeout=90)
                     print("[ctrl] bootMem: {}".format(_out.decode().strip()))
-                    if _err:
-                        _err_tail = _err.decode()[-150:]
-                        if 'warning' not in _err_tail.lower():
-                            print("[ctrl] bootMem stderr: {}".format(_err_tail))
                     _did_boot_memory = True
-                    _last_frame_time[0] = time.time()
                 except Exception as _bme:
                     print("[ctrl] bootMemory subprocess erreur: {0}".format(_bme))
 
-            # Ouverture pipeline : auto-discover si bootMemory fait, sinon dev_info explicite
-            if _did_boot_memory:
-                print("[ctrl] Auto-discover pipeline (post-bootMemory subprocess)...")
+                if _did_boot_memory:
+                    # Relancer ce process avec XLink vierge (os.execve remplace l'image)
+                    _env_exec = dict(os.environ)
+                    _env_exec['OAKD_POST_RECOVERY'] = '1'
+                    _env_exec['OPENBLAS_CORETYPE'] = 'ARMV8'
+                    print("[ctrl] Restart process XLink-clean (OAKD_POST_RECOVERY=1)...")
+                    time.sleep(1)
+                    os.execve(sys.executable, [sys.executable] + sys.argv, _env_exec)
+                    # os.execve ne revient pas
+
+            # Ouverture pipeline
+            # - post-recovery avec BOOTLOADER : XLink vierge → auto-discover marche
+            # - cas normal : passer dev_info explicitement
+            if _post_recovery and ("BOOTLOADER" in _state_str or "UNBOOTED" in _state_str):
+                print("[ctrl] Post-recovery auto-discover pipeline...")
                 _device_ctx = dai.Device(pipeline, True)
             else:
                 _device_ctx = dai.Device(pipeline, _dev_info, True)  # USB 2.0

@@ -119,22 +119,46 @@ def _usb_reset_method3_ioctl():
 # Compteur global pour alterner les méthodes de reset
 _reset_attempt_total = 0
 
+
+def _usb_reset_method4_parent_hub():
+    """Méthode 4 : unbind/rebind du hub parent 1-2.1 (power cycle logique complet)."""
+    # 1-2.1 = hub intermédiaire au-dessus de l'OAK-D (ne porte ni WiFi ni VESC)
+    HUB_NAME = '1-2.1'
+    hub_driver = '/sys/bus/usb/drivers/usb'
+    try:
+        with open(os.path.join(hub_driver, 'unbind'), 'w') as f:
+            f.write(HUB_NAME)
+        print("[ctrl] USB [4] hub {} unbind".format(HUB_NAME))
+        time.sleep(3.0)
+        with open(os.path.join(hub_driver, 'bind'), 'w') as f:
+            f.write(HUB_NAME)
+        print("[ctrl] USB [4] hub {} bind".format(HUB_NAME))
+        time.sleep(5.0)
+        return True
+    except Exception as e:
+        print("[ctrl] USB [4] err: {}".format(e))
+    return False
+
+
 def _usb_reset_oak():
     """Escalade automatique des méthodes de reset USB selon le nombre d'échecs."""
     global _reset_attempt_total
     _reset_attempt_total += 1
     n = _reset_attempt_total
     print("[ctrl] USB reset OAK-D (tentative {})".format(n))
-    # Alterner : 1, 2, 1, 3, 1, 2, 1, 3, ...
-    if n % 4 == 2:
-        ok = _usb_reset_method2_unbind_bind()
-    elif n % 4 == 0:
-        ok = _usb_reset_method3_ioctl()
-    else:
+    # Escalade : 1 → 2 → 4(hub) → 3 → cycle
+    mod = n % 4
+    if mod == 1:
         ok = _usb_reset_method1_authorized()
+    elif mod == 2:
+        ok = _usb_reset_method2_unbind_bind()
+    elif mod == 3:
+        ok = _usb_reset_method4_parent_hub()
+    else:
+        ok = _usb_reset_method3_ioctl()
     if not ok:
-        # Essayer les autres méthodes en cascade si la principale échoue
-        for fn in [_usb_reset_method1_authorized, _usb_reset_method2_unbind_bind, _usb_reset_method3_ioctl]:
+        for fn in [_usb_reset_method1_authorized, _usb_reset_method2_unbind_bind,
+                   _usb_reset_method4_parent_hub, _usb_reset_method3_ioctl]:
             if fn():
                 break
     return True
@@ -1347,12 +1371,46 @@ def run(args):
             imu_xout.setStreamName("imu")
             imu_node.out.link(imu_xout.input)
 
-            # Cherche le device même s'il est UNBOOTED (évite le skip depthai)
+            # ── Détection + recovery automatique du device OAK-D ──────────────
+            # Séquence : getAllConnectedDevices → si UNBOOTED → hub rebind →
+            #            bootMemory → device passe en BOOTLOADER → pipeline OK
             _all_devs = dai.Device.getAllConnectedDevices()
             _dev_info = _all_devs[0] if _all_devs else None
+
+            if _dev_info is None or "UNBOOTED" in str(getattr(_dev_info, 'state', '')):
+                # Device invisible ou UNBOOTED : tenter hub rebind pour forcer ré-énumération
+                print("[ctrl] Device invisible/UNBOOTED — hub rebind 1-2.1...")
+                _usb_reset_method4_parent_hub()
+                _all_devs = dai.Device.getAllConnectedDevices()
+                if not _all_devs:
+                    _all_devs = dai.DeviceBootloader.getAllAvailableDevices()
+                _dev_info = _all_devs[0] if _all_devs else None
+
             if _dev_info is None:
-                raise RuntimeError("Aucun device OAK-D détecté (getAllConnectedDevices vide)")
+                raise RuntimeError("Aucun device OAK-D détecté après hub rebind")
+
             print("[ctrl] Device: {0} state={1}".format(_dev_info.getMxId(), _dev_info.state))
+
+            # Si UNBOOTED ou BOOTLOADER : bootMemory pour charger le FW en RAM
+            _state_str = str(getattr(_dev_info, 'state', ''))
+            if "UNBOOTED" in _state_str or "BOOTLOADER" in _state_str:
+                print("[ctrl] {} → bootMemory en cours...".format(_state_str))
+                try:
+                    _bl = dai.DeviceBootloader(_dev_info, allowFlashingBootloader=True)
+                    _fw = dai.DeviceBootloader.getEmbeddedBootloaderBinary(
+                        dai.DeviceBootloader.Type.USB)
+                    _bl.bootMemory(_fw)
+                    del _bl
+                    print("[ctrl] bootMemory OK — attente 12s reboot MyriadX...")
+                    time.sleep(12.0)
+                    # Re-chercher le device post-bootMemory
+                    _all_devs = dai.Device.getAllConnectedDevices()
+                    _dev_info = _all_devs[0] if _all_devs else _dev_info
+                    print("[ctrl] Post-bootMemory state={0}".format(
+                        getattr(_dev_info, 'state', '?')))
+                except Exception as _bme:
+                    print("[ctrl] bootMemory erreur: {0}".format(_bme))
+
             with dai.Device(pipeline, _dev_info, True) as device:   # True = USB 2.0
                 q        = device.getOutputQueue("preview", maxSize=1, blocking=False)
                 imu_q    = device.getOutputQueue("imu",     maxSize=50, blocking=False)

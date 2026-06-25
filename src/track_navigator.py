@@ -21,12 +21,13 @@ CONFIDENCE_DEC  = 0.12   # perte si divergence
 CONFIDENCE_MIN  = 0.35   # en-dessous → fallback vision pure
 CONFIDENCE_MAX  = 1.0
 
-# Seuil pour détecter un virage dans le flux gyro temps réel
-GYRO_TURN_THRESH = 0.45  # rad/s
+# Seuil pour détecter un virage dans le flux gyro temps réel (gyro brut, pas filtré)
+# Calibré sur petite piste duty 8% : pics bruts 0.30-0.50 rad/s pendant virages
+GYRO_TURN_THRESH = 0.25  # rad/s
 
 # Anticipation : combien de frames avant l'événement on commence à agir
-ANTICIPATION_FRAMES_BRAKE = 10   # commencer à ralentir
-ANTICIPATION_FRAMES_STEER = 5    # commencer à braquer
+ANTICIPATION_FRAMES_BRAKE = 8    # commencer à ralentir
+ANTICIPATION_FRAMES_STEER = 4    # commencer à braquer
 
 
 class TrackNavigator(object):

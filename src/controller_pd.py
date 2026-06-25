@@ -1071,7 +1071,9 @@ class PDController:
 
         # Offset effectif calculé ici pour être appliqué à l'erreur BRUTE
         effective_offset = CAMERA_OFFSET_PX + int(self.auto_offset) + int(self.servo_bias)
-        n_pred = 0  # nombre de lignes prédites cette frame (0 si CORNER actif)
+        n_pred        = 0     # nombre de lignes prédites cette frame (0 si CORNER actif)
+        pred_left_cx  = None  # cx prédit gauche pour visualisation
+        pred_right_cx = None  # cx prédit droite pour visualisation
 
         # ── Q1 : Calibration biais gyroscope en ligne (EMA conditionnelle) ──────
         # N'apprend que sur phases b=2 stables (voiture droite, err faible, asym nulle)
@@ -1145,9 +1147,6 @@ class PDController:
             # vel>0 → pred_vel sort de l'image → center estimé décalé à droite (correct).
             # Fusion : velocity fiable les premières frames, track_width prend le relais.
             _MAX_PRED_AGE = 7  # ~0.54s max de prédiction
-            n_pred = 0         # nombre de lignes prédites cette frame
-            pred_left_cx  = None   # cx prédit gauche (pour visualisation stream)
-            pred_right_cx = None   # cx prédit droite
 
             if left_cx is None and self.left_cx_hist and self.left_age <= _MAX_PRED_AGE:
                 if len(self.left_cx_hist) >= 3:

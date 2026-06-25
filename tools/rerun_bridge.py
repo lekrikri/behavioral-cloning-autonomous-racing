@@ -16,6 +16,7 @@ works fine under Python 3.12.
 """
 
 import argparse
+import base64
 import json
 import os
 import socket
@@ -91,6 +92,13 @@ class Bridge:
         if self.n_msg % self.map_every == 0:
             img = ((1.0 - self.grid.probability()) * 255).astype(np.uint8)
             rr.log("map/occupancy", rr.Image(np.flipud(img)))
+
+        for key, entity in (("color_jpeg", "camera/color"),
+                            ("depth_jpeg", "camera/depth"),
+                            ("mask_jpeg", "camera/mask")):
+            b64 = msg.get(key)
+            if b64:
+                rr.log(entity, rr.EncodedImage(contents=base64.b64decode(b64), media_type="image/jpeg"))
 
         if msg.get("speed") is not None:
             rr.log("plots/speed_mps", rr.Scalars(float(msg["speed"])))

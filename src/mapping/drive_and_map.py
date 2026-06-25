@@ -16,10 +16,12 @@ SAFETY: keep wheels clear / on a stand until the sign flags are confirmed.
 """
 
 import argparse
+import base64
 import os
 import sys
 import time
 
+import cv2
 import numpy as np
 
 _SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .../src
@@ -30,6 +32,7 @@ import depthai as dai
 
 from vesc_interface import VESCInterface
 from depth_to_rays import DepthToRays, create_depthai_pipeline
+from visual_rays import white_line_mask
 from teleop_gamepad import (
     Gamepad, deadzone, calibrate_trigger_rest, trigger_fraction,
     AXIS_STEER, AXIS_ACCEL, AXIS_BRAKE, BTN_QUIT,
@@ -66,10 +69,39 @@ def parse_args():
     p.add_argument("--grid-size", type=float, default=cfg.grid_size_m)
     p.add_argument("--telemetry-port", type=int, default=cfg.telemetry_port)
     p.add_argument("--map-out", default=None, help="path to save the map+trajectory (.npz) at exit")
+    # debug images (color video + depth + line mask in rerun)
+    p.add_argument("--no-images", action="store_true", help="disable the camera/depth/mask streams (saves bandwidth)")
+    p.add_argument("--img-width", type=int, default=256, help="color preview width (height keeps 4:3)")
+    p.add_argument("--img-fps", type=float, default=10.0, help="color camera fps")
+    p.add_argument("--img-every", type=int, default=10, help="encode+send images every N control loops")
+    p.add_argument("--img-quality", type=int, default=50, help="JPEG quality 1-100")
     # safety / debug
     p.add_argument("--no-motor", action="store_true", help="perception+pose+telemetry only, never command the motor")
     args = p.parse_args()
     return args
+
+
+def add_color(pipeline, width, height, fps):
+    """Add the RGB camera (CAM_A) to the pipeline for the debug video + line mask."""
+    cam = pipeline.create(dai.node.ColorCamera)
+    cam.setBoardSocket(dai.CameraBoardSocket.CAM_A)
+    cam.setPreviewSize(width, height)
+    cam.setInterleaved(False)
+    cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
+    cam.setFps(fps)
+    xout = pipeline.create(dai.node.XLinkOut)
+    xout.setStreamName("color")
+    cam.preview.link(xout.input)
+
+
+def _jpeg_b64(img, quality):
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return base64.b64encode(buf).decode("ascii") if ok else None
+
+
+def _depth_jpeg_b64(depth_mm, max_mm, quality):
+    d8 = np.clip(depth_mm.astype(np.float32) / max_mm * 255.0, 0, 255).astype(np.uint8)
+    return _jpeg_b64(cv2.applyColorMap(d8, cv2.COLORMAP_JET), quality)
 
 
 def read_fov(device, fallback=72.9):
@@ -89,6 +121,8 @@ def main():
 
     pipeline = create_depthai_pipeline()   # stereo depth ('depth' stream)
     enable_imu(pipeline, rate_hz=200)      # adds 'imu' stream to the same pipeline
+    if not args.no_images:
+        add_color(pipeline, args.img_width, (args.img_width * 3) // 4, args.img_fps)
 
     try:
         pad = Gamepad(args.js)
@@ -131,7 +165,10 @@ def main():
         tel = TelemetryServer(args.telemetry_port).start()
 
         q_depth = device.getOutputQueue("depth", maxSize=4, blocking=False)
+        q_color = None if args.no_images else device.getOutputQueue("color", maxSize=2, blocking=False)
         latest_rays = None
+        latest_depth = None
+        latest_color = None
         prev_t = None
         dt_loop = 1.0 / args.hz
         step = 0
@@ -155,7 +192,12 @@ def main():
 
                     depth = q_depth.tryGet()
                     if depth is not None:
-                        latest_rays = bridge(depth.getFrame())
+                        latest_depth = depth.getFrame()
+                        latest_rays = bridge(latest_depth)
+                    if q_color is not None:
+                        cframe = q_color.tryGet()
+                        if cframe is not None:
+                            latest_color = cframe.getCvFrame()
 
                     # one blocking serial read per loop, reused for telemetry
                     erpm = vesc.get_rpm()
@@ -171,7 +213,7 @@ def main():
                     if latest_rays is not None:
                         grid.integrate_scan(dr.pose, latest_rays * ray_max_m, angles)
 
-                    tel.publish({
+                    payload = {
                         "t": t_loop,
                         "pose": [dr.x, dr.y, dr.theta],
                         "rays": latest_rays.tolist() if latest_rays is not None else None,
@@ -179,7 +221,17 @@ def main():
                         "ray_max_m": ray_max_m,
                         "speed": speed,
                         "erpm": erpm,
-                    })
+                    }
+                    if not args.no_images and step % args.img_every == 0:
+                        if latest_color is not None:
+                            payload["color_jpeg"] = _jpeg_b64(latest_color, args.img_quality)
+                            try:
+                                payload["mask_jpeg"] = _jpeg_b64(white_line_mask(latest_color), args.img_quality)
+                            except Exception:
+                                pass
+                        if latest_depth is not None:
+                            payload["depth_jpeg"] = _depth_jpeg_b64(latest_depth, bridge.max_dist_mm, args.img_quality)
+                    tel.publish(payload)
 
                     if step % 30 == 0:
                         print("\r x=%+.2f y=%+.2f th=%+.1f deg  v=%+.2f m/s   " %

@@ -179,11 +179,11 @@ _TYPE_BUTTON = 0x01
 _TYPE_AXIS   = 0x02
 _TYPE_INIT   = 0x80
 
-AXIS_STEER  = 3   # right stick X (analogique confirmé jstest — AXIS 6 = D-pad digital)
-AXIS_ACCEL  = 5   # R2 (rest = -1.0)
-AXIS_BRAKE  = 2   # L2 (rest = -1.0)
-BTN_SELECT  = 6   # BACK  → start mapping
-BTN_START   = 7   # START → finish + save + quit (seulement si mapping actif)
+AXIS_STEER  = 6   # left stick X — IDENTIQUE teleop_gamepad.py (Mode LED allumé requis)
+AXIS_ACCEL  = 5   # R2 / right trigger
+AXIS_BRAKE  = 2   # L2 / left trigger
+BTN_SELECT  = 6   # BACK  → start mapping   (même numéro que AXIS_STEER — espace séparé)
+BTN_START   = 7   # START → finish + save + quit
 
 # ─── Caméra ──────────────────────────────────────────────────────────────────
 CAM_W   = 640
@@ -384,12 +384,16 @@ def main():
     p = argparse.ArgumentParser(description="Teleop + mapping assisté IMU")
     p.add_argument("--port",        default="/dev/ttyACM0")
     p.add_argument("--js",          default="/dev/input/js0")
-    p.add_argument("--max-current", type=float, default=25.0)
-    p.add_argument("--max-throttle",type=float, default=1.0)
-    p.add_argument("--max-reverse", type=float, default=0.5)
-    p.add_argument("--servo-center",type=float, default=0.5)
-    p.add_argument("--servo-range", type=float, default=0.40)
-    p.add_argument("--invert-steer",action="store_true")
+    p.add_argument("--max-current",  type=float, default=8.0,
+                   help="A — vitesse faible pour mapping (teleop_gamepad=25A)")
+    p.add_argument("--max-throttle", type=float, default=0.35,
+                   help="scale gaz avant [0..1] — 0.35 = 35%% pour mapping lent")
+    p.add_argument("--max-reverse",  type=float, default=0.20,
+                   help="scale marche arrière")
+    p.add_argument("--servo-center", type=float, default=0.5)
+    p.add_argument("--servo-range",  type=float, default=0.40)
+    p.add_argument("--invert-steer", action="store_true")
+    p.add_argument("--throttle-mode",choices=["current", "duty", "erpm"], default="current")
     p.add_argument("--deadzone",    type=float, default=0.08)
     p.add_argument("--hz",          type=float, default=50.0)
     p.add_argument("--data-dir",    default="data")
@@ -428,8 +432,8 @@ def main():
                 servo_range=args.servo_range,
                 current_max=args.max_current,
                 invert_steer=args.invert_steer,
-                invert_motor=False,
-                throttle_mode="current",
+                invert_motor=False,          # identique teleop_gamepad.py
+                throttle_mode=args.throttle_mode,
             )
             print("[teleop_map] VESC connecté sur {}".format(args.port))
         except Exception as e:

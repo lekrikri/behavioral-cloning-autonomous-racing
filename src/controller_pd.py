@@ -525,7 +525,7 @@ def err_from_bands(mask):
     return err_from_mask(mask_near), err_from_mask(mask_mid), err_from_mask(mask_far)
 
 
-def clean_mask_artifacts(mask, bgr=None):
+def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
     """
     Filtre intelligent du masque : supprime les composantes qui ne sont pas des lignes.
 
@@ -534,12 +534,19 @@ def clean_mask_artifacts(mask, bgr=None):
     2. Sobel edges (si bgr fourni) : les vraies lignes ont des bords nets sur fond gris.
        Les reflets/artefacts diffus ont des bords flous → gradient Sobel faible.
 
+    En mode corner_mode : seuils assouplis pour garder les lignes hautes dans l'image
+    (ligne extérieure du virage monte vers le haut de l'image en virage serré).
+
     Retourne (mask_clean, rejected_mask) pour la visualisation.
     """
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     clean    = np.zeros_like(mask)
     rejected = np.zeros_like(mask)
     roi_top  = int(CAM_H * 0.52)
+    # Seuils adaptés selon l'état de virage
+    _area_min       = 400  if corner_mode else 800
+    _y_bot_thresh   = int(CAM_H * 0.40) if corner_mode else int(CAM_H * 0.62)
+    _compact_thresh = 6000 if corner_mode else 4000
 
     # Pré-calcul Sobel sur image grise (une seule fois pour toutes les composantes)
     sobel_mag = None
@@ -560,13 +567,13 @@ def clean_mask_artifacts(mask, bgr=None):
 
         reason = None
 
-        if area < 800:
+        if area < _area_min:
             reason = "small"
-        elif y_bot < int(CAM_H * 0.62):
+        elif y_bot < _y_bot_thresh:
             reason = "high"
         else:
             asp = float(max(bw, bh)) / max(min(bw, bh), 1)
-            if asp < 2.5 and area < 4000:
+            if asp < 2.5 and area < _compact_thresh:
                 reason = "compact"  # trop carré → reflet, logo, chaussure, mur compact
             else:
                 # PCA orientation : blobs MOYENS seulement (les vraies lignes ont area > 5000)
@@ -1010,7 +1017,7 @@ class PDController:
         # ── Masque nettoyé : supprime artefacts (reflets, chaussures, murs) ──
         # Le masque brut reste pour la visu orange (blobs rejetés).
         # L'histogramme et les scanlines utilisent le masque propre.
-        mask_clean, mask_rejected = clean_mask_artifacts(mask, bgr=bgr)
+        mask_clean, mask_rejected = clean_mask_artifacts(mask, bgr=bgr, corner_mode=self.corner_mode)
 
         # ── Détection lignes : Histogramme sliding + Scanlines + Fusion ─────
         hist_l, hist_r, hist_lconf, hist_rconf = find_lane_histogram(
@@ -1158,13 +1165,61 @@ class PDController:
                     "U" if self.is_u_turn else "S",
                     math.degrees(self.corner_imu_angle), self.corner_count))
 
-            # ── Steering : centrage si b=2 visible, sinon err forcée ──────────
-            # b=2 entre les lignes → utiliser le centre réel (voiture entre les lignes)
+            # ── Mise à jour histos EN CORNER (pour garder la prédiction active) ─
+            if left_cx is not None and 25 < left_cx < CAM_W // 2:
+                self.left_cx_hist.append(left_cx)
+                if len(self.left_cx_hist) > 5: self.left_cx_hist.pop(0)
+            if right_cx is not None and CAM_W // 2 < right_cx < CAM_W - 25:
+                self.right_cx_hist.append(right_cx)
+                if len(self.right_cx_hist) > 5: self.right_cx_hist.pop(0)
+
+            # ── Prédiction velocity pour lignes perdues en CORNER ────────────
+            _MAX_PRED_AGE_CRN = 12
+            last_tw_c = (float(np.median(self.track_widths[-10:]))
+                         if len(self.track_widths) >= 3 else float(TRACK_WIDTH_EST_PX))
+
+            if left_cx is None and self.left_cx_hist and self.left_age <= _MAX_PRED_AGE_CRN:
+                if len(self.left_cx_hist) >= 3:
+                    _vel_l = (self.left_cx_hist[-1] - self.left_cx_hist[-3]) / 2.0
+                elif len(self.left_cx_hist) >= 2:
+                    _vel_l = float(self.left_cx_hist[-1] - self.left_cx_hist[0])
+                else:
+                    _vel_l = 0.0
+                _w = max(0.0, 1.0 - float(self.left_age) / _MAX_PRED_AGE_CRN)
+                _pred_l_vel = self.left_cx_hist[-1] + _vel_l * self.left_age
+                _pred_l_tw  = (right_cx - int(last_tw_c)) if right_cx is not None else _pred_l_vel
+                left_cx = max(10, min(CAM_W // 2 - 5,
+                              int(round(_w * _pred_l_vel + (1.0 - _w) * _pred_l_tw))))
+                n_blobs += 1
+
+            if right_cx is None and self.right_cx_hist and self.right_age <= _MAX_PRED_AGE_CRN:
+                if len(self.right_cx_hist) >= 3:
+                    _vel_r = (self.right_cx_hist[-1] - self.right_cx_hist[-3]) / 2.0
+                elif len(self.right_cx_hist) >= 2:
+                    _vel_r = float(self.right_cx_hist[-1] - self.right_cx_hist[0])
+                else:
+                    _vel_r = 0.0
+                _w = max(0.0, 1.0 - float(self.right_age) / _MAX_PRED_AGE_CRN)
+                _pred_r_vel = self.right_cx_hist[-1] + _vel_r * self.right_age
+                _pred_r_tw  = (left_cx + int(last_tw_c)) if left_cx is not None else _pred_r_vel
+                right_cx = max(CAM_W // 2 + 5, min(CAM_W - 10,
+                               int(round(_w * _pred_r_vel + (1.0 - _w) * _pred_r_tw))))
+                n_blobs += 1
+
+            # ── b=1 restant : estimer l'opposée via track_width mémorisée ────
+            if left_cx is not None and right_cx is None:
+                right_cx = min(CAM_W - 10, int(left_cx + last_tw_c))
+                n_blobs += 1
+            elif right_cx is not None and left_cx is None:
+                left_cx = max(10, int(right_cx - last_tw_c))
+                n_blobs += 1
+
+            # ── Centrage si b=2 (y compris prédictions + track_width) ────────
             _center_used = False
             if left_cx is not None and right_cx is not None:
                 _tw_c = right_cx - left_cx
                 _car_between_c = (left_cx < CAM_W // 2 and right_cx > CAM_W // 2
-                                  and _tw_c > 100)
+                                  and _tw_c > 80)
                 if _car_between_c:
                     _center_c = (left_cx + right_cx) // 2
                     err = _center_c - CAM_W // 2 - effective_offset

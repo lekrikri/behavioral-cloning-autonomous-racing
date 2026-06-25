@@ -378,10 +378,11 @@ def push_frame(bgr, mask, info, rejected_blobs=None):
     # texte
     err_str = "{:+d}".format(int(info["err"])) if info["err"] is not None else "N/A"
     corner_flag = " [L]" if info.get("corner") else ""
+    pred_flag  = " PRED{}".format(info.get("n_pred", 0)) if info.get("n_pred", 0) > 0 else ""
     cv2.putText(vis,
-        "err={} steer={:.2f} thr={:.2f} {}{} b={} ray={:+.2f}".format(
+        "err={} steer={:.2f} thr={:.2f} {}{}{} b={} ray={:+.2f}".format(
             err_str, info["steering"], info["throttle"],
-            info["state"], corner_flag, info["n_blobs"],
+            info["state"], corner_flag, pred_flag, info["n_blobs"],
             info.get("ray_asym", 0.0)),
         (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
     # Panel droit : masque coloré — vert=accepté(ligne), rouge=rejeté(artefact IA)
@@ -1061,6 +1062,7 @@ class PDController:
 
         # Offset effectif calculé ici pour être appliqué à l'erreur BRUTE
         effective_offset = CAMERA_OFFSET_PX + int(self.auto_offset) + int(self.servo_bias)
+        n_pred = 0  # nombre de lignes prédites cette frame (0 si CORNER actif)
 
         # ── Q1 : Calibration biais gyroscope en ligne (EMA conditionnelle) ──────
         # N'apprend que sur phases b=2 stables (voiture droite, err faible, asym nulle)
@@ -1097,6 +1099,10 @@ class PDController:
                 self.corner_release = 4
                 self.corner_sanity_ctr = 0
                 self.last_corner_steer = self.last_steering_cmd
+                # Reset ages : active immédiatement la prédiction post-CORNER
+                # (les histos contiennent les dernières positions pré-CORNER)
+                self.left_age  = min(self.left_age, 3)
+                self.right_age = min(self.right_age, 3)
                 print("[ctrl] CORNER fin angle={:.0f}deg frames_restants={}".format(
                     math.degrees(self.corner_imu_angle), self.corner_count))
 
@@ -1126,11 +1132,12 @@ class PDController:
                 n_blobs = max(0, n_blobs - 1)
 
             # ── Prédiction ligne manquante par extrapolation velocity + fallback track_width ──
-            # Quand une ligne disparaît, on extrapole sa trajectoire depuis l'historique.
-            # En virage à droite : ligne droite se déplace vers la droite avant de sortir →
-            #   vel > 0 → pred_vel sort de l'image → center estimé se décale à droite (correct).
-            # Fusion : velocity fiable les premières frames, track_width prend le relais ensuite.
+            # En virage droite : ligne droite se déplace vers la droite avant de sortir →
+            # vel>0 → pred_vel sort de l'image → center estimé décalé à droite (correct).
+            # Fusion : velocity fiable les premières frames, track_width prend le relais.
             _MAX_PRED_AGE = 7  # ~0.54s max de prédiction
+            n_pred = 0         # nombre de lignes prédites cette frame
+
             if left_cx is None and self.left_cx_hist and self.left_age <= _MAX_PRED_AGE:
                 if len(self.left_cx_hist) >= 3:
                     _vel_l = (self.left_cx_hist[-1] - self.left_cx_hist[-3]) / 2.0
@@ -1145,6 +1152,7 @@ class PDController:
                 _w_vel_l    = max(0.0, 1.0 - float(self.left_age) / _MAX_PRED_AGE)
                 left_cx = int(round(_w_vel_l * _pred_l_vel + (1.0 - _w_vel_l) * _pred_l_tw))
                 n_blobs += 1
+                n_pred  += 1
 
             if right_cx is None and self.right_cx_hist and self.right_age <= _MAX_PRED_AGE:
                 if len(self.right_cx_hist) >= 3:
@@ -1160,11 +1168,13 @@ class PDController:
                 _w_vel_r    = max(0.0, 1.0 - float(self.right_age) / _MAX_PRED_AGE)
                 right_cx = int(round(_w_vel_r * _pred_r_vel + (1.0 - _w_vel_r) * _pred_r_tw))
                 n_blobs += 1
+                n_pred  += 1
 
             if left_cx is not None and right_cx is not None:
                 tw = right_cx - left_cx
-                # Voiture entre les deux lignes : left à gauche du centre, right à droite
-                car_between = (left_cx < CAM_W // 2 and right_cx > CAM_W // 2 and tw > 150)
+                # Seuil tw assoupli si une ou deux lignes sont prédites (velocity peut clamper près du centre)
+                _tw_min = 80 if n_pred > 0 else 150
+                car_between = (left_cx < CAM_W // 2 and right_cx > CAM_W // 2 and tw > _tw_min)
                 if car_between:
                     center = (left_cx + right_cx) // 2
                     err = center - CAM_W // 2 - effective_offset
@@ -1384,6 +1394,7 @@ class PDController:
         info = {
             "err": err, "steering": steering, "throttle": throttle,
             "state": self.state, "n_blobs": n_blobs,
+            "n_pred": n_pred,
             "forward_clearance": forward_clearance,
             "blobs_cx": [],
             "corner": corner_blob is not None,

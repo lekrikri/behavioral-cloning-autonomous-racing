@@ -151,8 +151,8 @@ except ImportError:
 # PARAMÈTRES
 # ══════════════════════════════════════════════════════════════════════════════
 
-CAM_W, CAM_H = 512, 256
-CAM_FPS      = 6
+CAM_W, CAM_H = 640, 320
+CAM_FPS      = 15
 
 HSV_LOW      = np.array([0,   0, 150], dtype=np.uint8)   # V>=150 (adapté éclairage faible)
 HSV_HIGH     = np.array([180, 45, 255], dtype=np.uint8)  # S<=45 (blanc incluant reflets tamisés)
@@ -160,12 +160,12 @@ ROI_FAR      = 0.65
 ROI_MID      = 0.80
 ROI_NEAR     = 0.92
 ROI_BOTTOM   = 1.00
-MIN_BLOB_AREA  = 800
-MIN_CORNER_AREA = 6000
+MIN_BLOB_AREA  = 1250   # prop. 800 * 640*320/(512*256)
+MIN_CORNER_AREA = 9375  # prop. 6000 * 1.5625
 CORNER_DURATION = 15   # frames de maintien virage (~1.25s @ 12fps)
 
-TRACK_WIDTH_EST_PX = 280     # largeur réelle piste ~280px (CAM_W=512)
-SLIDE_WIN    = 70            # fenêtre ±px pour sliding windows autour de la position précédente
+TRACK_WIDTH_EST_PX = 350     # largeur réelle piste ~350px (CAM_W=640, prop. 512→640)
+SLIDE_WIN    = 88            # fenêtre ±px pour sliding windows (prop. 70/512*640)
 
 KP           = 0.006         # réduit : 6fps = 167ms par frame, évite sur-braquage
 KD           = 0.005         # augmenté : amortit l'oscillation due au retard visuel
@@ -420,12 +420,12 @@ def get_blobs(mask):
         # Les logos remplis ont solidity >0.65. Aspect < 2.5 évite de filtrer les lignes proches horizontales
         bbox_area = w * h
         solidity = float(area) / max(bbox_area, 1)
-        if area > 3000 and solidity > 0.65 and aspect < 2.5:
+        if area > 4700 and solidity > 0.65 and aspect < 2.5:  # prop. 3000*1.5625
             rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "cmp", "rect": rect})
             continue
         # Rayons de soleil / reflets horizontaux : très larges et peu hauts (w>>h)
         # Les lignes de piste longitudinales ont aspect < 4, les rayons > 5
-        if aspect > 5.0 and area > 1500:
+        if aspect > 5.0 and area > 2350:  # prop. 1500*1.5625
             rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "horiz", "rect": rect})
             continue
         blobs.append({"cx": cx, "cy": cy, "area": area, "aspect": round(aspect, 1)})
@@ -519,7 +519,7 @@ def clean_mask_artifacts(mask, bgr=None):
 
         reason = None
 
-        if area < 350:
+        if area < 550:   # prop. 350*1.5625
             reason = "small"
         elif y_bot < int(CAM_H * 0.50):
             # Le bas du blob est entièrement dans la moitié haute → mur/fond de salle
@@ -527,11 +527,11 @@ def clean_mask_artifacts(mask, bgr=None):
             reason = "high"
         else:
             asp = float(max(bw, bh)) / max(min(bw, bh), 1)
-            if asp < 1.8 and area < 1500:
+            if asp < 1.8 and area < 2350:  # prop. 1500*1.5625
                 reason = "compact"  # carré compact petit → reflet, logo, chaussure
-            elif sobel_mag is not None and area < 4000:
+            elif sobel_mag is not None and area < 6250:  # prop. 4000*1.5625
                 # Sobel uniquement sur les blobs de taille MOYENNE.
-                # Les vraies lignes proches sont grandes (area >> 4000) → jamais filtrées ici.
+                # Les vraies lignes proches sont grandes (area >> 6250) → jamais filtrées ici.
                 # Le filtre cible les artefacts moyens diffus : mur lointain, reflet de sol.
                 kernel3 = np.ones((3, 3), np.uint8)
                 blob_u8 = blob_mask.astype(np.uint8) * 255
@@ -660,7 +660,7 @@ def find_lane_scanlines(mask, n_lines=6):
       left_hits / right_hits : liste des touches (x, y) pour visu
     """
     mid_x = CAM_W // 2
-    MARGIN = 30   # zone morte autour du centre (30px de chaque côté)
+    MARGIN = 38   # zone morte autour du centre (prop. 30/512*640)
     MIN_WHITES = 4  # nombre minimum de pixels blancs pour valider une touche
 
     # Scanlines de 65% à 90% de la hauteur — zone proche, lignes larges et nettes
@@ -759,8 +759,8 @@ def detect_corner_blob(mask):
 
 def err_from_two_lines(blobs, track_width=None):
     mid_x = CAM_W // 2
-    CLEAR_LEFT  = mid_x - 76
-    CLEAR_RIGHT = mid_x + 76
+    CLEAR_LEFT  = mid_x - 95   # prop. 76/512*640
+    CLEAR_RIGHT = mid_x + 95
     # Largeur dynamique : utilise la mesure récente si dispo, sinon constante
     tw_est = int(track_width) if track_width is not None else TRACK_WIDTH_EST_PX
     left_blobs  = [b for b in blobs if b["cx"] < CLEAR_LEFT]
@@ -1347,7 +1347,7 @@ def run(args):
             imu_xout.setStreamName("imu")
             imu_node.out.link(imu_xout.input)
 
-            with dai.Device(pipeline, True) as device:
+            with dai.Device(pipeline, False) as device:  # False = USB 3.0 auto (hub alimenté)
                 q        = device.getOutputQueue("preview", maxSize=1, blocking=False)
                 imu_q    = device.getOutputQueue("imu",     maxSize=50, blocking=False)
                 _last_gyro_z = [0.0]   # partagé entre lecture IMU et boucle vision

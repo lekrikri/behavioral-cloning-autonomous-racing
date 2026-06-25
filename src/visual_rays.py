@@ -57,6 +57,9 @@ def white_line_mask(
         v_min_adaptive = max(int(hsv_low[2]), min(int(otsu_thresh), 220))
         hsv_low_adapted = (hsv_low[0], hsv_low[1], v_min_adaptive)
         m = cv2.inRange(hsv, np.asarray(hsv_low_adapted, np.uint8), np.asarray(hsv_high, np.uint8))
+        # Masque anti-surexposition : reflets soleil = V>242 ET S<12 (pas une ligne blanche)
+        overexposed = (hsv[:, :, 2] > 242) & (hsv[:, :, 1] < 12)
+        m[overexposed] = 0
         m = cv2.morphologyEx(m, cv2.MORPH_OPEN,  kernel)
         m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
         m = cv2.morphologyEx(m, cv2.MORPH_DILATE, kernel, iterations=1)

@@ -187,6 +187,8 @@ ROI_BOTTOM   = 1.00
 MIN_BLOB_AREA  = 1250   # prop. 800 * 640*320/(512*256)
 MIN_CORNER_AREA = 9375  # prop. 6000 * 1.5625
 CORNER_DURATION = 32   # frames de maintien virage (~2.5s @ 13fps) — virages serrés piste V
+CORNER_INNER_BIAS_S = 25   # px vers intérieur virage simple (évite de prendre l'extérieur)
+CORNER_INNER_BIAS_U = 55   # px vers intérieur U-turn
 U_DETECT_ANGLE  = 1.35  # rad (~77°) → début détection virage en U
 U_GYRO_ACCUM    = 2.20  # rad accumulés → U confirmé
 U_ERR_FORCE     = 250.0 # erreur forcée en U (vs 220 virage simple)
@@ -1222,7 +1224,8 @@ class PDController:
                                   and _tw_c > 80)
                 if _car_between_c:
                     _center_c = (left_cx + right_cx) // 2
-                    err = _center_c - CAM_W // 2 - effective_offset
+                    _inner_bias = CORNER_INNER_BIAS_U if self.is_u_turn else CORNER_INNER_BIAS_S
+                    err = (_center_c - CAM_W // 2 - effective_offset) - _inner_bias * self.corner_dir
                     _center_used = True
             if not _center_used:
                 _err_force = U_ERR_FORCE if self.is_u_turn else 220.0

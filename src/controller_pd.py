@@ -1311,7 +1311,7 @@ def run(args):
 
     # Watchdog : thread qui surveille les frames et force un reset si caméra gelée
     def _watchdog():
-        FRAME_TIMEOUT = 10.0  # secondes sans frame → reset forcé
+        FRAME_TIMEOUT = 30.0  # secondes sans frame → reset forcé (boot MyriadX prend ~15-20s)
         while True:
             time.sleep(3)
             if time.time() - _last_frame_time[0] > FRAME_TIMEOUT:

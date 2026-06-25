@@ -1379,6 +1379,7 @@ def run(args):
             _all_devs = dai.Device.getAllConnectedDevices()
             _dev_info = _all_devs[0] if _all_devs else None
             _did_boot_memory = False
+            _forced_unbooted = False  # True si DeviceInfo créé manuellement (état inconnu mais UNBOOTED réel)
 
             if _dev_info is None or "UNBOOTED" in str(getattr(_dev_info, 'state', '')):
                 # Device invisible ou UNBOOTED : tenter hub rebind pour forcer ré-énumération
@@ -1391,7 +1392,14 @@ def run(args):
                 _dev_info = _all_devs[0] if _all_devs else None
 
             if _dev_info is None:
-                raise RuntimeError("Aucun device OAK-D détecté après hub rebind")
+                # XLink voit le device (warning "skipping UNBOOTED") mais ne le retourne pas.
+                # Fallback : DeviceInfo hardcodé — le nom 1.2.1.4 est fixe sur ce hardware.
+                try:
+                    _dev_info = dai.DeviceInfo("1.2.1.4")
+                    _forced_unbooted = True  # on sait qu'il est UNBOOTED (raison du skip)
+                    print("[ctrl] Fallback DeviceInfo hardcode 1.2.1.4")
+                except Exception as _fe:
+                    raise RuntimeError("Device OAK-D introuvable: {}".format(_fe))
 
             print("[ctrl] Device: {0} state={1}".format(_dev_info.getMxId(), _dev_info.state))
 
@@ -1405,10 +1413,10 @@ def run(args):
             _state_str = str(getattr(_dev_info, 'state', ''))
             _post_recovery = os.environ.get('OAKD_POST_RECOVERY', '0') == '1'
 
-            _need_execve = ("UNBOOTED" in _state_str or "BOOTLOADER" in _state_str) \
-                           and not _post_recovery
+            _need_execve = ("UNBOOTED" in _state_str or "BOOTLOADER" in _state_str
+                            or _forced_unbooted) and not _post_recovery
 
-            if "UNBOOTED" in _state_str and not _post_recovery:
+            if ("UNBOOTED" in _state_str or _forced_unbooted) and not _post_recovery:
                 # Device UNBOOTED → subprocess bootMemory pour le passer en BOOTLOADER
                 print("[ctrl] UNBOOTED → bootMemory subprocess...")
                 import subprocess as _sp

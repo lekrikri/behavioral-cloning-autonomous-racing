@@ -10,6 +10,9 @@ Touches:
   M      → toggle affichage masque
   R      → toggle raycasts visuels
   +/-    → ajuster seuil de blanc (V min HSV)
+  T      → toggle top-hat (rejette tapis/plinthe/reflet large)
+  F      → toggle filtre de forme (rejette reflets ronds)
+  C      → toggle cohérence temporelle (anti-scintillement spéculaire)
   Q/Esc  → quitter
 
 Installation Linux:
@@ -58,6 +61,15 @@ MORPH_K  = 5                           # kernel plus grand → moins de bruit
 CANNY_LOW  = args.canny_low
 CANNY_HIGH = args.canny_high
 
+# ── Couches anti-artefacts (toggles live, OFF par défaut) ──────────────────────
+TOPHAT_K       = 0     # touche 't' → 25 : ne garde que les lignes fines (rejette tapis/plinthe/reflet large)
+TOPHAT_THRESH  = 12    # seuil réponse top-hat
+MAX_FILL_RATIO = 1.0   # touche 'f' → 0.45 : rejette les blobs trop « pleins » (reflets ronds)
+TEMPORAL_WIN   = 1     # touche 'c' → 5 : médiane temporelle par rayon (anti-scintillement spéculaire)
+TOPHAT_K_ON    = 25
+MAX_FILL_ON    = 0.45
+TEMPORAL_ON    = 5
+
 DEPTHAI_VERSION = tuple(int(x) for x in dai.__version__.split(".")[:2])
 IS_V3 = DEPTHAI_VERSION[0] >= 3
 
@@ -66,6 +78,7 @@ def make_mask(bgr):
     mask = white_line_mask(
         bgr, mode=MODE, hsv_low=HSV_LOW, hsv_high=HSV_HIGH,
         canny_low=CANNY_LOW, canny_high=CANNY_HIGH, morph_k=MORPH_K,
+        tophat_k=TOPHAT_K, tophat_thresh=TOPHAT_THRESH, max_fill_ratio=MAX_FILL_RATIO,
     )
     mask[:ROI_TOP, :] = 0  # l'outil de dev masque toute la moitié haute
     return mask
@@ -109,6 +122,7 @@ if device_info is None:
 
 # ── Pipeline depthai ───────────────────────────────────────────────────────────
 def run(device):
+    global TOPHAT_K, MAX_FILL_RATIO, TEMPORAL_WIN
     print("=" * 50)
     print(f"depthai {dai.__version__} | {'v3 API' if IS_V3 else 'v2 API'}")
     try:
@@ -121,7 +135,8 @@ def run(device):
         print(f"Calibration : {e}")
     print(f"Capture -> {out}")
     print(f"Mode : {MODE.upper()}")
-    print("SPACE=sauver | M=masque | R=raycasts | +/-=seuil V (HSV) | Q=quitter")
+    print("SPACE=sauver | M=masque | R=raycasts | +/-=seuil V (HSV)")
+    print("t=top-hat | f=filtre forme | c=coherence temporelle | Q=quitter")
     print("=" * 50)
 
     if IS_V3:
@@ -149,6 +164,8 @@ def run(device):
         hsv_low=tuple(HSV_LOW), hsv_high=tuple(HSV_HIGH),
         morph_k=MORPH_K,
         row_band=(ROI_TOP / H, 1.0),
+        tophat_k=TOPHAT_K, tophat_thresh=TOPHAT_THRESH,
+        max_fill_ratio=MAX_FILL_RATIO, temporal_window=TEMPORAL_WIN,
     )
 
     show_mask  = True
@@ -181,6 +198,10 @@ def run(device):
 
         info = f"seq={seq} | {W}x{H} | blanc={int(mask.sum()/255)}px | V>={HSV_LOW[2]}"
         cv2.putText(vis, info, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 0), 1)
+        layers = (f"TH(t)={'ON' if TOPHAT_K > 1 else 'off'} "
+                  f"FILL(f)={'ON' if MAX_FILL_RATIO < 1.0 else 'off'} "
+                  f"TEMP(c)={TEMPORAL_WIN if TEMPORAL_WIN > 1 else 'off'}")
+        cv2.putText(vis, layers, (4, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 255), 1)
 
         display = np.hstack([vis, cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)]) if show_mask else vis
         cv2.imshow("OAK-D Lite | G-CAR-000", display)
@@ -199,6 +220,18 @@ def run(device):
         elif key == ord('-'):
             HSV_LOW[2] = max(0,   HSV_LOW[2] - 5)
             print(f"Seuil V min : {HSV_LOW[2]}")
+        elif key == ord('t'):
+            TOPHAT_K = 0 if TOPHAT_K > 1 else TOPHAT_K_ON
+            vr.tophat_k = TOPHAT_K
+            print(f"Top-hat : {'ON (k=%d)' % TOPHAT_K if TOPHAT_K > 1 else 'OFF'}")
+        elif key == ord('f'):
+            MAX_FILL_RATIO = 1.0 if MAX_FILL_RATIO < 1.0 else MAX_FILL_ON
+            vr.max_fill_ratio = MAX_FILL_RATIO
+            print(f"Filtre forme : {'ON (fill<=%.2f)' % MAX_FILL_RATIO if MAX_FILL_RATIO < 1.0 else 'OFF'}")
+        elif key == ord('c'):
+            TEMPORAL_WIN = 1 if TEMPORAL_WIN > 1 else TEMPORAL_ON
+            vr.set_temporal(TEMPORAL_WIN)
+            print(f"Coherence temporelle : {'ON (win=%d)' % TEMPORAL_WIN if TEMPORAL_WIN > 1 else 'OFF'}")
         elif key == ord(' '):
             f_img  = out / f"{counter}_original_image.png"
             f_mask = out / f"{counter}_mask.png"

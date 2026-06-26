@@ -852,8 +852,18 @@ def err_from_two_lines(blobs, track_width=None):
     left  = max(left_blobs,  key=lambda b: b["cx"]) if left_blobs  else None
     right = min(right_blobs, key=lambda b: b["cx"]) if right_blobs else None
     if left and right:
-        center = (left["cx"] + right["cx"]) // 2
-        return center - mid_x, right["cx"] - left["cx"]
+        if left["cx"] < mid_x < right["cx"]:
+            # Voiture entre les deux lignes → centrage précis
+            center = (left["cx"] + right["cx"]) // 2
+            return center - mid_x, right["cx"] - left["cx"]
+        else:
+            # Les deux blobs sont du même côté (virage très serré ou erreur détection)
+            # → utiliser uniquement le plus proche du centre
+            closer = left if abs(left["cx"] - mid_x) < abs(right["cx"] - mid_x) else right
+            side = 1 if closer is right else -1
+            est_other = closer["cx"] - side * tw_est
+            center = (closer["cx"] + est_other) // 2
+            return center - mid_x, tw_est
     if left:
         est_right = left["cx"] + tw_est
         return (left["cx"] + est_right) // 2 - mid_x, tw_est

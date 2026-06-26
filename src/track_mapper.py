@@ -122,10 +122,37 @@ class TrackMapper:
 
         return self._state if self._state == "straight" else "turn_" + self._seg_dir
 
+    def _apply_loop_closure(self):
+        """Correction de drift linéaire (loop closure).
+
+        Après un tour complet, la position finale devrait coïncider avec le
+        départ. Le drift accumulé (gyro + vitesse) cause un écart. On distribue
+        cet écart linéairement sur tous les waypoints : chaque waypoint i est
+        décalé de -(i/N) * (end - start), de sorte que le dernier waypoint
+        revienne exactement sur le premier.
+        """
+        n = len(self.waypoints)
+        if n < 20:
+            return
+        x0, y0 = self.waypoints[0]['x'], self.waypoints[0]['y']
+        xn, yn = self.waypoints[-1]['x'], self.waypoints[-1]['y']
+        dx, dy = xn - x0, yn - y0
+        # N'appliquer que si l'écart est non nul (évite division par zéro)
+        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+            return
+        for i, w in enumerate(self.waypoints):
+            t = i / (n - 1)
+            w['x'] = round(w['x'] - t * dx, 3)
+            w['y'] = round(w['y'] - t * dy, 3)
+        self.x = self.waypoints[-1]['x']
+        self.y = self.waypoints[-1]['y']
+        print("[MAPPER] Loop closure appliqué — écart corrigé : dx={:.2f}m dy={:.2f}m".format(dx, dy))
+
     def save(self, json_path="track_map.json", svg_path="track_map.svg"):
         """Ferme le dernier segment, sauvegarde JSON + SVG."""
         self._close_segment(len(self.waypoints))
         self.is_mapping = False
+        self._apply_loop_closure()
 
         data = {
             "version": 2,
@@ -218,23 +245,33 @@ class TrackMapper:
         else:
             start_mark = ""
 
-        # Flèche fin
+        # Marqueur fin (superposé sur START après loop closure)
         if self.waypoints:
             wn = self.waypoints[-1]
             ex, ey = px(wn["x"], wn["y"])
-            end_mark = '<circle cx="{:.1f}" cy="{:.1f}" r="8" fill="#FF8800" opacity="0.9"/>'.format(ex, ey)
+            end_mark = '<circle cx="{:.1f}" cy="{:.1f}" r="6" fill="none" stroke="#FF8800" stroke-width="2" opacity="0.9"/>'.format(ex, ey)
+            end_mark += '<text x="{:.1f}" y="{:.1f}" font-size="10" fill="#FF8800" font-family="monospace">END</text>'.format(ex + 8, ey - 4)
         else:
             end_mark = ""
 
         # Légende
+        n_turns = sum(1 for s in self.segments if s["type"] == "turn")
+        lap_s = self.waypoints[-1]["t"] if self.waypoints else 0
+        # distance approx
+        dist_m = sum(
+            math.hypot(self.waypoints[i]['x'] - self.waypoints[i-1]['x'],
+                       self.waypoints[i]['y'] - self.waypoints[i-1]['y'])
+            for i in range(1, len(self.waypoints))
+        ) if len(self.waypoints) > 1 else 0
         meta_lines = [
-            "Tour : {:.1f}s".format(self.waypoints[-1]["t"] if self.waypoints else 0),
-            "Virages : {}".format(sum(1 for s in self.segments if s["type"] == "turn")),
+            "Tour : {:.1f}s".format(lap_s),
+            "Dist  : {:.1f}m".format(dist_m),
+            "Virages : {}".format(n_turns),
             "Yaw total : {:.0f}°".format(math.degrees(self.heading)),
         ]
         legend = "".join(
             '<text x="10" y="{}" font-size="11" fill="#AAAAAA" font-family="monospace">{}</text>'.format(
-                SVG_H - 40 + i * 14, line)
+                SVG_H - 54 + i * 14, line)
             for i, line in enumerate(meta_lines)
         )
 

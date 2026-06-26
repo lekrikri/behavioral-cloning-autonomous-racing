@@ -2374,6 +2374,8 @@ def parse_args():
                    help="Chemin joystick (defaut: /dev/input/js0)")
     p.add_argument("--gamepad-deadzone", type=float, default=0.08,
                    help="Zone morte manette (defaut: 0.08)")
+    p.add_argument("--teleop-max-duty", type=float, default=0.20,
+                   help="Duty max manette en mode TELEOP (defaut: 0.20 — plus rapide que l'auto)")
     return p.parse_args()
 
 
@@ -2452,7 +2454,7 @@ def run(args):
     if args.gamepad:
         _gp_thread = threading.Thread(
             target=_gamepad_thread,
-            args=(args.js, args.max_duty, args.gamepad_deadzone,
+            args=(args.js, args.teleop_max_duty, args.gamepad_deadzone,
                   getattr(args, "map_file", "track_map.json")),
             daemon=True,
         )
@@ -2565,9 +2567,11 @@ def run(args):
             steering = _gp_steer[0]
             throttle = _gp_throttle[0]
         if vesc is not None:
-            t_capped = min(abs(throttle), args.max_duty) * (1.0 if throttle >= 0 else -1.0)
+            teleop_on = _gp_active[0] and _gp_mode[0] == "teleop"
+            t_max = args.teleop_max_duty if teleop_on else args.max_duty
+            t_capped = min(abs(throttle), t_max) * (1.0 if throttle >= 0 else -1.0)
             try:
-                vesc.drive(steering, t_capped) if _drive_enabled else vesc.stop()
+                vesc.drive(steering, t_capped) if (_drive_enabled or teleop_on) else vesc.stop()
             except Exception as e:
                 print("[ctrl] VESC erreur: {} — stop".format(e))
         if args.stream_port > 0:

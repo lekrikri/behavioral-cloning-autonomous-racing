@@ -40,14 +40,21 @@ class DepthToRays:
         self.row_start = int(img_height * row_band[0])
         self.row_end   = int(img_height * row_band[1])
 
-        # Focal length horizontal depuis FOV réel (intrinsics approximatifs)
-        # Pour calibration précise : utiliser depthai getIntrinsics()
-        self.focal = img_width / (2.0 * np.tan(np.radians(fov_deg / 2.0)))
+        # fov_deg est un fallback ; en production on le remplace par getFov()
+        # lu sur la calibration usine (cf. set_fov / inference_realcar).
+        self.set_fov(fov_deg)
 
-        # Angles uniformes sur le FOV — pré-calculés une fois
-        angles_deg = np.linspace(-fov_deg / 2.0, fov_deg / 2.0, n_rays)
+    def set_fov(self, fov_deg: float) -> None:
+        """Recalcule les colonnes d'échantillonnage pour un FOV donné.
 
-        # Colonnes pixel correspondantes — clippées dans [0, W-1]
+        Appelé au runtime avec calib.getFov(CAM_B) pour coller au capteur réel
+        plutôt qu'au ~97° approximatif codé en dur.
+        """
+        self.fov_deg = fov_deg
+        # Focal length horizontal depuis le FOV réel
+        self.focal = self.W / (2.0 * np.tan(np.radians(fov_deg / 2.0)))
+        # Angles uniformes sur le FOV → colonnes pixel, clippées dans [0, W-1]
+        angles_deg = np.linspace(-fov_deg / 2.0, fov_deg / 2.0, self.n_rays)
         self.cols = np.clip(
             (self.W / 2.0 + np.tan(np.deg2rad(angles_deg)) * self.focal).astype(int),
             0, self.W - 1,

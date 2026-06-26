@@ -114,12 +114,22 @@ class VisualRays:
         self.row_end   = int(img_height * row_band[1])
         self.roi_h     = self.row_end - self.row_start
 
-        # Mêmes colonnes d'angle que DepthToRays
-        focal_px   = img_width / (2.0 * np.tan(np.radians(fov_deg / 2.0)))
-        angles_deg = np.linspace(-fov_deg / 2.0, fov_deg / 2.0, n_rays)
+        # fov_deg de la caméra COULEUR (CAM_A), distinct du FOV depth (mono).
+        # Fallback ; remplacé au runtime par getFov(CAM_A) — cf. set_fov.
+        self.set_fov(fov_deg)
+
+    def set_fov(self, fov_deg: float) -> None:
+        """Recalcule les colonnes d'échantillonnage pour un FOV donné.
+
+        Appelé au runtime avec calib.getFov(CAM_A) pour coller au capteur
+        couleur réel plutôt qu'au 68.8° codé en dur.
+        """
+        self.fov_deg = fov_deg
+        focal_px   = self.W / (2.0 * np.tan(np.radians(fov_deg / 2.0)))
+        angles_deg = np.linspace(-fov_deg / 2.0, fov_deg / 2.0, self.n_rays)
         self.cols  = np.clip(
-            (img_width / 2.0 + np.tan(np.deg2rad(angles_deg)) * focal_px).astype(int),
-            0, img_width - 1,
+            (self.W / 2.0 + np.tan(np.deg2rad(angles_deg)) * focal_px).astype(int),
+            0, self.W - 1,
         )
 
     # ── Masque binaire ─────────────────────────────────────────────────────────
@@ -160,16 +170,25 @@ class VisualRays:
         return self._mask(bgr_frame)
 
 
-# ── Utilitaire : créer le pipeline depthai couleur (3.x) ─────────────────────
-def create_color_pipeline_v3(device, width: int = 512, height: int = 256):
-    """Pipeline depthai 3.x — caméra couleur uniquement."""
+# ── Utilitaire : créer le pipeline depthai couleur (API v2 / depthai 2.x) ────
+def create_color_pipeline(width: int = 512, height: int = 256, fps: int = 30):
+    """Pipeline depthai 2.x — caméra couleur CAM_A, sortie BGR sur le stream 'color'.
+
+    Flow v2 : retourne le pipeline ; l'appelant ouvre `dai.Device(pipeline)` puis
+    `device.getOutputQueue("color")` (pas de .start() en v2).
+    """
     import depthai as dai
-    pipeline = dai.Pipeline(device)
-    cam = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
-    q   = cam.requestOutput(
-        (width, height), dai.ImgFrame.Type.BGR888p
-    ).createOutputQueue(maxSize=2, blocking=False)
-    return pipeline, q
+    pipeline = dai.Pipeline()
+    cam = pipeline.create(dai.node.ColorCamera)
+    cam.setBoardSocket(dai.CameraBoardSocket.CAM_A)
+    cam.setPreviewSize(width, height)
+    cam.setInterleaved(False)
+    cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
+    cam.setFps(fps)
+    xout = pipeline.create(dai.node.XLinkOut)
+    xout.setStreamName("color")
+    cam.preview.link(xout.input)
+    return pipeline
 
 
 # ── Test standalone ───────────────────────────────────────────────────────────
@@ -191,17 +210,9 @@ if __name__ == "__main__":
     print(f"VisualRays mode={args.mode} | {args.width}x{args.height} | 20 rays")
     print(f"Colonnes angles : {vr.cols}")
 
-    device_info = None
-    for d in dai.Device.getAllConnectedDevices():
-        device_info = d
-        break
-    if device_info is None:
-        print("Aucun device OAK-D")
-        sys.exit(1)
-
-    with dai.Device(device_info) as device:
-        pipeline, q = create_color_pipeline_v3(device, args.width, args.height)
-        pipeline.start()
+    pipeline = create_color_pipeline(args.width, args.height)
+    with dai.Device(pipeline) as device:
+        q = device.getOutputQueue("color", maxSize=2, blocking=False)
         print("Flux actif — Q pour quitter")
 
         while True:

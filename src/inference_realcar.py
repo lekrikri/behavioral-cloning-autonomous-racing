@@ -49,7 +49,7 @@ except ImportError:
     print("[WARNING] depthai non installé")
 
 from src.depth_to_rays import DepthToRays, create_depthai_pipeline
-from src.visual_rays   import VisualRays, create_color_pipeline_v3
+from src.visual_rays   import VisualRays, create_color_pipeline
 from src.vesc_interface import VESCInterface
 
 # ─── Configuration ────────────────────────────────────────────────────────────
@@ -60,6 +60,11 @@ VESC_PORT           = "/dev/ttyACM0"
 CURRENT_MAX         = 5.0    # A — courant max moteur (8A normal, 5A conservateur 1er test)
 WATCHDOG_S          = 0.50   # 500ms — tolérance OAK-D démarrage
 CONTROL_HZ          = 30
+# Arrêt d'urgence obstacle (modes depth/fusion uniquement)
+EMERGENCY_NEAR_MM       = 500.0   # obstacle mesuré plus proche que ça (zone centrale) -> stop
+EMERGENCY_VALID_FRAC_MIN = 0.003  # "blackout" : objet collé qui occulte la lentille.
+                                  # Seuil bas car la stéréo OAK-D Lite est déjà éparse
+                                  # (~1% de pixels valides en usage normal -> marge x3).
 
 
 class SmoothingFilter:
@@ -100,7 +105,11 @@ class RealCarInference:
         servo_center: float = 0.50,
         servo_range: float  = 0.35,
         invert_steer: bool  = False,
+        invert_motor: bool  = True,
+        steer_gain: float   = 1.0,
         log_csv: bool       = True,
+        perception_mode: str = "depth",
+        mask_mode: str       = "hsv",
     ):
         print("\n[RealCar] ══════════════════════════════════════════")
         print("[RealCar]  Behavioral Cloning — Voiture Réelle v18  ")
@@ -135,9 +144,9 @@ class RealCarInference:
         self.ray_mu    = np.array(stats["mean"], dtype=np.float32)
         self.ray_sigma = np.array(stats["std"],  dtype=np.float32)
 
-        self.perception_mode = kwargs.get("perception_mode", "depth")
+        self.perception_mode = perception_mode
         self.depth_bridge    = DepthToRays()
-        self.visual_bridge   = VisualRays(mode=kwargs.get("mask_mode", "hsv"))
+        self.visual_bridge   = VisualRays(mode=mask_mode)
 
         # ── VESC avec params calibrés ─────────────────────────────────────────
         self.vesc = VESCInterface(
@@ -146,17 +155,20 @@ class RealCarInference:
             servo_center=servo_center,
             servo_range=servo_range,
             invert_steer=invert_steer,
+            invert_motor=invert_motor,
             throttle_mode="duty",   # duty = plus smooth que current au démarrage sensorless
             max_duty=duty_max,
         )
         print(f"[RealCar] servo_center={servo_center:.3f} | range=±{servo_range:.3f} | invert={invert_steer} | duty_max={duty_max:.2f}")
 
-        self.smoother = SmoothingFilter()
+        self.smoother   = SmoothingFilter()
+        self.steer_gain = steer_gain
 
         self._lock              = threading.Lock()
         self._latest_rays: Optional[np.ndarray] = None
         self._last_frame_t      = time.time()
         self._perception_ready  = False   # True quand OAK-D envoie des frames
+        self._proximity_blocked = False   # True = obstacle trop proche (arrêt d'urgence)
         self._running           = False
         self._step         = 0
         self._fps_times    = deque(maxlen=50)
@@ -171,11 +183,38 @@ class RealCarInference:
             log_path.parent.mkdir(exist_ok=True)
             self._csv_file   = open(log_path, "w", newline="")
             self._csv_writer = csv.writer(self._csv_file)
-            self._csv_writer.writerow(["t", "steer", "accel", "front_raw", "min_ray", "fps"])
+            self._csv_writer.writerow(["t", "steer", "steer_raw", "asym", "accel", "front_raw", "min_ray", "fps"])
             print(f"[RealCar] Log CSV → {log_path}")
 
         print(f"[RealCar] CURRENT_MAX = {current_max:.1f}A | WATCHDOG = {WATCHDOG_S*1000:.0f}ms")
         print("[RealCar] ✅ Prêt. Lance run() pour démarrer.\n")
+
+    def _check_proximity(self, depth_frame) -> bool:
+        """Obstacle trop proche dans la bande centrale ? (depth uint16, mm)
+
+        Deux déclencheurs, car la stéréo a un angle mort sous ~35cm (MinZ) :
+          1. obstacle MESURÉ proche : médiane des pixels valides < EMERGENCY_NEAR_MM
+          2. "blackout"             : quasi aucun pixel valide (objet collé qui
+             occulte la lentille) -> sinon l'obstacle "disparaît" et la voiture réaccélère.
+        On teste la fraction de pixels VALIDES (pas l'inverse) : la depth OAK-D Lite
+        est déjà éparse (~1% valides en normal), donc seul un blackout total discrimine.
+        """
+        b = self.depth_bridge
+        c0, c1 = int(b.W * 0.40), int(b.W * 0.60)
+        roi = depth_frame[b.row_start:b.row_end, c0:c1]
+        valid = roi[(roi >= b.min_valid_mm) & (roi <= b.max_dist_mm)]
+        if valid.size and float(np.median(valid)) < EMERGENCY_NEAR_MM:
+            return True
+        return (valid.size / float(roi.size)) < EMERGENCY_VALID_FRAC_MIN
+
+    def _apply_calib_fov(self, device, socket, bridge, label):
+        """Applique le FOV usine du capteur au bridge (fallback = constante codée)."""
+        try:
+            fov = device.readCalibration().getFov(socket)
+            bridge.set_fov(fov)
+            print(f"[Perception] FOV {label} = {fov:.1f}° (calibration usine)")
+        except Exception as e:
+            print(f"[Perception] FOV {label} : getFov indisponible ({e}) — fallback {bridge.fov_deg:.1f}°")
 
     def _perception_thread(self):
         if not _DAI_AVAILABLE:
@@ -193,6 +232,7 @@ class RealCarInference:
         with dai.Device(pipeline) as device:
             q = device.getOutputQueue("depth", maxSize=1, blocking=False)
             print("[Perception] OAK-D connectée — flux DEPTH démarré")
+            self._apply_calib_fov(device, dai.CameraBoardSocket.CAM_B, self.depth_bridge, "depth")
             with self._lock:
                 self._last_frame_t     = time.time()
                 self._perception_ready = True
@@ -205,32 +245,29 @@ class RealCarInference:
                         self.vesc.stop()
                     else:
                         rays = self.depth_bridge(frame)
+                        prox = self._check_proximity(frame)
                         with self._lock:
-                            self._latest_rays  = rays
-                            self._last_frame_t = time.time()
+                            self._latest_rays       = rays
+                            self._proximity_blocked = prox
+                            self._last_frame_t      = time.time()
                 time.sleep(0.005)
 
     def _perception_visual(self):
-        device_info = None
-        for d in dai.Device.getAllConnectedDevices():
-            device_info = d
-            break
-        if device_info is None:
-            print("[Perception] Aucun device OAK-D trouvé")
-            return
-        with dai.Device(device_info) as device:
-            pipeline, q = create_color_pipeline_v3(device)
-            pipeline.start()
+        pipeline = create_color_pipeline()
+        with dai.Device(pipeline) as device:
+            q = device.getOutputQueue("color", maxSize=2, blocking=False)
             print("[Perception] OAK-D connectée — flux VISUAL (masque) démarré")
+            self._apply_calib_fov(device, dai.CameraBoardSocket.CAM_A, self.visual_bridge, "visual")
             with self._lock:
                 self._last_frame_t     = time.time()
                 self._perception_ready = True
             while self._running:
-                msg = q.get()
-                rays = self.visual_bridge(msg.getCvFrame())
-                with self._lock:
-                    self._latest_rays  = rays
-                    self._last_frame_t = time.time()
+                msg = q.tryGet()
+                if msg is not None:
+                    rays = self.visual_bridge(msg.getCvFrame())
+                    with self._lock:
+                        self._latest_rays  = rays
+                        self._last_frame_t = time.time()
                 time.sleep(0.005)
 
     def _perception_fusion(self):
@@ -240,40 +277,30 @@ class RealCarInference:
         Depth détecte les murs/obstacles en volume.
         Visual détecte les bords de piste (lignes blanches au sol).
         """
-        device_info = None
-        for d in dai.Device.getAllConnectedDevices():
-            device_info = d
-            break
-        if device_info is None:
-            print("[Perception] Aucun device OAK-D trouvé")
-            return
+        # Un seul pipeline v2 : couleur (CAM_A, stream "color") + depth stéréo (CAM_B/C, stream "depth")
+        pipeline = create_color_pipeline()
+        mono_l = pipeline.create(dai.node.MonoCamera)
+        mono_r = pipeline.create(dai.node.MonoCamera)
+        stereo = pipeline.create(dai.node.StereoDepth)
+        xout_d = pipeline.create(dai.node.XLinkOut)
+        mono_l.setBoardSocket(dai.CameraBoardSocket.CAM_B)
+        mono_r.setBoardSocket(dai.CameraBoardSocket.CAM_C)
+        mono_l.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+        mono_r.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+        stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
+        stereo.setLeftRightCheck(True)
+        stereo.setMedianFilter(dai.MedianFilter.KERNEL_7x7)
+        mono_l.out.link(stereo.left)
+        mono_r.out.link(stereo.right)
+        stereo.depth.link(xout_d.input)
+        xout_d.setStreamName("depth")
 
-        import depthai as dai as dai_mod
-        # Pipeline couleur + depth sur le même device
-        with dai_mod.Device(device_info) as device:
-            # Couleur
-            pipeline_color, q_color = create_color_pipeline_v3(device)
-
-            # Depth (ajout au même pipeline)
-            mono_l = pipeline_color.create(dai_mod.node.MonoCamera)
-            mono_r = pipeline_color.create(dai_mod.node.MonoCamera)
-            stereo  = pipeline_color.create(dai_mod.node.StereoDepth)
-            xout_d  = pipeline_color.create(dai_mod.node.XLinkOut)
-            mono_l.setBoardSocket(dai_mod.CameraBoardSocket.CAM_B)
-            mono_r.setBoardSocket(dai_mod.CameraBoardSocket.CAM_C)
-            mono_l.setResolution(dai_mod.MonoCameraProperties.SensorResolution.THE_400_P)
-            mono_r.setResolution(dai_mod.MonoCameraProperties.SensorResolution.THE_400_P)
-            stereo.setDefaultProfilePreset(dai_mod.node.StereoDepth.PresetMode.HIGH_DENSITY)
-            stereo.setLeftRightCheck(True)
-            stereo.setMedianFilter(dai_mod.MedianFilter.KERNEL_7x7)
-            mono_l.out.link(stereo.left)
-            mono_r.out.link(stereo.right)
-            stereo.depth.link(xout_d.input)
-            xout_d.setStreamName("depth")
+        with dai.Device(pipeline) as device:
+            q_color = device.getOutputQueue("color", maxSize=2, blocking=False)
             q_depth = device.getOutputQueue("depth", maxSize=1, blocking=False)
-
-            pipeline_color.start()
             print("[Perception] OAK-D connectée — flux FUSION (depth + masque) démarré")
+            self._apply_calib_fov(device, dai.CameraBoardSocket.CAM_B, self.depth_bridge,  "depth")
+            self._apply_calib_fov(device, dai.CameraBoardSocket.CAM_A, self.visual_bridge, "visual")
             with self._lock:
                 self._last_frame_t     = time.time()
                 self._perception_ready = True
@@ -284,10 +311,12 @@ class RealCarInference:
 
                 rays_visual = self.visual_bridge(bgr_msg.getCvFrame())
 
+                prox = False
                 if depth_msg is not None:
                     frame = depth_msg.getFrame()
                     if frame.max() >= 200:
                         rays_depth = self.depth_bridge(frame)
+                        prox = self._check_proximity(frame)
                         # Fusion : minimum → le signal le plus contraignant
                         rays_fused = np.minimum(rays_depth, rays_visual)
                     else:
@@ -296,8 +325,9 @@ class RealCarInference:
                     rays_fused = rays_visual       # fallback si pas de frame depth
 
                 with self._lock:
-                    self._latest_rays  = rays_fused
-                    self._last_frame_t = time.time()
+                    self._latest_rays       = rays_fused
+                    self._proximity_blocked = prox
+                    self._last_frame_t      = time.time()
                 time.sleep(0.005)
 
     def _control_thread(self):
@@ -310,6 +340,7 @@ class RealCarInference:
             with self._lock:
                 rays       = self._latest_rays
                 last_frame = self._last_frame_t
+                blocked    = self._proximity_blocked
 
             # ── Watchdog : inactif tant que OAK-D pas prête ───────────────
             if not self._perception_ready:
@@ -323,6 +354,14 @@ class RealCarInference:
 
             if rays is None:
                 time.sleep(0.01)
+                continue
+
+            # ── Arrêt d'urgence : obstacle trop proche (depth/fusion) ─────
+            if blocked:
+                self.vesc.stop()
+                if self._step % 30 == 0:
+                    print("\r[Control] ⛔ OBSTACLE PROCHE — arrêt d'urgence            ", end="", flush=True)
+                time.sleep(0.02)
                 continue
 
             # ── Z-score ───────────────────────────────────────────────────
@@ -346,7 +385,7 @@ class RealCarInference:
             steer   = pred_s[0]
             if 0.05 < abs(steer) < 0.35:
                 steer -= 0.02 * np.sign(steer)
-            steering = float(np.clip(steer, -1.0, 1.0))
+            steering = float(np.clip(steer * self.steer_gain, -1.0, 1.0))
 
             # ── Heuristique accel (front_raw) ─────────────────────────────
             front_raw = float(rays[half - 1: half + 1].mean())
@@ -368,7 +407,8 @@ class RealCarInference:
             if self._csv_writer and self._step % 3 == 0:
                 self._csv_writer.writerow([
                     round(time.time() - self._start_time, 3),
-                    round(steering, 4), round(acceleration, 4),
+                    round(steering, 4), round(steer_raw, 4), round(float(asymmetry), 4),
+                    round(acceleration, 4),
                     round(front_raw, 4), round(float(rays.min()), 4),
                     round(fps, 1),
                 ])
@@ -426,6 +466,12 @@ def main():
     parser.add_argument("--servo-center", type=float, default=0.50)
     parser.add_argument("--servo-range",  type=float, default=0.35)
     parser.add_argument("--invert-steer", action="store_true")
+    parser.add_argument("--invert-motor",    dest="invert_motor", action="store_true",  default=True,
+                        help="positive accel -> forward (default; calibré mode current)")
+    parser.add_argument("--no-invert-motor", dest="invert_motor", action="store_false",
+                        help="désactive l'inversion moteur (à utiliser si la voiture recule en mode duty)")
+    parser.add_argument("--steer-gain", type=float, default=1.0,
+                        help="multiplicateur du steering (compense l'atténuation sim-to-real ; 1.0 = brut)")
     parser.add_argument("--no-log",          action="store_true")
     parser.add_argument("--perception-mode", choices=["depth", "visual", "fusion"], default="depth",
                         help="depth=depth map stéreo | visual=masque HSV/Canny couleur")
@@ -442,6 +488,8 @@ def main():
         servo_center = args.servo_center,
         servo_range  = args.servo_range,
         invert_steer     = args.invert_steer,
+        invert_motor     = args.invert_motor,
+        steer_gain       = args.steer_gain,
         log_csv          = not args.no_log,
         perception_mode  = args.perception_mode,
         mask_mode        = args.mask_mode,

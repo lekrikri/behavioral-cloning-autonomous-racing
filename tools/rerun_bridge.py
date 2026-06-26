@@ -69,22 +69,22 @@ class Bridge:
         if not pose:
             return
         x, y, theta = pose
-        rays = msg.get("rays")
+        rays_m = msg.get("rays_m")               # metric polar distances (IPM)
         angles = msg.get("ray_angles")
-        ray_max_m = msg.get("ray_max_m", 3.0)
+        ray_max_m = msg.get("ray_max_m")
+        if ray_max_m:
+            self.grid.max_range = float(ray_max_m)
 
-        if rays is not None and angles is not None:
-            dists_m = np.asarray(rays, dtype=float) * ray_max_m
-            self.grid.integrate_scan((x, y, theta), dists_m, angles)
+        if rays_m is not None and angles is not None:
+            self.grid.integrate_scan((x, y, theta), np.asarray(rays_m, dtype=float), angles)
 
         self.traj.append(self.to_disp(x, y))
         rr.log("map/trajectory", rr.LineStrips2D([self.traj], colors=[[80, 160, 255]]))
         rr.log("map/car", rr.Points2D([self.to_disp(x, y)], radii=[3.0], colors=[[255, 80, 80]]))
 
-        if rays is not None and angles is not None:
+        if rays_m is not None and angles is not None:
             strips = []
-            for d_norm, a in zip(rays, angles):
-                d = d_norm * ray_max_m
+            for d, a in zip(rays_m, angles):
                 ex, ey = x + d * np.cos(theta + a), y + d * np.sin(theta + a)
                 strips.append([self.to_disp(x, y), self.to_disp(ex, ey)])
             rr.log("map/scan", rr.LineStrips2D(strips, colors=[[0, 220, 180]]))

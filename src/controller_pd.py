@@ -1246,9 +1246,6 @@ def push_frame(bgr, mask, info, rejected_blobs=None):
             cv2.line(vis, (ox, oy), (ex, ey), RAY_COLOR, 1)
             if hit:
                 cv2.circle(vis, (ex, ey), 4, HIT_COLOR, -1)
-        # Origine — cercle blanc avec point noir (symbole "œil" classique)
-        cv2.circle(vis, (ox, oy), 7, (220, 220, 220), -1)
-        cv2.circle(vis, (ox, oy), 3, (20, 20, 20),    -1)
     # Point VERT = midpoint de contrôle réel (ce que suit la voiture)
     # Le trait bleu = direction de steering, part du bas-centre vers le point vert
     if info["err"] is not None:

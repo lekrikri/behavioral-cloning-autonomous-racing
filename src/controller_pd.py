@@ -329,6 +329,7 @@ class MJPEGHandler(BaseHTTPRequestHandler):
 def start_stream_server(port):
     global _placeholder
     _placeholder = _make_placeholder()
+    ThreadingHTTPServer.allow_reuse_address = True
     srv = ThreadingHTTPServer(("0.0.0.0", port), MJPEGHandler)
     srv.daemon_threads = True
     t = threading.Thread(target=srv.serve_forever, daemon=True)

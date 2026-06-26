@@ -2115,6 +2115,10 @@ def run(args):
                     print("[hub] deconnecte ({}) — reconnexion...".format(e))
                     client.close()
                     time.sleep(1.0)
+                except Exception as e:
+                    import traceback
+                    print("[ctrl] ERREUR _step: {} — continue".format(e))
+                    traceback.print_exc()
         except KeyboardInterrupt:
             print("[ctrl] Arret.")
         finally:

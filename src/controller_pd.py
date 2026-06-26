@@ -355,6 +355,7 @@ document.addEventListener('keydown',function(e){
 _latest_jpeg = None
 _frame_id    = 0
 _stream_lock = threading.Lock()
+_frame_cond  = threading.Condition(_stream_lock)
 _placeholder = None
 _last_frame_time = [time.time()]   # watchdog : heure de la dernière frame reçue
 _watchdog_trigger = [False]        # mis à True par le watchdog pour forcer un reset
@@ -461,11 +462,12 @@ class MJPEGHandler(BaseHTTPRequestHandler):
         last_id = -1
         try:
             while True:
-                with _stream_lock:
+                with _frame_cond:
+                    if _frame_id == last_id:
+                        _frame_cond.wait(timeout=0.5)
                     cur_id = _frame_id
                     jpg    = _latest_jpeg or _placeholder
-                if cur_id == last_id or jpg is None:
-                    time.sleep(0.003)
+                if jpg is None:
                     continue
                 last_id = cur_id
                 try:
@@ -577,10 +579,11 @@ def push_frame(bgr, mask, info, rejected_blobs=None):
     if mask_rej is not None:
         panel[mask_rej > 0, 2] = 255  # rouge = pixel rejeté par filtre IA
     display = np.hstack([vis, panel])
-    _, jpg = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 65])
-    with _stream_lock:
+    _, jpg = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 50])
+    with _frame_cond:
         _latest_jpeg = jpg.tobytes()
         _frame_id   += 1
+        _frame_cond.notify_all()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

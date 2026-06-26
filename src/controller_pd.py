@@ -480,7 +480,7 @@ function ctoggle(){var u=_co?'/stop_map':'/start_map';
   fetch(u).then(r=>r.text()).then(function(t){_co=!_co;_ucarto();toast(t);});}
 function _ucarto(){var b=document.getElementById('bcarto');
   b.className='btn bca'+(_co?' rec':'');
-  b.textContent=_co?'&#9209; STOP CARTO':'&#9654; CARTO';}
+  b.innerHTML=_co?'&#9209; STOP CARTO':'&#9654; CARTO';}
 function resetMap(){
   if(!confirm('Effacer la carto en cours sans sauvegarder ?'))return;
   fetch('/reset_map').then(r=>r.text()).then(function(t){_co=false;_ucarto();toast(t);});}

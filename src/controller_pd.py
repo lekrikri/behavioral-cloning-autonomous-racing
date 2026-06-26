@@ -1497,14 +1497,16 @@ class PDController:
                 if _car_between_c:
                     _center_c = (left_cx + right_cx) // 2
                     _both_real = (self.left_age == 0 and self.right_age == 0)
-                    # Inner bias appliqué même avec les deux vraies lignes en CORNER
-                    _bias_map = {"straight": 15, "medium": 30, "tight": 50, "uturn": 70}
-                    _inner_bias = _bias_map.get(self.curv_class,
-                                                CORNER_INNER_BIAS_U if self.is_u_turn
-                                                else CORNER_INNER_BIAS_S)
-                    if not _both_real:
-                        pass  # prédiction : bias déjà fort
-                    err = (_center_c - CAM_W // 2 - effective_offset) - _inner_bias * self.corner_dir
+                    if _both_real:
+                        # Deux vraies lignes vues → err = milieu exact, pas d'inner_bias
+                        err = _center_c - CAM_W // 2 - effective_offset
+                    else:
+                        # Au moins une ligne prédite → légère poussée vers l'intérieur
+                        _bias_map = {"straight": 8, "medium": 15, "tight": 25, "uturn": 50}
+                        _inner_bias = _bias_map.get(self.curv_class,
+                                                    CORNER_INNER_BIAS_U if self.is_u_turn
+                                                    else CORNER_INNER_BIAS_S)
+                        err = (_center_c - CAM_W // 2 - effective_offset) - _inner_bias * self.corner_dir
                     _center_used = True
             if not _center_used:
                 _err_force = U_ERR_FORCE if self.is_u_turn else 220.0

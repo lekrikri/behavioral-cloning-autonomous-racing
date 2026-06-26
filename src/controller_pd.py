@@ -222,6 +222,99 @@ CURRENT_MAX  = 5.0
 # STREAM MJPEG — partagé entre le thread caméra et le HTTP server
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ── Paramètres masque ajustables live via l'UI navigateur ─────────────────────
+class _MaskState:
+    ON_TOPHAT_K = 25
+    ON_FILL     = 0.45
+    ON_TEMPORAL = 5
+
+    def __init__(self):
+        self._lock       = threading.Lock()
+        self.hsv_v_min   = 195
+        self.tophat_k    = 0
+        self.tophat_thresh = 12
+        self.max_fill    = 1.0
+        self.temporal    = 1
+        self.roi_frac    = 0.0
+        self.show_mask   = True
+        self.show_rays   = True
+
+    def snapshot(self):
+        with self._lock:
+            return dict(hsv_v_min=self.hsv_v_min, tophat_k=self.tophat_k,
+                        tophat_thresh=self.tophat_thresh, max_fill=self.max_fill,
+                        temporal=self.temporal, roi_frac=self.roi_frac)
+
+    def apply_key(self, k):
+        with self._lock:
+            if   k == "t": self.tophat_k = 0 if self.tophat_k > 1 else self.ON_TOPHAT_K
+            elif k == "f": self.max_fill = 1.0 if self.max_fill < 1.0 else self.ON_FILL
+            elif k == "c": self.temporal = 1 if self.temporal > 1 else self.ON_TEMPORAL
+            elif k == ".": self.tophat_k = min(99, max(3, self.tophat_k) + 2)
+            elif k == ",": self.tophat_k = max(0, self.tophat_k - 2)
+            elif k == "]": self.tophat_thresh = min(120, self.tophat_thresh + 2)
+            elif k == "[": self.tophat_thresh = max(0, self.tophat_thresh - 2)
+            elif k == "'": self.max_fill = round(min(1.0, self.max_fill + 0.05), 2)
+            elif k == ";": self.max_fill = round(max(0.05, self.max_fill - 0.05), 2)
+            elif k == "n": self.temporal = min(15, max(1, self.temporal) + 2)
+            elif k == "b": self.temporal = max(1, self.temporal - 2)
+            elif k == "o": self.roi_frac = round(min(0.9, self.roi_frac + 0.05), 2)
+            elif k == "p": self.roi_frac = round(max(0.0, self.roi_frac - 0.05), 2)
+            elif k in ("+", "="): self.hsv_v_min = min(255, self.hsv_v_min + 5)
+            elif k == "-": self.hsv_v_min = max(0, self.hsv_v_min - 5)
+            elif k == "m": self.show_mask = not self.show_mask
+            elif k == "r": self.show_rays = not self.show_rays
+            return ("V>={} TH(k={},thr={}) FILL={} TEMP={} ROIcrop={}%".format(
+                self.hsv_v_min, self.tophat_k, self.tophat_thresh,
+                self.max_fill, self.temporal, int(self.roi_frac * 100)))
+
+_mask_state = _MaskState()
+
+_UI_PAGE = b"""<!doctype html><html><head><meta charset=utf-8><title>Virida Robocar</title>
+<style>body{background:#111;color:#ddd;font-family:monospace;margin:0;padding:8px}
+img{max-width:100%;border:1px solid #333}
+button{background:#222;color:#ddd;border:1px solid #444;padding:6px 10px;margin:2px;cursor:pointer;font-family:monospace}
+button:hover{background:#333}button.on{background:#155;color:#0ff}
+#k{color:#6cf}.row{margin:6px 0}#st{color:#fc6}
+.sep{display:inline-block;width:8px}
+</style></head><body>
+<div class=row><img src="/stream"></div>
+<div class=row style="border:1px solid #533;padding:6px">
+  conduite :
+  <button onclick="C('/stop')" style="background:#511">STOP</button>
+  <button onclick="C('/go')" style="background:#151">GO</button>
+  <span class=sep></span>status: <span id=st>—</span>
+</div>
+<div class=row>
+<b>Masque :</b>
+<button onclick="K('t')" id=bt>t top-hat</button>
+<button onclick="K(',')">, k-</button><button onclick="K('.')">. k+</button>
+<button onclick="K('[')">[ thr-</button><button onclick="K(']')">] thr+</button>
+<span class=sep></span>
+<button onclick="K('f')" id=bf>f forme</button>
+<button onclick="K(';')">; fill-</button><button onclick="K(&quot;'&quot;)">' fill+</button>
+<span class=sep></span>
+<button onclick="K('c')" id=bc>c temp</button>
+<button onclick="K('b')">b win-</button><button onclick="K('n')">n win+</button>
+<span class=sep></span>
+<button onclick="K('-')">- V</button><button onclick="K('=')">+ V</button>
+<button onclick="K('o')">o crop+</button><button onclick="K('p')">p crop-</button>
+<button onclick="K('m')">m mask</button><button onclick="K('r')">r rays</button>
+</div>
+<div class=row>etat: <span id=k>—</span></div>
+<script>
+function K(k){fetch('/key?k='+encodeURIComponent(k)).then(r=>r.text()).then(t=>{
+  document.getElementById('k').textContent=t;
+  document.getElementById('bt').className=t.includes('TH(k=0')?'':'on';
+  document.getElementById('bf').className=t.includes('FILL=1.0')||t.includes('FILL=off')?'':'on';
+  document.getElementById('bc').className=t.includes('TEMP=1')||t.includes('TEMP=off')?'':'on';
+});}
+function C(p){fetch(p).then(r=>r.text()).then(t=>{document.getElementById('st').textContent=t;});}
+document.addEventListener('keydown',function(e){
+  var k=e.key;if(k===' '||k.length===1){e.preventDefault();K(k);}
+});
+</script></body></html>"""
+
 _latest_jpeg = None
 _frame_id    = 0
 _stream_lock = threading.Lock()
@@ -296,7 +389,21 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             self._send_text("MAPPING_FINISH_REQUESTED")
             print("[track] /finish_map recu")
             return
-        if path not in ("/", "/stream"):
+        if path == "/":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(_UI_PAGE)))
+            self.end_headers()
+            self.wfile.write(_UI_PAGE)
+            return
+        if path == "/key":
+            from urllib.parse import parse_qs, urlparse as _up
+            qs = parse_qs(_up(self.path).query)
+            k  = (qs.get("k", [""])[0])[:1]
+            label = _mask_state.apply_key(k) if k else ""
+            self._send_text(label)
+            return
+        if path != "/stream":
             self.send_response(404); self.end_headers(); return
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
@@ -1982,9 +2089,13 @@ def run(args):
                         bgr = cv2.resize(bgr[y0:, :], (CAM_W, CAM_H),
                                          interpolation=cv2.INTER_LINEAR)
 
+                    _ms = _mask_state.snapshot()
+                    _hsv_low = np.array([0, 0, _ms["hsv_v_min"]], dtype=np.uint8)
                     mask = white_line_mask(
-                        bgr, hsv_low=HSV_LOW, hsv_high=HSV_HIGH,
+                        bgr, hsv_low=_hsv_low, hsv_high=HSV_HIGH,
                         morph_k=5, blur_k=3, use_clahe=True, min_area=MIN_BLOB_AREA,
+                        tophat_k=_ms["tophat_k"], tophat_thresh=_ms["tophat_thresh"],
+                        max_fill_ratio=_ms["max_fill"],
                     )
                     # Masque large (ROI 45%) pour détection anticipée des coins
                     mask_wide = mask.copy()

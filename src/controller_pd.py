@@ -208,9 +208,9 @@ STEERING_MAX = 0.85
 STEERING_DEADZONE = 0.05
 CAMERA_OFFSET_PX = 0         # biais caméra — calibrer si la voiture dérive constamment
 
-V_MAX        = 0.14          # vitesse max ligne droite (~7% duty)
-V_TURN       = 0.08          # vitesse virage (réduit pour stabilité)
-V_SLOW       = 0.10          # vitesse récupération b=1
+V_MAX        = 0.04          # vitesse max ligne droite (~4% duty)
+V_TURN       = 0.025         # vitesse virage
+V_SLOW       = 0.03          # vitesse récupération b=1
 V_STOP       = 0.00
 
 CURVE_THRESH_HIGH = 0.30
@@ -404,6 +404,7 @@ details[open]>summary::before{content:'▼  '}
     <div class=mr><span class=ml>GPU T&#176;</span><span class=mv id=gpu_temp>—</span></div>
     <div class=mr><span class=ml>CPU %</span><span class=mv id=cpu_pct>—</span></div>
     <div class=mr><span class=ml>RAM</span><span class=mv id=ram>—</span></div>
+    <div class=mr><span class=ml>FPS</span><span class=mv id=fps_card>—</span></div>
   </div>
   <div class=card style="--ca:var(--or)">
     <div class=ct>&#129517; Navigation</div>
@@ -555,6 +556,7 @@ setInterval(function(){
     var gte=document.getElementById('gpu_temp');gte.textContent=gts||'—';gte.style.color=gts?_col(gt,70,85):'var(--mu)';
     var cpe=document.getElementById('cpu_pct');cpe.textContent=sk.cpu_pct!=null?sk.cpu_pct.toFixed(0)+'%':'—';cpe.style.color=_col(sk.cpu_pct,70,90);
     document.getElementById('ram').textContent=sk.ram_used!=null?sk.ram_used.toFixed(1)+'/'+sk.ram_total.toFixed(1)+' GB':'—';
+    var fce=document.getElementById('fps_card');fce.textContent=d.fps!=null?d.fps.toFixed(1)+' fps':'—';fce.style.color=d.fps!=null&&d.fps<8?'var(--or)':'var(--tx)';
     var st=d.state||'INIT';
     var nm=document.getElementById('nav_mode');
     var mc='min',mi='→';
@@ -995,6 +997,73 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             else:
                 svg = _mapper_ref[0].render_svg() if _mapper_ref[0] is not None else "<svg/>"
                 body = svg.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path == "/map_overlay.svg":
+            import os as _os, json as _json, math as _math, re as _re
+            data_dir = _os.path.dirname(_os.path.abspath(_map_file)) or "."
+            ref_svg  = _os.path.join(data_dir, "track_reference.svg")
+            carto    = _mapper_ref[0]
+            W, H, PAD = 900, 600, 45
+            # ── Carto layer ──
+            wpts     = carto.waypoints if carto else []
+            segments = carto.segments  if carto else []
+            carto_pts = ""
+            px_fn_ref = None
+            if wpts:
+                xs = [p["x"] for p in wpts]; ys = [p["y"] for p in wpts]
+                xmn, xmx = min(xs), max(xs); ymn, ymx = min(ys), max(ys)
+                dx = xmx - xmn or 1.0; dy = ymx - ymn or 1.0
+                sc = min((W - 2*PAD)/dx, (H - 2*PAD)/dy)
+                def _px(x, y): return PAD + (x-xmn)*sc, PAD + (y-ymn)*sc
+                px_fn_ref = _px
+                carto_pts = " ".join("{:.1f},{:.1f}".format(*_px(p["x"],p["y"])) for p in wpts)
+            # Turn marks
+            turn_marks = []
+            if px_fn_ref:
+                for s in segments:
+                    if s.get("type") != "turn": continue
+                    mid = (s["start_idx"]+s["end_idx"])//2
+                    if mid >= len(wpts): continue
+                    cx, cy = px_fn_ref(wpts[mid]["x"], wpts[mid]["y"])
+                    col = "#FF5555" if s["dir"]=="R" else "#5588FF"
+                    turn_marks.append(
+                        '<circle cx="{:.1f}" cy="{:.1f}" r="5" fill="{}" opacity="0.7"/>'.format(cx,cy,col))
+            # ── Reference layer ──
+            ref_layer = ""
+            if _os.path.exists(ref_svg):
+                with open(ref_svg) as _rf:
+                    _rc = _rf.read()
+                _paths = _re.findall(r'<path[^>]*/>', _rc)
+                ref_layer = "\n  ".join(
+                    _re.sub(r'fill="[^"]*"','fill="#6677FF"',
+                    _re.sub(r'stroke="[^"]*"','stroke="#6677FF"',p)).replace('/>','opacity="0.35"/>')
+                    for p in _paths)
+            # START mark
+            start_el = ""
+            if wpts and px_fn_ref:
+                sx, sy = px_fn_ref(wpts[0]["x"], wpts[0]["y"])
+                start_el = '<circle cx="{:.1f}" cy="{:.1f}" r="8" fill="#00CC44"/>'.format(sx,sy)
+            svg_body = """<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" style="background:#111">
+  {ref}
+  <polyline points="{pts}" stroke="#00FF88" stroke-width="2.5" fill="none" opacity="0.85"/>
+  {start}
+  {turns}
+  <text x="10" y="18" font-size="11" fill="#00CC44" font-family="monospace">&#9632; Carto DR</text>
+  <text x="110" y="18" font-size="11" fill="#6677FF" font-family="monospace">&#9632; Référence photo</text>
+  <text x="10" y="{ty}" font-size="10" fill="#555" font-family="monospace">TRACK OVERLAY — {date}</text>
+</svg>""".format(
+                W=W, H=H,
+                ref=ref_layer, pts=carto_pts, start=start_el,
+                turns="\n  ".join(turn_marks),
+                ty=H-6, date=__import__('time').strftime("%Y-%m-%d %H:%M"))
+            body = svg_body.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -1923,7 +1992,7 @@ class PDController:
         d_asym = ray_asym - self.prev_ray_asym
         self.prev_ray_asym = ray_asym
 
-        if not self.corner_mode and not self.no_corner:
+        if not self.corner_mode and not self.no_corner and self.corner_release == 0:
             # Décrémentation naturelle : rémanence ~10 frames
             self.corner_accum = max(0, self.corner_accum - 1)
             # Accumulation multi-signal

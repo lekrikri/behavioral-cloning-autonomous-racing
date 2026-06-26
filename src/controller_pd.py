@@ -175,8 +175,8 @@ except ImportError:
 # PARAMÈTRES
 # ══════════════════════════════════════════════════════════════════════════════
 
-CAM_W, CAM_H = 480, 240   # réduit 640×320 → 480×240 pour gain FPS Jetson Nano
-CAM_FPS      = 30
+CAM_W, CAM_H = 480, 240   # hub → 480×240, correspondant à robocar-hub.service
+CAM_FPS      = 20         # hub peut servir jusqu'à ~20fps à 480×240
 
 HSV_LOW      = np.array([0,   0, 150], dtype=np.uint8)   # V>=150 (adapté éclairage faible)
 HSV_HIGH     = np.array([180, 45, 255], dtype=np.uint8)  # S<=45 (blanc incluant reflets tamisés)
@@ -186,7 +186,7 @@ ROI_NEAR     = 0.85
 ROI_BOTTOM   = 1.00
 MIN_BLOB_AREA  = 700    # prop. 1250 × (480×240)/(640×320)
 MIN_CORNER_AREA = 5300  # prop. 9375 × 0.5625
-CORNER_DURATION = 32   # frames de maintien virage (~2.5s @ 13fps) — virages serrés piste V
+CORNER_DURATION = 32   # frames de maintien virage
 CORNER_INNER_BIAS_S = 18   # px vers intérieur virage simple (prop. 25 × 480/640)
 CORNER_INNER_BIAS_U = 40   # px vers intérieur U-turn (prop. 55 × 480/640)
 CURV_PIX_PER_RAD    = 300.0  # déplacement apparent ligne (px) par rad/s gyro
@@ -198,8 +198,8 @@ U_CORNER_MAX    = 50    # frames max U-turn (vs 32 virage simple)
 U_EXIT_FADE     = 8     # frames fading sortie U (vs 4 virage simple)
 U_SEARCH_FRAMES = 18    # frames SEARCH post-U (vs 10)
 
-TRACK_WIDTH_EST_PX = 260     # prop. 350 × 480/640
-SLIDE_WIN    = 66            # prop. 88 × 480/640
+TRACK_WIDTH_EST_PX = 260   # prop. 350 × 480/640
+SLIDE_WIN    = 66          # prop. 88 × 480/640
 
 KP           = 0.006         # réduit : 6fps = 167ms par frame, évite sur-braquage
 KD           = 0.007         # augmenté : amortit l'oscillation due au retard visuel
@@ -1615,7 +1615,7 @@ def find_lane_scanlines(mask, n_lines=12):
     Seuil MIN_WHITES adaptatif : plus permissif en haut (lignes fines et lointaines).
     """
     mid_x  = CAM_W // 2
-    MARGIN = max(20, CAM_W * 38 // 640)  # prop. 38px pour CAM_W=640
+    MARGIN = max(20, CAM_W * 38 // 640)
 
     # Scanlines de 50% à 93% — plage étendue vers le haut pour voir les lignes lointaines
     rows = [int(CAM_H * (0.50 + i * (0.43 / max(n_lines - 1, 1)))) for i in range(n_lines)]

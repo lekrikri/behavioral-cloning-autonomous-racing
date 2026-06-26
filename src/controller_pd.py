@@ -331,6 +331,10 @@ def start_stream_server(port):
     _placeholder = _make_placeholder()
     ThreadingHTTPServer.allow_reuse_address = True
     srv = ThreadingHTTPServer(("0.0.0.0", port), MJPEGHandler)
+    # FD_CLOEXEC : ferme le socket lors de os.execve (recovery OAK-D)
+    # sans ça le fd est hérité → "Address already in use" au redémarrage
+    import fcntl as _fcntl
+    _fcntl.fcntl(srv.socket.fileno(), _fcntl.F_SETFD, _fcntl.FD_CLOEXEC)
     srv.daemon_threads = True
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()

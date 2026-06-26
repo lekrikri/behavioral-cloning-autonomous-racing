@@ -1994,8 +1994,7 @@ class PDController:
         d_asym = ray_asym - self.prev_ray_asym
         self.prev_ray_asym = ray_asym
 
-        _force_accum = n_blobs <= 1 and abs(self.err_smooth) > 130  # virage en U urgent
-        if not self.corner_mode and not self.no_corner and (self.corner_release == 0 or _force_accum):
+        if not self.corner_mode and not self.no_corner and self.corner_release == 0:
             # Décrémentation naturelle : rémanence ~10 frames
             self.corner_accum = max(0, self.corner_accum - 1)
             # Accumulation multi-signal
@@ -2013,15 +2012,14 @@ class PDController:
                 self.corner_accum += 2                      # courbure forte anticipée
             elif self.curv_class == "uturn":
                 self.corner_accum += 4                      # épingle détectée → déclenche tôt
-            # Virage en U : grande erreur persistante + b≤1 = fin de ligne droite certaine
-            if n_blobs <= 1 and abs(self.err_smooth) > 110:
-                self.corner_accum += 2
 
             if self.corner_accum >= 5:
                 if corner_blob is not None:
                     corner_dir_cx = corner_blob["cx"]
-                elif ray_asym != 0:
+                elif abs(ray_asym) > 0.15:   # signal fiable uniquement si fort
                     corner_dir_cx = CAM_W // 2 + (1 if ray_asym > 0 else -1)
+                elif self.err_smooth != 0:   # err lissée : plus stable que err instantanée
+                    corner_dir_cx = CAM_W // 2 + (1 if self.err_smooth > 0 else -1)
                 elif err is not None:
                     corner_dir_cx = CAM_W // 2 + (1 if err > 0 else -1)
                 else:

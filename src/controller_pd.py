@@ -471,43 +471,55 @@ function _ucarto(){var b=document.getElementById('bcarto');
   b.className='btn bca'+(_co?' rec':'');
   b.textContent=_co?'&#9209; STOP CARTO':'&#9654; CARTO';}
 function _col(v,w,e){return v==null?'var(--mu)':v>=e?'var(--re)':v>=w?'var(--or)':'var(--tx)'}
-function _batpct(v){return v==null?null:Math.max(0,Math.min(100,Math.round((v-9.9)/(12.6-9.9)*100)));}
+function _batpct(v){
+  if(v==null)return null;
+  var mn=v>13.0?12.0:9.9, mx=v>13.0?16.8:12.6;  // auto 4S/3S
+  return Math.max(0,Math.min(100,Math.round((v-mn)/(mx-mn)*100)));
+}
+function _vwarn(v){
+  if(v==null)return'var(--gr)';
+  if(v>13.0)return v<13.5?'var(--re)':v<14.4?'var(--or)':'var(--gr)';
+  return v<10.5?'var(--re)':v<11.1?'var(--or)':'var(--gr)';
+}
 function _batcol(p){return p==null?'var(--gr)':p<15?'var(--re)':p<35?'var(--or)':'var(--gr)';}
+function _fmtT(v){return(v==null||v<-20||v>250)?null:v.toFixed(0)+'°C';}
 setInterval(function(){
   fetch('/telemetry').then(r=>r.json()).then(function(d){
     var b=document.getElementById('hdr_badge');
     b.className='badge '+(d.drive?'run':'stp');
-    b.textContent=d.drive?'&#9679; RUNNING':'&#9679; STOPPED';
+    b.textContent=d.drive?'● RUNNING':'● STOPPED';
     document.getElementById('hdr_fps').textContent=(d.fps||0).toFixed(0)+' fps';
     var vk=d.vesc||{};
     var v=vk.v_in!=null?vk.v_in:null;
     var ai=vk.input_i!=null?vk.input_i:null;
     var vi=document.getElementById('v_in');
     vi.textContent=v!=null?v.toFixed(1):'—';
-    vi.style.color=v!=null&&v<10.5?'var(--re)':v!=null&&v<11.1?'var(--or)':'var(--gr)';
+    vi.style.color=_vwarn(v);
     var p=_batpct(v);
     document.getElementById('bat_pct').textContent=p!=null?p:'—';
     var bar=document.getElementById('bb');bar.style.width=(p||0)+'%';bar.style.background=_batcol(p);
     document.getElementById('input_i').textContent=ai!=null?ai.toFixed(1)+'A':'—';
     document.getElementById('pw').textContent=(v!=null&&ai!=null)?(v*ai).toFixed(0):'—';
     document.getElementById('duty').textContent=vk.duty!=null?Math.round(vk.duty*100)+'%':'—';
-    document.getElementById('rpm').textContent=vk.rpm!=null?vk.rpm:'—';
+    document.getElementById('rpm').textContent=vk.rpm!=null?Math.abs(vk.rpm):'—';
     document.getElementById('motor_i').textContent=vk.motor_i!=null?vk.motor_i.toFixed(1)+' A':'—';
     var tf=vk.temp_fet,tm=vk.temp_motor;
-    var tfe=document.getElementById('temp_fet');tfe.textContent=tf!=null?tf.toFixed(0)+'&#176;C':'—';tfe.style.color=_col(tf,60,80);
-    var tmo=document.getElementById('temp_motor');tmo.textContent=tm!=null?tm.toFixed(0)+'&#176;C':'—';tmo.style.color=_col(tm,70,90);
+    var tfs=_fmtT(tf),tms=_fmtT(tm);
+    var tfe=document.getElementById('temp_fet');tfe.textContent=tfs||'—';tfe.style.color=tfs?_col(tf,60,80):'var(--mu)';
+    var tmo=document.getElementById('temp_motor');tmo.textContent=tms||'—';tmo.style.color=tms?_col(tm,70,90):'var(--mu)';
     var sk=d.sys||{};
     var ct=sk.cpu_temp,gt=sk.gpu_temp;
-    var cte=document.getElementById('cpu_temp');cte.textContent=ct!=null?ct.toFixed(0)+'&#176;C':'—';cte.style.color=_col(ct,65,80);
-    var gte=document.getElementById('gpu_temp');gte.textContent=gt!=null?gt.toFixed(0)+'&#176;C':'—';gte.style.color=_col(gt,70,85);
+    var cts=_fmtT(ct),gts=_fmtT(gt);
+    var cte=document.getElementById('cpu_temp');cte.textContent=cts||'—';cte.style.color=cts?_col(ct,65,80):'var(--mu)';
+    var gte=document.getElementById('gpu_temp');gte.textContent=gts||'—';gte.style.color=gts?_col(gt,70,85):'var(--mu)';
     var cpe=document.getElementById('cpu_pct');cpe.textContent=sk.cpu_pct!=null?sk.cpu_pct.toFixed(0)+'%':'—';cpe.style.color=_col(sk.cpu_pct,70,90);
     document.getElementById('ram').textContent=sk.ram_used!=null?sk.ram_used.toFixed(1)+'/'+sk.ram_total.toFixed(1)+' GB':'—';
     var st=d.state||'INIT';
     var nm=document.getElementById('nav_mode');
-    var mc='min',mi='&#8212;';
-    if(st.indexOf('STRAIGHT')>=0||st.indexOf('LANE')>=0){mc='mst';mi='&#8593;';}
-    else if(st.indexOf('UTURN')>=0){mc='mut';mi='&#8617;';}
-    else if(st.indexOf('CORNER')>=0){mc='mco';mi='&#8599;';}
+    var mc='min',mi='→';
+    if(st.indexOf('STRAIGHT')>=0||st.indexOf('LANE')>=0){mc='mst';mi='↑';}
+    else if(st.indexOf('UTURN')>=0){mc='mut';mi='↩';}
+    else if(st.indexOf('CORNER')>=0){mc='mco';mi='↗';}
     nm.className='mb '+mc;nm.textContent=mi+' '+st;
     var sv=d.steer||0;
     var se=document.getElementById('steer_v');se.textContent=(sv>=0?'+':'')+sv.toFixed(2);se.style.color=Math.abs(sv)>0.8?'var(--or)':'var(--tx)';
@@ -517,9 +529,9 @@ setInterval(function(){
     _umode(d.gp_mode||'auto');
     var gl=document.getElementById('gp_led');
     gl.className='led'+(d.gp_active?' on':'');
-    document.getElementById('gp_st').textContent=d.gp_active?'manette: '+d.gp_mode:'manette: non connect&#233;e';
+    document.getElementById('gp_st').textContent=d.gp_active?'manette: '+d.gp_mode:'manette: non connectée';
     if(d.mapper_on!==_co){_co=d.mapper_on;_ucarto();}
-    document.getElementById('carto_st').textContent=d.mapper_on?'&#9679; REC '+d.mapper_wpts+'pts':d.mapper_wpts>0?'idle: '+d.mapper_wpts+'pts':'idle';
+    document.getElementById('carto_st').textContent=d.mapper_on?'● REC '+d.mapper_wpts+'pts':d.mapper_wpts>0?'idle: '+d.mapper_wpts+'pts':'idle';
   }).catch(function(){});
 },500);
 </script></body></html>"""

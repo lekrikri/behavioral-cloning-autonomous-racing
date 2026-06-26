@@ -556,9 +556,9 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
     rejected = np.zeros_like(mask)
     roi_top  = int(CAM_H * 0.35)
     # Seuils adaptés selon l'état de virage
-    _area_min       = 300  if corner_mode else 600
+    _area_min       = 150  if corner_mode else 600   # 300→150 : ligne extérieure lointaine très petite
     # Accepte les lignes hautes dans l'image (lointaines) — la voiture est toujours ENTRE 2 lignes
-    _y_bot_thresh   = int(CAM_H * 0.25) if corner_mode else int(CAM_H * 0.35)
+    _y_bot_thresh   = int(CAM_H * 0.18) if corner_mode else int(CAM_H * 0.35)  # 0.25→0.18
     _compact_thresh = 4000
     _asp_compact    = 1.3  if corner_mode else 2.5
 
@@ -596,7 +596,11 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
             reason = "high"
         else:
             asp = float(max(bw, bh)) / max(min(bw, bh), 1)
-            if asp < _asp_compact and area < _compact_thresh:
+            _is_high_blob = (y_bot < int(CAM_H * 0.40))
+            # En corner_mode + blob haut (ligne extérieure lointaine) : filtre compact désactivé
+            if corner_mode and _is_high_blob:
+                pass   # ligne lointaine en virage → accepter même si petite et compacte
+            elif asp < _asp_compact and area < _compact_thresh:
                 reason = "compact"  # trop carré → reflet, logo, chaussure, mur compact
             else:
                 # PCA orientation : blobs MOYENS seulement (les vraies lignes ont area > 5000)
@@ -637,7 +641,7 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
     return clean, rejected
 
 
-def find_lane_histogram(mask, prev_left=None, prev_right=None):
+def find_lane_histogram(mask, prev_left=None, prev_right=None, y_start_frac=0.40):
     """
     Détecte les deux lignes de piste par histogramme de colonnes.
 
@@ -649,7 +653,7 @@ def find_lane_histogram(mask, prev_left=None, prev_right=None):
       left_cx / right_cx : position pixel du pic gauche/droit, None si non détecté
       left_conf / right_conf : énergie du pic (somme pixels blancs dans la colonne)
     """
-    y_start = int(CAM_H * 0.40)   # scan depuis 40% → détecte les lignes lointaines
+    y_start = int(CAM_H * y_start_frac)   # scan depuis y_start_frac (0.30 en CORNER)
     y_end   = int(CAM_H * 0.97)
     roi = mask[y_start:y_end, :]
 
@@ -1060,7 +1064,8 @@ class PDController:
 
         # ── Détection lignes : Histogramme sliding + Scanlines + Fusion ─────
         hist_l, hist_r, hist_lconf, hist_rconf = find_lane_histogram(
-            mask_clean, prev_left=self.hist_prev_left, prev_right=self.hist_prev_right)
+            mask_clean, prev_left=self.hist_prev_left, prev_right=self.hist_prev_right,
+            y_start_frac=0.30 if self.corner_mode else 0.40)
         scan_l, scan_r, scan_rows, scan_left_hits, scan_right_hits = find_lane_scanlines(mask_clean)
 
         # ── Estimation courbure polyfit scanlines (anticipation virage) ──────
@@ -1239,6 +1244,9 @@ class PDController:
                 self.last_corner_steer = self.last_steering_cmd
                 self.left_age  = min(self.left_age, 3)
                 self.right_age = min(self.right_age, 3)
+                # Reset Kalman : efface l'inertie de l'erreur forcée (-220) en CORNER
+                self.kalman.reset()
+                self.err_smooth = 0.0
                 print("[ctrl] CORNER fin {} angle={:.0f}deg frames_restants={}".format(
                     "U" if self.is_u_turn else "S",
                     math.degrees(self.corner_imu_angle), self.corner_count))
@@ -1306,8 +1314,8 @@ class PDController:
                                   and _tw_c > 80)
                 if _car_between_c:
                     _center_c = (left_cx + right_cx) // 2
-                    # Apex dynamique selon courbure mesurée (racing line)
-                    _bias_map = {"straight": 15, "medium": 30, "tight": 50, "uturn": 80}
+                    # Apex dynamique selon courbure mesurée (valeurs réduites pour éviter sur-correction)
+                    _bias_map = {"straight": 8, "medium": 15, "tight": 25, "uturn": 50}
                     _inner_bias = _bias_map.get(self.curv_class,
                                                 CORNER_INNER_BIAS_U if self.is_u_turn
                                                 else CORNER_INNER_BIAS_S)

@@ -1578,31 +1578,25 @@ def find_lane_histogram(mask, prev_left=None, prev_right=None, y_start_frac=0.40
     return left_cx, right_cx, left_peak, right_peak
 
 
-def find_lane_scanlines(mask, n_lines=6):
+def find_lane_scanlines(mask, n_lines=12):
     """
     Raycasts horizontaux pour détecter le bord INTÉRIEUR de chaque ligne de piste.
 
     Stratégie : chercher depuis chaque moitié de l'image vers le centre.
-      - Moitié gauche (x=0 à mid-30) : le blanc le plus proche du centre = bord intérieur ligne gauche
-      - Moitié droite (x=mid+30 à CAM_W) : le blanc le plus proche du centre = bord intérieur ligne droite
+      - Moitié gauche (x=0 à mid-MARGIN) : blanc le plus proche du centre = bord intérieur ligne gauche
+      - Moitié droite (x=mid+MARGIN à CAM_W) : blanc le plus proche du centre = bord intérieur ligne droite
 
-    Avantage : insensible au bruit vert central (on ne part pas du centre, on évite cette zone).
-    Les vraies lignes de piste sont en dehors de la zone centrale.
-
-    Returns: (left_cx, right_cx, scanline_rows, left_hits, right_hits)
-      left_cx / right_cx : médiane des touches, None si aucune touche
-      scanline_rows : liste des y des scanlines (pour visu)
-      left_hits / right_hits : liste des touches (x, y) pour visu
+    Plage étendue 50%-93% : couvre les lignes proches ET lointaines (virages, lignes à l'horizon).
+    Seuil MIN_WHITES adaptatif : plus permissif en haut (lignes fines et lointaines).
     """
-    mid_x = CAM_W // 2
-    MARGIN = 38   # zone morte autour du centre (prop. 30/512*640)
-    MIN_WHITES = 4  # nombre minimum de pixels blancs pour valider une touche
+    mid_x  = CAM_W // 2
+    MARGIN = 38   # zone morte autour du centre
 
-    # Scanlines de 65% à 90% de la hauteur — zone proche, lignes larges et nettes
-    rows = [int(CAM_H * (0.65 + i * (0.25 / max(n_lines - 1, 1)))) for i in range(n_lines)]
+    # Scanlines de 50% à 93% — plage étendue vers le haut pour voir les lignes lointaines
+    rows = [int(CAM_H * (0.50 + i * (0.43 / max(n_lines - 1, 1)))) for i in range(n_lines)]
 
-    left_xs   = []
-    right_xs  = []
+    left_xs    = []
+    right_xs   = []
     left_hits  = []
     right_hits = []
 
@@ -1610,28 +1604,30 @@ def find_lane_scanlines(mask, n_lines=6):
         r = min(r, CAM_H - 1)
         line = mask[r, :]
 
-        # Moitié gauche : bord intérieur de la ligne gauche = blanc le plus proche du centre
+        # Seuil adaptatif : lignes lointaines (haut image = petit r) sont plus fines
+        frac_y  = r / float(CAM_H)           # 0=haut, 1=bas
+        min_w   = max(2, int(frac_y * 6))    # 2px en haut → 5px en bas
+
+        # Moitié gauche : bord intérieur ligne gauche
         whites_l = np.where(line[:mid_x - MARGIN] > 0)[0]
-        if len(whites_l) >= MIN_WHITES:
-            hit_l = int(whites_l[-1])   # le plus à droite = bord intérieur
-            # Validation continuité verticale : la ligne doit exister aussi 3px au-dessus
+        if len(whites_l) >= min_w:
+            hit_l = int(whites_l[-1])
             if r >= 3:
                 above = int(np.sum(mask[r - 3:r, max(0, hit_l - 3):hit_l + 4]))
-                if above >= 3 * 255:  # au moins 3 pixels blancs au-dessus
+                if above >= min_w * 255:
                     left_xs.append(hit_l)
                     left_hits.append((hit_l, r))
             else:
                 left_xs.append(hit_l)
                 left_hits.append((hit_l, r))
 
-        # Moitié droite : bord intérieur de la ligne droite = blanc le plus proche du centre
+        # Moitié droite : bord intérieur ligne droite
         whites_r = np.where(line[mid_x + MARGIN:] > 0)[0]
-        if len(whites_r) >= MIN_WHITES:
-            hit_r = int(mid_x + MARGIN + whites_r[0])  # le plus à gauche = bord intérieur
-            # Validation continuité verticale
+        if len(whites_r) >= min_w:
+            hit_r = int(mid_x + MARGIN + whites_r[0])
             if r >= 3:
                 above = int(np.sum(mask[r - 3:r, hit_r - 3:min(CAM_W, hit_r + 4)]))
-                if above >= 3 * 255:
+                if above >= min_w * 255:
                     right_xs.append(hit_r)
                     right_hits.append((hit_r, r))
             else:

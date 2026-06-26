@@ -21,7 +21,8 @@ _DEFAULTS = {
     # perception
     "N_RAYS": 20, "RAY_MAX_M": 4.0, "ROW_BAND_LO": 0.0, "ROW_BAND_HI": 1.0,
     # hub / telemetry
-    "HUB_HOST": "127.0.0.1", "HUB_PORT": 8077, "HUB_IMU_PORT": 8078, "TELEMETRY_PORT": 5602,
+    "HUB_HOST": "127.0.0.1", "HUB_PORT": 8077, "HUB_IMU_PORT": 8078,
+    "HUB_DEPTH_PORT": 8079, "TELEMETRY_PORT": 5602, "DEPTH_FILTER_TOL": 0.35,
     # occupancy grid
     "GRID_RES_M": 0.05, "GRID_SIZE_M": 20.0,
 }

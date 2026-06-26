@@ -479,6 +479,9 @@ def main():
     pipeline = dai.Pipeline()
 
     cam = pipeline.create(dai.node.ColorCamera)
+    # Full FOV : ISP downscale 1080P → 640×360 puis crop → 640×320
+    cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+    cam.setIspScale(1, 3)          # 1920×1080 → 640×360 plein capteur
     cam.setPreviewSize(CAM_W, CAM_H)
     cam.setInterleaved(False)
     cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)

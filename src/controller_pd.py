@@ -792,6 +792,7 @@ class MJPEGHandler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0].rstrip("/") or "/"
         if path == "/stop":
             _drive_enabled = False
+            _gp_mode[0] = "auto"  # coupe aussi le TELEOP manette
             self._send_text("STOPPED")
             print("[ctrl] /stop recu")
             return

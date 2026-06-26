@@ -1427,11 +1427,11 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
     rejected = np.zeros_like(mask)
     roi_top  = int(CAM_H * 0.35)
     # Seuils adaptés selon l'état de virage
-    _area_min       = 150  if corner_mode else 600   # 300→150 : ligne extérieure lointaine très petite
+    _area_min       = 150  if corner_mode else 500
     # Accepte les lignes hautes dans l'image (lointaines) — la voiture est toujours ENTRE 2 lignes
-    _y_bot_thresh   = int(CAM_H * 0.18) if corner_mode else int(CAM_H * 0.35)  # 0.25→0.18
+    _y_bot_thresh   = int(CAM_H * 0.18) if corner_mode else int(CAM_H * 0.22)
     _compact_thresh = 4000
-    _asp_compact    = 1.3  if corner_mode else 2.5
+    _asp_compact    = 1.3  if corner_mode else 2.0
 
     # Pré-calcul Sobel sur image grise (une seule fois pour toutes les composantes)
     sobel_mag = None
@@ -1455,9 +1455,9 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
         # La voiture est TOUJOURS entre les 2 lignes → ne pas rejeter les blobs côté gauche
         _in_wall_zone = (bx + bw < CAM_W * 0.10 and by + bh < CAM_H * 0.25)
 
-        # Blob très allongé = vraie ligne de piste → pas de contrainte de position verticale
+        # Blob allongé = vraie ligne de piste → pas de contrainte de position verticale
         _asp_early = float(max(bw, bh)) / max(min(bw, bh), 1)
-        _is_long_line = (_asp_early > 4.0)
+        _is_long_line = (_asp_early > 3.0)   # 4.0→3.0 : fermeture horiz épaissit les lignes diag
 
         if area < _area_min:
             reason = "small"
@@ -1929,7 +1929,11 @@ class PDController:
         mask_clean, mask_rejected = clean_mask_artifacts(mask, bgr=bgr, corner_mode=self.corner_mode)
 
         # ── FanRays en éventail depuis bas-centre ──────────────────────────
-        fan_vals = self.fr(mask_clean)
+        # Masque brut + fermeture horizontale uniquement : clean_mask_artifacts rejette
+        # les blobs hauts/petits → lignes lointaines du fond de piste invisibles pour FanRays.
+        _kh = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 3))
+        mask_fan = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, _kh)
+        fan_vals = self.fr(mask_fan)
         fan_pts  = self.fr.endpoints(fan_vals)
         # fan_asym : tiers gauche vs tiers droite — signal de virage diagonal
         _nf = len(fan_vals)

@@ -1233,18 +1233,30 @@ def push_frame(bgr, mask, info, rejected_blobs=None):
     for (hx, hy) in info.get("scan_right_hits", []):
         cv2.line(vis, (mid_x, hy), (hx, hy), (0, 80, 255), 1)
         cv2.circle(vis, (hx, hy), 4, (0, 0, 255), -1)
-    # FanRays ÉVENTAIL style raycasting classique — lignes bleues + point vert sur impact
+    # FanRays ÉVENTAIL — cône semi-transparent + lignes bleues + points verts sur impact
     fan_pts  = info.get("fan_endpoints", [])
     fan_vals = info.get("fan_rays", [])
     if fan_pts and fan_vals:
         ox, oy = CAM_W // 2, CAM_H - 1
-        RAY_COLOR = (180, 90, 10)   # bleu-acier (BGR)
-        HIT_COLOR = (0, 220, 20)    # vert vif (BGR)
+        # Couche 1 : triangles semi-transparents entre rayons adjacents (cône)
+        _ov = np.zeros_like(vis)
+        for i in range(len(fan_pts) - 1):
+            ex1, ey1 = fan_pts[i]
+            ex2, ey2 = fan_pts[i + 1]
+            rv = (float(fan_vals[i]) + float(fan_vals[i + 1])) * 0.5
+            # Bleu-cyan si libre, sombre si bloqué
+            b = int(160 * rv)
+            g = int(80  * rv)
+            tri = np.array([[ox, oy], [ex1, ey1], [ex2, ey2]], np.int32)
+            cv2.fillPoly(_ov, [tri], (b, g, 0))
+        vis = cv2.addWeighted(vis, 1.0, _ov, 0.30, 0)
+        # Couche 2 : lignes bleues fines (opaques)
+        RAY_COLOR = (200, 80, 0)    # bleu-acier BGR
+        HIT_COLOR = (0, 230, 30)    # vert vif BGR
         for i, (ex, ey) in enumerate(fan_pts):
             rv  = float(fan_vals[i]) if i < len(fan_vals) else 1.0
-            hit = rv < 0.97
             cv2.line(vis, (ox, oy), (ex, ey), RAY_COLOR, 1)
-            if hit:
+            if rv < 0.97:
                 cv2.circle(vis, (ex, ey), 4, HIT_COLOR, -1)
     # Point VERT = midpoint de contrôle réel (ce que suit la voiture)
     # Le trait bleu = direction de steering, part du bas-centre vers le point vert
@@ -1826,7 +1838,7 @@ class PDController:
         )
         self.fr           = FanRays(
             img_width=CAM_W, img_height=CAM_H,
-            n_rays=32, angle_min=-75.0, angle_max=75.0,
+            n_rays=48, angle_min=-80.0, angle_max=80.0,
         )
 
     def _pd(self, err):
@@ -1919,6 +1931,12 @@ class PDController:
         # ── FanRays en éventail depuis bas-centre ──────────────────────────
         fan_vals = self.fr(mask_clean)
         fan_pts  = self.fr.endpoints(fan_vals)
+        # fan_asym : tiers gauche vs tiers droite — signal de virage diagonal
+        _nf = len(fan_vals)
+        _ft = _nf // 3
+        fan_left_open  = float(np.mean(fan_vals[:_ft]))
+        fan_right_open = float(np.mean(fan_vals[2 * _ft:]))
+        fan_asym = fan_right_open - fan_left_open   # >0 = espace droite = virage droite
 
         # ── Détection coin L sur mask_clean (pas le masque brut) ──────────
         # Utiliser mask_clean évite les faux corner_blob sur panneaux/murs ambiants blancs.
@@ -2019,7 +2037,9 @@ class PDController:
             if corner_blob is not None:
                 self.corner_accum += 3                      # blob compact L = signal fort
             if abs(ray_asym) > 0.28:
-                self.corner_accum += 1                      # asymétrie raycasts
+                self.corner_accum += 1                      # asymétrie VisualRays verticaux
+            if abs(fan_asym) > 0.20:
+                self.corner_accum += 2                      # asymétrie FanRays diagonaux (plus fiable)
             if abs(d_asym) > 0.12:
                 self.corner_accum += 1                      # dérivée : courbe s'amorce tôt
             if self.prev_n_blobs == 2 and n_blobs == 1:
@@ -2371,7 +2391,7 @@ class PDController:
                         "hist_left_cx": hist_l, "hist_right_cx": hist_r,
                         "scan_left_hits": scan_left_hits,
                         "scan_right_hits": scan_right_hits,
-                        "fan_rays": fan_vals.tolist(), "fan_endpoints": fan_pts,
+                        "fan_rays": fan_vals.tolist(), "fan_endpoints": fan_pts, "fan_asym": round(fan_asym, 2),
                         "mask_rejected": mask_rejected,
                         "mask_clean": mask_clean,
                     }

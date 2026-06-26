@@ -547,6 +547,10 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
 
     Retourne (mask_clean, rejected_mask) pour la visualisation.
     """
+    # Fermeture horizontale : fusionne les fragments d'une même ligne (coupures en perspective)
+    kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel_h)
+
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     clean    = np.zeros_like(mask)
     rejected = np.zeros_like(mask)

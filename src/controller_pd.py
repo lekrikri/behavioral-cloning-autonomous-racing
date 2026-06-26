@@ -1497,16 +1497,18 @@ class PDController:
                 if _car_between_c:
                     _center_c = (left_cx + right_cx) // 2
                     _both_real = (self.left_age == 0 and self.right_age == 0)
+                    _err_force_c = U_ERR_FORCE if self.is_u_turn else 220.0
                     if _both_real:
-                        # Deux vraies lignes vues → err = milieu exact, pas d'inner_bias
                         err = _center_c - CAM_W // 2 - effective_offset
                     else:
-                        # Au moins une ligne prédite → légère poussée vers l'intérieur
                         _bias_map = {"straight": 8, "medium": 15, "tight": 25, "uturn": 50}
                         _inner_bias = _bias_map.get(self.curv_class,
                                                     CORNER_INNER_BIAS_U if self.is_u_turn
                                                     else CORNER_INNER_BIAS_S)
                         err = (_center_c - CAM_W // 2 - effective_offset) - _inner_bias * self.corner_dir
+                    # Si le centrage contredit la direction du virage → forcer
+                    if err * self.corner_dir < 0:
+                        err = self.corner_dir * _err_force_c
                     _center_used = True
             if not _center_used:
                 _err_force = U_ERR_FORCE if self.is_u_turn else 220.0

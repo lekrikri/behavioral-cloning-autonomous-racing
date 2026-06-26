@@ -605,11 +605,13 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
                         if _ang < 15.0 and bw > 100:
                             reason = "horizontal"
 
-                # Sobel : désactivé en CORNER et pour les blobs lointains
-                # Les lignes lointaines sont naturellement floues (perspective) → gradient faible
+                # Sobel : désactivé en CORNER, pour les blobs lointains, et pour les lignes longues
+                # Les lignes lointaines (perspective) et les blobs très allongés (vraies lignes)
+                # ont un gradient naturellement faible → ne pas les rejeter
                 _proche = (y_bot > int(CAM_H * 0.75) or asp < 1.5)
-                _lointain = (y_bot < int(CAM_H * 0.60))
-                if reason is None and not corner_mode and not _lointain and sobel_mag is not None and area < 8000 and not _proche:
+                _lointain = (y_bot < int(CAM_H * 0.75))   # désactivé pour tout ce qui n'est pas très proche
+                _vraie_ligne = (asp > 4.0)                 # blob très allongé = forcément une ligne
+                if reason is None and not corner_mode and not _lointain and not _vraie_ligne and sobel_mag is not None and area < 8000 and not _proche:
                     kernel3 = np.ones((3, 3), np.uint8)
                     blob_u8 = blob_mask.astype(np.uint8) * 255
                     border  = cv2.dilate(blob_u8, kernel3) - blob_u8

@@ -180,9 +180,9 @@ CAM_FPS      = 15
 
 HSV_LOW      = np.array([0,   0, 150], dtype=np.uint8)   # V>=150 (adapté éclairage faible)
 HSV_HIGH     = np.array([180, 45, 255], dtype=np.uint8)  # S<=45 (blanc incluant reflets tamisés)
-ROI_FAR      = 0.65
-ROI_MID      = 0.80
-ROI_NEAR     = 0.92
+ROI_FAR      = 0.40   # élargi : scan depuis 40% → voit les 2 lignes en virage
+ROI_MID      = 0.65
+ROI_NEAR     = 0.85
 ROI_BOTTOM   = 1.00
 MIN_BLOB_AREA  = 1250   # prop. 800 * 640*320/(512*256)
 MIN_CORNER_AREA = 9375  # prop. 6000 * 1.5625
@@ -550,12 +550,13 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     clean    = np.zeros_like(mask)
     rejected = np.zeros_like(mask)
-    roi_top  = int(CAM_H * 0.52)
+    roi_top  = int(CAM_H * 0.35)
     # Seuils adaptés selon l'état de virage
-    _area_min       = 400  if corner_mode else 800
-    _y_bot_thresh   = int(CAM_H * 0.40) if corner_mode else int(CAM_H * 0.62)
-    _compact_thresh = 4000  # inutilisé en CORNER (asp assoupli)
-    _asp_compact    = 1.3  if corner_mode else 2.5  # CORNER : seulement blobs carrés/ronds
+    _area_min       = 300  if corner_mode else 600
+    # Accepte les lignes hautes dans l'image (lointaines) — la voiture est toujours ENTRE 2 lignes
+    _y_bot_thresh   = int(CAM_H * 0.25) if corner_mode else int(CAM_H * 0.35)
+    _compact_thresh = 4000
+    _asp_compact    = 1.3  if corner_mode else 2.5
 
     # Pré-calcul Sobel sur image grise (une seule fois pour toutes les composantes)
     sobel_mag = None
@@ -575,8 +576,9 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
         blob_mask = (labels == i)
 
         reason = None
-        # Coin supérieur gauche (x<160, y<80) = zone mur/décor → toujours rejeter
-        _in_wall_zone = (bx + bw < CAM_W * 0.25 and by + bh < CAM_H * 0.40)
+        # Zone mur réduite : seulement le coin extrême supérieur gauche (décor/mur fixe)
+        # La voiture est TOUJOURS entre les 2 lignes → ne pas rejeter les blobs côté gauche
+        _in_wall_zone = (bx + bw < CAM_W * 0.10 and by + bh < CAM_H * 0.25)
 
         if area < _area_min:
             reason = "small"
@@ -635,7 +637,7 @@ def find_lane_histogram(mask, prev_left=None, prev_right=None):
       left_cx / right_cx : position pixel du pic gauche/droit, None si non détecté
       left_conf / right_conf : énergie du pic (somme pixels blancs dans la colonne)
     """
-    y_start = int(CAM_H * 0.62)
+    y_start = int(CAM_H * 0.40)   # scan depuis 40% → détecte les lignes lointaines
     y_end   = int(CAM_H * 0.97)
     roi = mask[y_start:y_end, :]
 
@@ -815,7 +817,7 @@ def detect_corner_blob(mask):
     Retourne dict {cx, cy, area} ou None.
     """
     n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cy_min = int(CAM_H * 0.62)  # coin L visible seulement dans le bas (60%+), élimine murs/plafond
+    cy_min = int(CAM_H * 0.45)  # élargi : voit le marqueur de coin plus tôt
     best = None
     for i in range(1, n):
         area = stats[i, cv2.CC_STAT_AREA]

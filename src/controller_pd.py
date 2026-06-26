@@ -270,7 +270,7 @@ class _MaskState:
 
 _mask_state = _MaskState()
 
-_UI_PAGE = b"""<!doctype html><html><head><meta charset=utf-8><title>Virida Robocar</title>
+_UI_PAGE = """<!doctype html><html><head><meta charset=utf-8><title>Virida Robocar</title>
 <style>body{background:#111;color:#ddd;font-family:monospace;margin:0;padding:8px}
 img{max-width:100%;border:1px solid #333}
 button{background:#222;color:#ddd;border:1px solid #444;padding:6px 10px;margin:2px;cursor:pointer;font-family:monospace}
@@ -390,11 +390,12 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             print("[track] /finish_map recu")
             return
         if path == "/":
+            body = _UI_PAGE.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(_UI_PAGE)))
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(_UI_PAGE)
+            self.wfile.write(body)
             return
         if path == "/key":
             from urllib.parse import parse_qs, urlparse as _up

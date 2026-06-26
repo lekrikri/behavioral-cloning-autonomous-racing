@@ -602,6 +602,7 @@ _calibrate_result  = [None]        # renseigné par PDController avec la valeur 
 _finish_map_request = [False]      # mis à True par /finish_map → sauvegarde track_map.json
 _map_ts_path        = [None]       # chemin horodaté pour la prochaine sauvegarde
 _mapper_ref         = [None]       # référence au TrackMapper actif (pour /map.svg)
+_map_file           = "track_map.json"  # chemin JSON principal (initialisé par run())
 
 # ── Gamepad (manette Logitech F710 XInput) ────────────────────────────────────
 _gp_active   = [False]   # True si thread gamepad tourne et manette connectée
@@ -879,7 +880,7 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             else:
                 import time as _tt
                 ts = _tt.strftime("%Y%m%d_%H%M%S")
-                base = args.map_file.replace(".json", "_{}.json".format(ts))
+                base = _map_file.replace(".json", "_{}.json".format(ts))
                 _map_ts_path[0] = base
                 # Fermer le segment courant et arrêter is_mapping immédiatement
                 # (évite la race condition avec le poll télémétrie 500ms)
@@ -915,7 +916,7 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             return
         if path == "/maps":
             import json as _json, glob as _glob, os as _os
-            data_dir = _os.path.dirname(_os.path.abspath(args.map_file)) or "."
+            data_dir = _os.path.dirname(_os.path.abspath(_map_file)) or "."
             files = sorted(_glob.glob(_os.path.join(data_dir, "track_map*.json")), reverse=True)
             maps = []
             for f in files:
@@ -983,7 +984,7 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             qp = parse_qs(_up3(self.path).query)
             name = qp.get("name", [None])[0]
             if name:
-                data_dir = _os.path.dirname(_os.path.abspath(args.map_file)) or "."
+                data_dir = _os.path.dirname(_os.path.abspath(_map_file)) or "."
                 svg_name = name if name.endswith(".svg") else name.replace(".json", "") + ".svg"
                 svg_path = _os.path.join(data_dir, _os.path.basename(svg_name))
                 try:
@@ -1009,7 +1010,7 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             if not name:
                 self._send_text("ERREUR: nom manquant")
                 return
-            data_dir = _os.path.dirname(_os.path.abspath(args.map_file)) or "."
+            data_dir = _os.path.dirname(_os.path.abspath(_map_file)) or "."
             base = _os.path.basename(name.replace(".json", ""))
             json_path = _os.path.join(data_dir, base + ".json")
             svg_path  = _os.path.join(data_dir, base + ".svg")
@@ -2534,7 +2535,8 @@ def load_replay(path):
 
 
 def run(args):
-    global ROI_FAR, ROI_MID, ROI_NEAR
+    global ROI_FAR, ROI_MID, ROI_NEAR, _map_file
+    _map_file = args.map_file  # rend le chemin accessible au handler HTTP
     if args.roi_far is not None:
         ROI_FAR = args.roi_far
     elif args.cam_crop_top > 0:

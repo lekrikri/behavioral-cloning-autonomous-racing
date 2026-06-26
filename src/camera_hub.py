@@ -15,7 +15,8 @@ preview + conduite autonome simultanées.
   c = FrameClient(port=8077); c.connect()
   bgr = c.getCvFrame()        # derniere frame BGR (HxWx3 uint8)
 
-Protocole (binaire, localhost) : header [magic 'RC' | H u16 | W u16 | seq u32] + raw BGR.
+Protocole frames (binaire, localhost) : header [magic 'RC' | H u16 | W u16 | seq u32] + raw BGR.
+Protocole IMU (port+1) : float32 BE gyro_z en continu à ~50Hz (4 bytes par paquet).
 Frames brutes (non compressées) = sans perte, idéal pour la perception ; négligeable sur localhost.
 """
 
@@ -81,6 +82,7 @@ class _Hub:
         self.lock = threading.Lock()
         self.frame = None
         self.seq = 0
+        self.gyro_z = 0.0
         self.running = True
 
     def set(self, frame):
@@ -88,9 +90,17 @@ class _Hub:
             self.frame = frame
             self.seq = (self.seq + 1) & 0xFFFFFFFF
 
+    def set_gyro(self, gz):
+        with self.lock:
+            self.gyro_z = gz
+
     def snapshot(self):
         with self.lock:
             return self.seq, self.frame
+
+    def get_gyro(self):
+        with self.lock:
+            return self.gyro_z
 
 
 def _capture(hub):
@@ -100,6 +110,7 @@ def _capture(hub):
         try:
             attempt += 1
             pipeline = dai.Pipeline()
+
             cam = pipeline.create(dai.node.ColorCamera)
             # Full FOV : ISP downscale 1080P -> 640x360 plein capteur (memes params que controller)
             cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
@@ -111,12 +122,27 @@ def _capture(hub):
             xout = pipeline.create(dai.node.XLinkOut)
             xout.setStreamName("rgb")
             cam.preview.link(xout.input)
+
+            # IMU — gyroscope BMI270 (GYROSCOPE_RAW uniquement sur OAK-D Lite)
+            imu_node = pipeline.create(dai.node.IMU)
+            imu_node.enableIMUSensor([dai.IMUSensor.GYROSCOPE_RAW], 100)
+            imu_node.setBatchReportThreshold(1)
+            imu_node.setMaxBatchReports(10)
+            xout_imu = pipeline.create(dai.node.XLinkOut)
+            xout_imu.setStreamName("imu")
+            imu_node.out.link(xout_imu.input)
+
             with dai.Device(pipeline) as device:
-                q = device.getOutputQueue("rgb", maxSize=1, blocking=False)
+                q     = device.getOutputQueue("rgb", maxSize=1,  blocking=False)
+                q_imu = device.getOutputQueue("imu", maxSize=50, blocking=False)
                 print("[hub] OAK-D OK (attempt {}) — diffuse les frames".format(attempt))
                 attempt = 0
                 while hub.running:
                     hub.set(q.get().getCvFrame())
+                    imu_data = q_imu.tryGet()
+                    if imu_data:
+                        for pkt in imu_data.packets:
+                            hub.set_gyro(pkt.gyroscope.z)
         except KeyboardInterrupt:
             break
         except Exception as e:
@@ -143,15 +169,50 @@ def _serve_client(conn, hub):
         conn.close()
 
 
+def _serve_imu_clients(hub, imu_port):
+    """Diffuse gyro_z (float32 BE, 4 bytes) en continu à ~50Hz sur imu_port."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("0.0.0.0", imu_port))
+    srv.listen(4)
+    srv.settimeout(1.0)
+    print("[hub] IMU stream sur :{}".format(imu_port))
+
+    def _imu_client(conn):
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        try:
+            while hub.running:
+                conn.sendall(struct.pack(">f", hub.get_gyro()))
+                time.sleep(0.02)  # ~50Hz
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            conn.close()
+
+    while hub.running:
+        try:
+            conn, _ = srv.accept()
+            threading.Thread(target=_imu_client, args=(conn,), daemon=True).start()
+        except socket.timeout:
+            continue
+    srv.close()
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port",   type=int, default=8077)
-    parser.add_argument("--width",  type=int, default=512)
-    parser.add_argument("--height", type=int, default=256)
+    parser.add_argument("--port",     type=int, default=8077)
+    parser.add_argument("--imu-port", type=int, default=8078,
+                        help="Port stream IMU gyro_z (0 = désactivé, défaut 8078)")
+    parser.add_argument("--width",    type=int, default=512)
+    parser.add_argument("--height",   type=int, default=256)
     args = parser.parse_args()
 
     hub = _Hub(args.width, args.height)
     threading.Thread(target=_capture, args=(hub,), daemon=True).start()
+
+    if args.imu_port > 0:
+        threading.Thread(target=_serve_imu_clients, args=(hub, args.imu_port),
+                         daemon=True).start()
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

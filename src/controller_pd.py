@@ -2627,10 +2627,32 @@ def run(args):
         from camera_hub import FrameClient
         client = FrameClient(port=args.hub_port)
         print("[ctrl] Source = camera_hub :{}".format(args.hub_port))
+
+        # Thread de lecture gyro_z depuis le port IMU du hub (args.hub_port + 1)
+        _hub_gyro_z = [0.0]
+        def _hub_imu_thread():
+            import socket as _sock
+            import struct as _st
+            imu_port = args.hub_port + 1
+            while True:
+                try:
+                    s = _sock.create_connection(("127.0.0.1", imu_port), timeout=5.0)
+                    s.setsockopt(_sock.IPPROTO_TCP, _sock.TCP_NODELAY, 1)
+                    print("[ctrl] IMU stream connecté sur :{}".format(imu_port))
+                    buf = b""
+                    while True:
+                        buf += s.recv(64)
+                        while len(buf) >= 4:
+                            _hub_gyro_z[0] = _st.unpack(">f", buf[:4])[0]
+                            buf = buf[4:]
+                except Exception:
+                    time.sleep(1.0)
+        threading.Thread(target=_hub_imu_thread, daemon=True).start()
+
         try:
             while True:
                 try:
-                    _step(client.getCvFrame(), gyro_z=0.0)
+                    _step(client.getCvFrame(), gyro_z=_hub_gyro_z[0])
                 except KeyboardInterrupt:
                     raise
                 except (ConnectionError, OSError) as e:

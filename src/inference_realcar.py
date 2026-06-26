@@ -101,6 +101,10 @@ class RealCarInference:
         servo_range: float  = 0.35,
         invert_steer: bool  = False,
         log_csv: bool       = True,
+        perception_mode: str = "depth",
+        mask_mode: str       = "hsv",
+        source: str          = "device",
+        hub_port: int        = 8077,
     ):
         print("\n[RealCar] ══════════════════════════════════════════")
         print("[RealCar]  Behavioral Cloning — Voiture Réelle v18  ")
@@ -135,9 +139,11 @@ class RealCarInference:
         self.ray_mu    = np.array(stats["mean"], dtype=np.float32)
         self.ray_sigma = np.array(stats["std"],  dtype=np.float32)
 
-        self.perception_mode = kwargs.get("perception_mode", "depth")
+        self.perception_mode = perception_mode
+        self.source          = source
+        self.hub_port        = hub_port
         self.depth_bridge    = DepthToRays()
-        self.visual_bridge   = VisualRays(mode=kwargs.get("mask_mode", "hsv"))
+        self.visual_bridge   = VisualRays(mode=mask_mode)
 
         # ── VESC avec params calibrés ─────────────────────────────────────────
         self.vesc = VESCInterface(
@@ -210,7 +216,35 @@ class RealCarInference:
                             self._last_frame_t = time.time()
                 time.sleep(0.005)
 
+    def _perception_visual_hub(self):
+        """Mode visual alimenté par camera_hub (frames TCP) — pas d'ouverture caméra ici.
+        Permet à la preview (mask_stream) et à l'inférence de partager l'OAK-D."""
+        from src.camera_hub import FrameClient
+        client = FrameClient(port=self.hub_port)
+        print(f"[Perception] source = camera_hub :{self.hub_port} — flux VISUAL (masque)")
+        with self._lock:
+            self._last_frame_t     = time.time()
+            self._perception_ready = True
+        while self._running:
+            try:
+                if client.sock is None:
+                    client.connect()
+                bgr = client.getCvFrame()
+            except (ConnectionError, OSError):
+                print("[Perception] hub indisponible — reconnexion…")
+                client.close()
+                time.sleep(0.5)
+                continue
+            rays = self.visual_bridge(bgr)
+            with self._lock:
+                self._latest_rays  = rays
+                self._last_frame_t = time.time()
+        client.close()
+
     def _perception_visual(self):
+        if self.source == "hub":
+            self._perception_visual_hub()
+            return
         device_info = None
         for d in dai.Device.getAllConnectedDevices():
             device_info = d
@@ -248,7 +282,7 @@ class RealCarInference:
             print("[Perception] Aucun device OAK-D trouvé")
             return
 
-        import depthai as dai as dai_mod
+        import depthai as dai_mod
         # Pipeline couleur + depth sur le même device
         with dai_mod.Device(device_info) as device:
             # Couleur
@@ -431,6 +465,9 @@ def main():
                         help="depth=depth map stéreo | visual=masque HSV/Canny couleur")
     parser.add_argument("--mask-mode",       choices=["hsv", "canny"], default="hsv",
                         help="Mode masque (si --perception-mode visual)")
+    parser.add_argument("--source",   choices=["device", "hub"], default="device",
+                        help="device=ouvre l'OAK-D | hub=lit camera_hub (partage la caméra avec la preview)")
+    parser.add_argument("--hub-port", type=int, default=8077)
     args = parser.parse_args()
 
     RealCarInference(
@@ -445,6 +482,8 @@ def main():
         log_csv          = not args.no_log,
         perception_mode  = args.perception_mode,
         mask_mode        = args.mask_mode,
+        source           = args.source,
+        hub_port         = args.hub_port,
     ).run()
 
 

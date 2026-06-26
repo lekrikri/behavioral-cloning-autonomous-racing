@@ -200,6 +200,9 @@ def run_oak(args):
 
             pipeline = dai.Pipeline()
             cam = pipeline.create(dai.node.ColorCamera)
+            # FOV ~81° : 1080P downscale 1/3 → plein capteur au lieu du crop central (~27°)
+            cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+            cam.setIspScale(1, 3)
             cam.setPreviewSize(args.width, args.height)
             cam.setInterleaved(False)
             cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
@@ -208,7 +211,7 @@ def run_oak(args):
             xout.setStreamName("preview")
             cam.preview.link(xout.input)
 
-            with dai.Device(pipeline, True) as device:
+            with dai.Device(pipeline) as device:
                 q = device.getOutputQueue("preview", maxSize=1, blocking=False)
 
                 with _lock:

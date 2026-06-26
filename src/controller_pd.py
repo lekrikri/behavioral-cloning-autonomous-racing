@@ -840,8 +840,9 @@ def err_from_two_lines(blobs, track_width=None):
     tw_est = int(track_width) if track_width is not None else TRACK_WIDTH_EST_PX
     left_blobs  = [b for b in blobs if b["cx"] < CLEAR_LEFT]
     right_blobs = [b for b in blobs if b["cx"] > CLEAR_RIGHT]
-    left  = max(left_blobs,  key=lambda b: b["area"]) if left_blobs  else None
-    right = max(right_blobs, key=lambda b: b["area"]) if right_blobs else None
+    # Plus proche du centre = ligne intérieure de la piste (ignore lignes extérieures parasites)
+    left  = max(left_blobs,  key=lambda b: b["cx"]) if left_blobs  else None
+    right = min(right_blobs, key=lambda b: b["cx"]) if right_blobs else None
     if left and right:
         center = (left["cx"] + right["cx"]) // 2
         return center - mid_x, right["cx"] - left["cx"]

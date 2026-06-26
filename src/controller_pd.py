@@ -1782,7 +1782,7 @@ class PDController:
             _s_factor = 0.35 if self.is_u_turn else 0.40
             _t_factor = 0.55 if self.is_u_turn else 0.60
             steering = self.last_corner_steer * _s_factor
-            throttle = self.fixed_speed * _t_factor
+            throttle = (self.fixed_speed or V_MAX) * _t_factor
             self.search_frames -= 1
             self.state = "SEARCH"
         elif self.search_frames > 0 and n_blobs >= 2:

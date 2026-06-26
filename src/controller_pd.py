@@ -2319,6 +2319,17 @@ class PDController:
                     if err is None or abs(err) < 30:
                         err = (err or 0.0) + self.last_turn_dir * 50.0
 
+            # Recherche active ligne perdue : dériver doucement vers la ligne manquante
+            # Après 3 frames sans ligne gauche → biais vers la gauche (err négatif)
+            # Après 3 frames sans ligne droite → biais vers la droite (err positif)
+            if err is not None and n_blobs <= 1:
+                if self.left_age > 3 and self.right_age == 0:
+                    _search_bias = min((self.left_age - 3) * 10, 50)
+                    err = err - _search_bias
+                elif self.right_age > 3 and self.left_age == 0:
+                    _search_bias = min((self.right_age - 3) * 10, 50)
+                    err = err + _search_bias
+
         # ── Vitesse adaptative selon courbure (Priorité 3 IA) ─────────────
         curvature = float(np.std(rays))  # std des rays = indicateur de courbure
         if self.fixed_speed is not None:

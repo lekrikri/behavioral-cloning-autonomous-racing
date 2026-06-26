@@ -1051,14 +1051,15 @@ class PDController:
         right_open = float(np.mean(rays[13:]))
         ray_asym   = right_open - left_open  # >0 espace à droite → virage droite
 
-        # ── Détection coin L dans mask_wide (ROI large 45%) ───────────────
-        m_wide = mask_wide if mask_wide is not None else mask
-        corner_blob = detect_corner_blob(m_wide)
-
         # ── Masque nettoyé : supprime artefacts (reflets, chaussures, murs) ──
         # Le masque brut reste pour la visu orange (blobs rejetés).
         # L'histogramme et les scanlines utilisent le masque propre.
         mask_clean, mask_rejected = clean_mask_artifacts(mask, bgr=bgr, corner_mode=self.corner_mode)
+
+        # ── Détection coin L sur mask_clean (pas le masque brut) ──────────
+        # Utiliser mask_clean évite les faux corner_blob sur panneaux/murs ambiants blancs.
+        # Un vrai marqueur L (area≥9375) passe clean_mask_artifacts car area>compact_thresh=4000.
+        corner_blob = detect_corner_blob(mask_clean)
 
         # ── Détection lignes : Histogramme sliding + Scanlines + Fusion ─────
         hist_l, hist_r, hist_lconf, hist_rconf = find_lane_histogram(

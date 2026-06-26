@@ -465,7 +465,7 @@ class MJPEGHandler(BaseHTTPRequestHandler):
                     cur_id = _frame_id
                     jpg    = _latest_jpeg or _placeholder
                 if cur_id == last_id or jpg is None:
-                    time.sleep(0.02)
+                    time.sleep(0.003)
                     continue
                 last_id = cur_id
                 try:

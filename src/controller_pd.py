@@ -371,6 +371,7 @@ _go_reset = [False]         # mis à True par /go → PDController reset son ét
 _calibrate_request = [False]       # mis à True par /calibrate → PDController applique l'offset
 _calibrate_result  = [None]        # renseigné par PDController avec la valeur appliquée
 _finish_map_request = [False]      # mis à True par /finish_map → sauvegarde track_map.json
+_mapper_ref         = [None]       # référence au TrackMapper actif (pour /map.svg)
 
 def _make_placeholder():
     img = np.zeros((CAM_H, CAM_W, 3), dtype=np.uint8)
@@ -429,6 +430,16 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             _finish_map_request[0] = True
             self._send_text("MAPPING_FINISH_REQUESTED")
             print("[track] /finish_map recu")
+            return
+        if path == "/map.svg":
+            svg = _mapper_ref[0].render_svg() if _mapper_ref[0] is not None else "<svg/>"
+            body = svg.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
             return
         if path == "/":
             body = _UI_PAGE.encode("utf-8")
@@ -1953,7 +1964,8 @@ def run(args):
         if args.mapping:
             mapper = TrackMapper()
             mapper.start()
-            print("[track] Mode MAPPING actif -> {}".format(args.map_file))
+            _mapper_ref[0] = mapper
+            print("[track] Mode MAPPING actif -> {}  /map.svg pour preview".format(args.map_file))
         elif args.racing:
             navigator = TrackNavigator()
             ok = navigator.load(args.map_file)
@@ -2026,10 +2038,10 @@ def run(args):
         mask[:int(CAM_H * ROI_FAR), :] = 0
         steering, throttle, info = ctrl.compute(mask, bgr, mask_wide, gyro_z=gyro_z)
         if mapper is not None:
-            mapper.process_frame(gyro_z)
+            mapper.process_frame(gyro_z, throttle_duty=throttle, dt=None)
             if _finish_map_request[0]:
                 _finish_map_request[0] = False
-                mapper.save_map(args.map_file)
+                mapper.save(args.map_file, args.map_file.replace(".json", ".svg"))
                 mapper.summary()
         if navigator is not None:
             nav = navigator.update(gyro_z, info["n_blobs"], info["err"])

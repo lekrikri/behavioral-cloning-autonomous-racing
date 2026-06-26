@@ -1822,7 +1822,32 @@ def parse_args():
                    help="Phase 2 : charge track_map.json et pilote en anticipation IMU")
     p.add_argument("--map-file",    default="track_map.json",
                    help="Chemin du fichier carte (defaut: track_map.json)")
+    p.add_argument("--source",      choices=["device", "hub"], default="device",
+                   help="Source camera : device=OAK-D direct | hub=camera_hub partage")
+    p.add_argument("--hub-port",    type=int, default=8077,
+                   help="Port du camera_hub (--source hub, defaut 8077)")
     return p.parse_args()
+
+
+def _ensure_hub(hub_port, width, height):
+    """Lance camera_hub.py si personne n'écoute déjà sur hub_port."""
+    import socket as _s
+    try:
+        c = _s.create_connection(("127.0.0.1", hub_port), 1.0); c.close()
+        print("[ctrl] camera_hub deja actif sur :{}".format(hub_port))
+        return None
+    except OSError:
+        pass
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    env  = dict(os.environ); env["OPENBLAS_CORETYPE"] = "ARMV8"
+    proc = _sp.Popen(
+        [sys.executable, os.path.join(here, "camera_hub.py"),
+         "--port", str(hub_port), "--width", str(width), "--height", str(height)],
+        env=env)
+    print("[ctrl] camera_hub auto-lance (pid {}) sur :{}".format(proc.pid, hub_port))
+    time.sleep(3.0)
+    return proc
 
 
 def load_replay(path):
@@ -1910,6 +1935,83 @@ def run(args):
     print("[ctrl] Niveau {} | {} | KP={} | offset={}px | steer_max={}".format(
         args.level, speed_str, KP, CAMERA_OFFSET_PX, STEERING_MAX))
 
+    frame_n = [0]
+    t0      = [time.time()]
+
+    def _step(bgr, gyro_z=0.0):
+        """Traite une frame : masque → ctrl → mapper → navigator → VESC → stream → log."""
+        if args.cam_crop_top > 0:
+            y0  = int(CAM_H * args.cam_crop_top)
+            bgr = cv2.resize(bgr[y0:, :], (CAM_W, CAM_H), interpolation=cv2.INTER_LINEAR)
+        _ms      = _mask_state.snapshot()
+        _hsv_low = np.array([0, 0, _ms["hsv_v_min"]], dtype=np.uint8)
+        mask = white_line_mask(
+            bgr, hsv_low=_hsv_low, hsv_high=HSV_HIGH,
+            morph_k=5, blur_k=3, use_clahe=True, min_area=MIN_BLOB_AREA,
+            tophat_k=_ms["tophat_k"], tophat_thresh=_ms["tophat_thresh"],
+            max_fill_ratio=_ms["max_fill"],
+        )
+        mask_wide = mask.copy()
+        mask_wide[:int(CAM_H * 0.45), :] = 0
+        mask[:int(CAM_H * ROI_FAR), :] = 0
+        steering, throttle, info = ctrl.compute(mask, bgr, mask_wide, gyro_z=gyro_z)
+        if mapper is not None:
+            mapper.process_frame(gyro_z)
+            if _finish_map_request[0]:
+                _finish_map_request[0] = False
+                mapper.save_map(args.map_file)
+                mapper.summary()
+        if navigator is not None:
+            nav = navigator.update(gyro_z, info["n_blobs"], info["err"])
+            if info["n_blobs"] == 2 and info["err"] is not None:
+                navigator.notify_vision_stable(info["n_blobs"], info["err"])
+            if info["n_blobs"] == 2:
+                navigator.recover_from_fallback()
+            if nav["action"] != "FALLBACK" and nav["action"] != "STRAIGHT":
+                steering = steering + nav["steering_bias"]
+                steering = max(-STEERING_MAX, min(STEERING_MAX, steering))
+                throttle = throttle * nav["throttle_scale"]
+                info["state"] = "NAV_" + nav["action"].upper()[:8]
+        if replay_data is not None:
+            idx = frame_n[0] % len(replay_data)
+            ref = replay_data[idx]
+            w   = args.replay_weight
+            steering = w * ref["steering"] + (1.0 - w) * steering
+            steering = max(-STEERING_MAX, min(STEERING_MAX, steering))
+            info["state"] = "REPLAY"
+        if record_writer is not None:
+            record_writer.writerow({
+                "frame": frame_n[0], "t": round(time.time() - t0[0], 3),
+                "err": info["err"], "steering": round(steering, 4),
+                "throttle": round(throttle, 4), "state": info["state"],
+                "blobs": info["n_blobs"],
+            })
+        if abs(steering) < 0.5 and throttle > 0:
+            _coast_steer[0] = steering; _coast_throttle[0] = throttle
+        if vesc is not None:
+            vesc.drive(steering, throttle) if _drive_enabled else vesc.stop()
+        if args.stream_port > 0:
+            push_frame(bgr, info.get("mask_clean", mask), info, info.get("rejected_blobs"))
+        _last_frame_time[0] = time.time()
+        frame_n[0] += 1
+        if frame_n[0] % (CAM_FPS * 3) == 0:
+            fps = frame_n[0] / max(time.time() - t0[0], 0.001)
+            mid = CAM_W // 2
+            cx_list = info["blobs_cx"]
+            lefts  = [x for x in cx_list if x < mid]
+            rights = [x for x in cx_list if x >= mid]
+            tw = str(min(rights) - max(lefts)) if lefts and rights else "?"
+            rec_str = " [REC {}f]".format(frame_n[0]) if record_writer else ""
+            rep_str = (" [REPLAY {}/{}]".format(frame_n[0] % len(replay_data),
+                        len(replay_data)) if replay_data else "")
+            print("[ctrl] {:.0f}fps | err={} | steer={:.3f} | thr={:.2f} | {} | "
+                  "blobs={} | cx={} | tw={}px | off={:+.1f} sbias={:+.1f}{}{}".format(
+                      fps,
+                      int(info["err"]) if info["err"] is not None else "N/A",
+                      steering, throttle, info["state"], info["n_blobs"],
+                      cx_list, tw, ctrl.auto_offset, ctrl.servo_bias,
+                      rec_str, rep_str))
+
     # Watchdog : thread qui surveille les frames et force un reset si caméra gelée
     def _watchdog():
         FRAME_TIMEOUT = 30.0  # secondes sans frame → reset forcé (boot MyriadX prend ~15-20s)
@@ -1925,6 +2027,35 @@ def run(args):
     wt = threading.Thread(target=_watchdog, daemon=True)
     wt.start()
 
+    # ── Mode hub : camera_hub partagé (mask_stream + controller simultanés) ────
+    if args.source == "hub":
+        hub_proc = _ensure_hub(args.hub_port, CAM_W, CAM_H)
+        from camera_hub import FrameClient
+        client = FrameClient(port=args.hub_port)
+        print("[ctrl] Source = camera_hub :{}".format(args.hub_port))
+        try:
+            while True:
+                try:
+                    _step(client.getCvFrame(), gyro_z=0.0)
+                except KeyboardInterrupt:
+                    raise
+                except (ConnectionError, OSError) as e:
+                    print("[hub] deconnecte ({}) — reconnexion...".format(e))
+                    client.close()
+                    time.sleep(1.0)
+        except KeyboardInterrupt:
+            print("[ctrl] Arret.")
+        finally:
+            if hub_proc:
+                hub_proc.terminate()
+            if vesc:
+                try: vesc.stop(); vesc.close()
+                except: pass
+            if record_file:
+                record_file.flush(); record_file.close()
+        return
+
+    # ── Mode device : OAK-D direct (recovery, IMU, watchdog) ─────────────────
     attempt = 0
     while True:
         try:
@@ -2078,124 +2209,18 @@ def run(args):
                 if attempt > 1:
                     _camera_restarted[0] = True  # signale au controller de reset Kalman
                 attempt = 0
-                t0 = time.time(); frame_n = 0
+                t0[0] = time.time()
+                _last_gyro_z = [0.0]
 
                 while True:
                     pkt = q.get()
                     bgr = pkt.getCvFrame()
-
-                    # Crop logiciel + zoom : simule inclinaison + focale augmentée
-                    if args.cam_crop_top > 0:
-                        y0 = int(CAM_H * args.cam_crop_top)
-                        bgr = cv2.resize(bgr[y0:, :], (CAM_W, CAM_H),
-                                         interpolation=cv2.INTER_LINEAR)
-
-                    _ms = _mask_state.snapshot()
-                    _hsv_low = np.array([0, 0, _ms["hsv_v_min"]], dtype=np.uint8)
-                    mask = white_line_mask(
-                        bgr, hsv_low=_hsv_low, hsv_high=HSV_HIGH,
-                        morph_k=5, blur_k=3, use_clahe=True, min_area=MIN_BLOB_AREA,
-                        tophat_k=_ms["tophat_k"], tophat_thresh=_ms["tophat_thresh"],
-                        max_fill_ratio=_ms["max_fill"],
-                    )
-                    # Masque large (ROI 45%) pour détection anticipée des coins
-                    mask_wide = mask.copy()
-                    mask_wide[:int(CAM_H * 0.45), :] = 0
-                    # Masque normal (ROI 65%) pour lignes sans bruit fond
-                    mask[:int(CAM_H * ROI_FAR), :] = 0
-
                     # ── Lecture IMU (gyro_z pour mapping/racing) ──────────────
                     imu_data = imu_q.tryGet()
                     if imu_data:
                         for pkt in imu_data.packets:
                             _last_gyro_z[0] = pkt.gyroscope.z
-
-                    steering, throttle, info = ctrl.compute(mask, bgr, mask_wide,
-                                                              gyro_z=_last_gyro_z[0])
-
-                    # ── MODE MAPPING : enregistrement de la piste ─────────────
-                    if mapper is not None:
-                        mapper.process_frame(_last_gyro_z[0])
-                        if _finish_map_request[0]:
-                            _finish_map_request[0] = False
-                            mapper.save_map(args.map_file)
-                            mapper.summary()
-
-                    # ── MODE RACING : anticipation IMU prédictive ─────────────
-                    if navigator is not None:
-                        nav = navigator.update(
-                            _last_gyro_z[0], info["n_blobs"], info["err"])
-                        # Vision stable → réduit drift odométrique
-                        if info["n_blobs"] == 2 and info["err"] is not None:
-                            navigator.notify_vision_stable(info["n_blobs"], info["err"])
-                        # Sortir du fallback si vision récupérée
-                        if info["n_blobs"] == 2:
-                            navigator.recover_from_fallback()
-                        # Fusion additive : PD + bias carte (jamais remplacement)
-                        if nav["action"] != "FALLBACK" and nav["action"] != "STRAIGHT":
-                            steering = steering + nav["steering_bias"]
-                            steering = max(-STEERING_MAX, min(STEERING_MAX, steering))
-                            throttle = throttle * nav["throttle_scale"]
-                            info["state"] = "NAV_" + nav["action"].upper()[:8]
-
-                    # ── MODE REPLAY : feedforward + correction PD ──────────────
-                    if replay_data is not None:
-                        idx = frame_n % len(replay_data)
-                        ref = replay_data[idx]
-                        w = args.replay_weight
-                        # Feedforward (trajectoire mémorisée) + feedback (PD actuel)
-                        steering = w * ref["steering"] + (1.0 - w) * steering
-                        steering = max(-STEERING_MAX, min(STEERING_MAX, steering))
-                        info["state"] = "REPLAY"
-
-                    # ── MODE RECORD : enregistre la frame ─────────────────────
-                    if record_writer is not None:
-                        record_writer.writerow({
-                            "frame":    frame_n,
-                            "t":        round(time.time() - t0, 3),
-                            "err":      info["err"],
-                            "steering": round(steering, 4),
-                            "throttle": round(throttle, 4),
-                            "state":    info["state"],
-                            "blobs":    info["n_blobs"],
-                        })
-
-                    # Mémoriser pour coast mode (crash caméra)
-                    if abs(steering) < 0.5 and throttle > 0:
-                        _coast_steer[0]    = steering
-                        _coast_throttle[0] = throttle
-
-                    if vesc is not None:
-                        if _drive_enabled:
-                            vesc.drive(steering, throttle)
-                        else:
-                            vesc.stop()
-
-                    if args.stream_port > 0:
-                        push_frame(bgr, info.get("mask_clean", mask), info, info.get("rejected_blobs"))
-                    _last_frame_time[0] = time.time()
-
-                    frame_n += 1
-                    if frame_n % (CAM_FPS * 3) == 0:
-                        fps = frame_n / (time.time() - t0)
-                        mid = CAM_W // 2
-                        cx_list = info["blobs_cx"]
-                        lefts  = [x for x in cx_list if x < mid]
-                        rights = [x for x in cx_list if x >= mid]
-                        tw = str(min(rights) - max(lefts)) if lefts and rights else "?"
-                        rec_str = " [REC {}f]".format(frame_n) if record_writer else ""
-                        rep_str = " [REPLAY {}/{}]".format(frame_n % len(replay_data) if replay_data else 0,
-                                                            len(replay_data) if replay_data else 0) if replay_data else ""
-                        print("[ctrl] {:.0f}fps | err={} | steer={:.3f} | "
-                              "thr={:.2f} | {} | blobs={} | cx={} | tw={}px | "
-                              "off={:+.1f} sbias={:+.1f}{}{}".format(
-                                  fps,
-                                  int(info["err"]) if info["err"] is not None else "N/A",
-                                  steering, throttle,
-                                  info["state"], info["n_blobs"],
-                                  cx_list, tw,
-                                  ctrl.auto_offset, ctrl.servo_bias,
-                                  rec_str, rep_str))
+                    _step(bgr, gyro_z=_last_gyro_z[0])
 
         except KeyboardInterrupt:
             print("[ctrl] Arret."); break

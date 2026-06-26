@@ -667,7 +667,7 @@ def _gamepad_thread(js_path, max_duty, deadzone_val, map_file):
             steer = _deadzone(axes.get(_GP_AXIS_STEER, 0.0), deadzone_val)
             rt    = _trig_frac(axes.get(_GP_AXIS_ACCEL, rest_r2), rest_r2)
             lt    = _trig_frac(axes.get(_GP_AXIS_BRAKE, rest_l2), rest_l2)
-            throttle = (rt - lt * 0.6) * max_duty
+            throttle = (rt * 1.0 - lt * 0.5) * max_duty  # forward=100%, reverse=50% (ratio Mathieu)
 
             _gp_steer[0]    = steer
             _gp_throttle[0] = throttle

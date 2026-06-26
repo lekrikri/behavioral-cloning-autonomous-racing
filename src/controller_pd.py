@@ -1686,7 +1686,7 @@ def detect_corner_blob(mask):
         asp  = w / float(h)
         cy   = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT] // 2
         cx   = stats[i, cv2.CC_STAT_LEFT] + w // 2
-        if area >= MIN_CORNER_AREA and asp < 1.5 and cy >= cy_min:
+        if area >= MIN_CORNER_AREA and asp < 3.0 and cy >= cy_min:
             if best is None or area > best["area"]:
                 best = {"cx": cx, "cy": cy, "area": area, "aspect": round(asp, 1)}
     return best
@@ -1994,7 +1994,8 @@ class PDController:
         d_asym = ray_asym - self.prev_ray_asym
         self.prev_ray_asym = ray_asym
 
-        if not self.corner_mode and not self.no_corner and self.corner_release == 0:
+        _force_accum = n_blobs <= 1 and abs(self.err_smooth) > 130  # virage en U urgent
+        if not self.corner_mode and not self.no_corner and (self.corner_release == 0 or _force_accum):
             # Décrémentation naturelle : rémanence ~10 frames
             self.corner_accum = max(0, self.corner_accum - 1)
             # Accumulation multi-signal
@@ -2012,6 +2013,9 @@ class PDController:
                 self.corner_accum += 2                      # courbure forte anticipée
             elif self.curv_class == "uturn":
                 self.corner_accum += 4                      # épingle détectée → déclenche tôt
+            # Virage en U : grande erreur persistante + b≤1 = fin de ligne droite certaine
+            if n_blobs <= 1 and abs(self.err_smooth) > 110:
+                self.corner_accum += 2
 
             if self.corner_accum >= 5:
                 if corner_blob is not None:

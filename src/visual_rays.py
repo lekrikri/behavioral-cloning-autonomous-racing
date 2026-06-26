@@ -224,6 +224,76 @@ class VisualRays:
         return self._mask(bgr_frame)
 
 
+class FanRays:
+    """
+    Rayons en éventail depuis un point d'origine fixe (bas-centre image).
+
+    Contrairement aux VisualRays (colonnes verticales fixes), les FanRays
+    balayent l'espace devant la voiture dans n_rays directions angulaires
+    depuis un unique point d'origine.  Chaque rayon s'arrête dès qu'il
+    touche un pixel blanc (ligne de piste) dans le masque binaire.
+
+    Paramètres :
+      n_rays       : nombre de rayons (32 par défaut)
+      angle_min/max: plage angulaire en degrés depuis la verticale
+                     0° = droit vers le haut, -70° = gauche, +70° = droite
+      origin_x/y   : point d'origine en px (défaut : bas-centre image)
+      max_len      : longueur max des rayons en px (défaut : img_height-1)
+
+    Valeurs retournées par __call__ :
+      0.0 → ligne blanche détectée tout proche
+      1.0 → direction libre (pas de ligne dans cette direction)
+    """
+
+    def __init__(self, img_width=640, img_height=320, n_rays=32,
+                 angle_min=-75.0, angle_max=75.0,
+                 origin_x=None, origin_y=None, max_len=None):
+        self.W        = img_width
+        self.H        = img_height
+        self.n_rays   = n_rays
+        self.origin_x = origin_x if origin_x is not None else img_width  // 2
+        self.origin_y = origin_y if origin_y is not None else img_height - 1
+        self.max_len  = max_len  if max_len  is not None else img_height - 1
+
+        angles   = np.linspace(angle_min, angle_max, n_rays)
+        self.dx  = np.sin(np.radians(angles)).astype(np.float32)   # horizontal
+        self.dy  = -np.cos(np.radians(angles)).astype(np.float32)  # vertical (- = haut)
+
+        # Pré-calcul vectorisé : tous les points de tous les rayons
+        steps     = np.arange(1, self.max_len + 1, dtype=np.float32)  # (max_len,)
+        raw_xs    = self.origin_x + np.outer(self.dx, steps)   # (n_rays, max_len)
+        raw_ys    = self.origin_y + np.outer(self.dy, steps)
+        self._in_bounds = (
+            (raw_xs >= 0) & (raw_xs < img_width) &
+            (raw_ys >= 0) & (raw_ys < img_height)
+        )
+        self._xs  = np.clip(raw_xs.astype(np.int32), 0, img_width  - 1)
+        self._ys  = np.clip(raw_ys.astype(np.int32), 0, img_height - 1)
+
+    def __call__(self, mask: np.ndarray) -> np.ndarray:
+        """
+        mask   : masque binaire 0/255 des lignes blanches
+        retourne : float32 (n_rays,) dans [0, 1] — 0=bloqué, 1=libre
+        """
+        hit  = (mask[self._ys, self._xs] > 0) & self._in_bounds  # (n_rays, max_len)
+        rays = np.ones(self.n_rays, dtype=np.float32)
+        for i in range(self.n_rays):
+            idx = np.nonzero(hit[i])[0]
+            if len(idx) > 0:
+                rays[i] = float(idx[0] + 1) / self.max_len
+        return rays
+
+    def endpoints(self, rays: np.ndarray):
+        """Coordonnées (x, y) du bout de chaque rayon pour affichage."""
+        pts = []
+        for i, r in enumerate(rays):
+            dist = max(1, int(r * self.max_len))
+            ex = int(np.clip(self.origin_x + self.dx[i] * dist, 0, self.W - 1))
+            ey = int(np.clip(self.origin_y + self.dy[i] * dist, 0, self.H - 1))
+            pts.append((ex, ey))
+        return pts
+
+
 # ── Utilitaire : créer le pipeline depthai couleur (3.x) ─────────────────────
 def create_color_pipeline_v3(device, width: int = 512, height: int = 256):
     """Pipeline depthai 3.x — caméra couleur uniquement."""

@@ -25,7 +25,7 @@ except ImportError:
         daemon_threads = True
 
 sys.path.insert(0, os.path.dirname(__file__))
-from visual_rays import white_line_mask, VisualRays
+from visual_rays import white_line_mask, VisualRays, FanRays
 try:
     from track_mapper    import TrackMapper
     from track_navigator import TrackNavigator
@@ -1233,6 +1233,25 @@ def push_frame(bgr, mask, info, rejected_blobs=None):
     for (hx, hy) in info.get("scan_right_hits", []):
         cv2.line(vis, (mid_x, hy), (hx, hy), (0, 80, 255), 1)
         cv2.circle(vis, (hx, hy), 4, (0, 0, 255), -1)
+    # FanRays ÉVENTAIL style raycasting — rouge=ligne détectée, bleu=libre
+    fan_pts  = info.get("fan_endpoints", [])
+    fan_vals = info.get("fan_rays", [])
+    if fan_pts and fan_vals:
+        ox, oy = CAM_W // 2, CAM_H - 1
+        for i, (ex, ey) in enumerate(fan_pts):
+            rv  = float(fan_vals[i]) if i < len(fan_vals) else 1.0
+            hit = rv < 0.97            # True si la ligne est détectée avant la fin
+            if hit:
+                col = (20, 30, 220)    # BGR : rouge vif = touche une ligne
+                rad = max(3, int(6 * (1.0 - rv)))
+            else:
+                col = (180, 100, 20)   # bleu-acier = rayon libre
+                rad = 2
+            cv2.line(vis, (ox, oy), (ex, ey), col, 1)
+            cv2.circle(vis, (ex, ey), rad, col, -1)
+        # Point d'origine : cercle vert plein (position "œil" de la voiture)
+        cv2.circle(vis, (ox, oy), 6, (0, 220, 0), -1)
+        cv2.circle(vis, (ox, oy), 8, (0, 255, 0), 1)
     # Point VERT = midpoint de contrôle réel (ce que suit la voiture)
     # Le trait bleu = direction de steering, part du bas-centre vers le point vert
     if info["err"] is not None:
@@ -1809,7 +1828,11 @@ class PDController:
         self.hist_prev_right   = None  # cx ligne droite frame précédente
         self.vr           = VisualRays(
             img_width=CAM_W, img_height=CAM_H,
-            row_band=(ROI_FAR, ROI_BOTTOM), morph_k=5,
+            row_band=(ROI_FAR, ROI_BOTTOM), morph_k=5, n_rays=40,
+        )
+        self.fr           = FanRays(
+            img_width=CAM_W, img_height=CAM_H,
+            n_rays=32, angle_min=-75.0, angle_max=75.0,
         )
 
     def _pd(self, err):
@@ -1883,20 +1906,25 @@ class PDController:
         rays    = self.vr(bgr)
         blobs, rejected_blobs = get_blobs(mask)
         n_blobs = len(blobs)
-        forward_clearance = float(np.mean(rays[8:12]))
+        n_r = self.vr.n_rays
+        forward_clearance = float(np.mean(rays[int(n_r * 0.40):int(n_r * 0.60)]))
         err = None
         corner_blob = None
         scan_pts = []
 
         # ── Asymétrie raycasts : signal de virage très rapide ─────────────
-        left_open  = float(np.mean(rays[:7]))
-        right_open = float(np.mean(rays[13:]))
+        left_open  = float(np.mean(rays[:int(n_r * 0.35)]))
+        right_open = float(np.mean(rays[int(n_r * 0.65):]))
         ray_asym   = right_open - left_open  # >0 espace à droite → virage droite
 
         # ── Masque nettoyé : supprime artefacts (reflets, chaussures, murs) ──
         # Le masque brut reste pour la visu orange (blobs rejetés).
         # L'histogramme et les scanlines utilisent le masque propre.
         mask_clean, mask_rejected = clean_mask_artifacts(mask, bgr=bgr, corner_mode=self.corner_mode)
+
+        # ── FanRays en éventail depuis bas-centre ──────────────────────────
+        fan_vals = self.fr(mask_clean)
+        fan_pts  = self.fr.endpoints(fan_vals)
 
         # ── Détection coin L sur mask_clean (pas le masque brut) ──────────
         # Utiliser mask_clean évite les faux corner_blob sur panneaux/murs ambiants blancs.
@@ -2349,6 +2377,7 @@ class PDController:
                         "hist_left_cx": hist_l, "hist_right_cx": hist_r,
                         "scan_left_hits": scan_left_hits,
                         "scan_right_hits": scan_right_hits,
+                        "fan_rays": fan_vals.tolist(), "fan_endpoints": fan_pts,
                         "mask_rejected": mask_rejected,
                         "mask_clean": mask_clean,
                     }
@@ -2516,6 +2545,7 @@ class PDController:
             "hist_left_cx": hist_l, "hist_right_cx": hist_r,
             "scan_left_hits": scan_left_hits,
             "scan_right_hits": scan_right_hits,
+            "fan_rays": fan_vals.tolist(), "fan_endpoints": fan_pts,
             "mask_rejected": mask_rejected,
             "mask_clean": mask_clean,
         }

@@ -12,30 +12,48 @@ Remplacement direct de DepthToRays dans inference_realcar.py :
   --perception-mode visual
 """
 
+from collections import deque
+
 import numpy as np
 import cv2
 
 
 def white_line_mask(
     bgr: np.ndarray,
-    mode:       str = "hsv",
-    hsv_low:    tuple = (0,   0, 175),
-    hsv_high:   tuple = (180, 50, 255),
-    canny_low:  int = 50,
-    canny_high: int = 150,
-    morph_k:    int = 5,
-    blur_k:     int = 3,
-    use_clahe:  bool = False,
-    min_area:   int = 400,
+    mode:           str = "hsv",
+    hsv_low:        tuple = (0,   0, 175),
+    hsv_high:       tuple = (180, 50, 255),
+    canny_low:      int = 50,
+    canny_high:     int = 150,
+    morph_k:        int = 5,
+    blur_k:         int = 3,
+    use_clahe:      bool = False,
+    min_area:       int = 400,
+    tophat_k:       int = 0,
+    tophat_thresh:  int = 12,
+    max_fill_ratio: float = 1.0,
 ) -> np.ndarray:
     """Masque binaire des lignes blanches (uint8, 0/255), sans ROI.
 
     Source unique du masquage, partagée par VisualRays (production) et
     live_mask_oak.py (outil de dev) — ne pas dupliquer ailleurs.
 
-    blur_k    : taille kernel Gaussian blur avant HSV (0 = désactivé)
-    use_clahe : normalisation CLAHE du channel V (éclairage variable)
-    min_area  : surface minimale (px) d'un blob pour être gardé (filtre bruit)
+    blur_k         : taille kernel Gaussian blur avant HSV (0 = désactivé)
+    use_clahe      : normalisation CLAHE du channel V (éclairage variable)
+    min_area       : surface minimale (px) d'un blob pour être gardé (filtre bruit)
+
+    Couches de rejet d'artefacts achromatiques (plinthes, tapis, gros reflets),
+    qui partagent la signature blanc/désaturée des lignes — un seuil couleur seul
+    ne peut pas les distinguer (cf. recherche : HSV rejette le spéculaire, pas le
+    diffus). Désactivées par défaut → comportement historique inchangé.
+
+    tophat_k       : taille kernel white top-hat sur V (0 = désactivé). ET-é avec
+                     le masque HSV : ne garde que les structures FINES (lignes),
+                     supprime les grandes plages brillantes (tapis, plinthe, reflet large).
+    tophat_thresh  : seuil sur la réponse top-hat (utilisé si tophat_k > 1).
+    max_fill_ratio : 1.0 = désactivé. Garde un blob seulement si aire/aire_bbox <=
+                     ce ratio → critère d'« étirement » invariant à la rotation : une
+                     ligne (même diagonale) remplit peu sa bbox, un reflet patatoïde la remplit.
     """
     if blur_k > 1:
         bgr = cv2.GaussianBlur(bgr, (blur_k, blur_k), 0)
@@ -57,17 +75,35 @@ def white_line_mask(
         v_min_adaptive = max(int(hsv_low[2]), min(int(otsu_thresh), 220))
         hsv_low_adapted = (hsv_low[0], hsv_low[1], v_min_adaptive)
         m = cv2.inRange(hsv, np.asarray(hsv_low_adapted, np.uint8), np.asarray(hsv_high, np.uint8))
+
+        # Couche 1 — white top-hat : ne conserve que les structures fines et brillantes.
+        # Une plinthe/un tapis/un gros reflet sont des plages LARGES → réponse top-hat
+        # quasi nulle → éliminés par le ET. Une ligne fine survit.
+        if tophat_k > 1:
+            th_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (tophat_k, tophat_k))
+            tophat    = cv2.morphologyEx(v_channel, cv2.MORPH_TOPHAT, th_kernel)
+            m_thin    = (tophat >= tophat_thresh).astype(np.uint8) * 255
+            m         = cv2.bitwise_and(m, m_thin)
+
         m = cv2.morphologyEx(m, cv2.MORPH_OPEN,  kernel)
         m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
         m = cv2.morphologyEx(m, cv2.MORPH_DILATE, kernel, iterations=1)
 
-    # Filtrer les petits blobs (bruit, reflets, artefacts)
-    if min_area > 0:
+    # Couche 2 — filtrage par composante : aire mini (bruit) + étirement (forme).
+    if min_area > 0 or max_fill_ratio < 1.0:
         n, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
         filtered = np.zeros_like(m)
         for i in range(1, n):
-            if stats[i, cv2.CC_STAT_AREA] >= min_area:
-                filtered[labels == i] = 255
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area < min_area:
+                continue
+            if max_fill_ratio < 1.0:
+                w = int(stats[i, cv2.CC_STAT_WIDTH])
+                h = int(stats[i, cv2.CC_STAT_HEIGHT])
+                fill = area / float(max(w * h, 1))
+                if fill > max_fill_ratio:
+                    continue
+            filtered[labels == i] = 255
         m = filtered
 
     return m
@@ -93,12 +129,16 @@ class VisualRays:
         fov_deg:    float = 68.8,       # FOV couleur OAK-D Lite (calibré)
         n_rays:     int   = 20,
         row_band:   tuple = (0.50, 1.0),
-        mode:       str   = "hsv",
-        hsv_low:    tuple = (0,   0, 180),
-        hsv_high:   tuple = (180, 50, 255),
-        canny_low:  int   = 50,
-        canny_high: int   = 150,
-        morph_k:    int   = 3,
+        mode:           str   = "hsv",
+        hsv_low:        tuple = (0,   0, 180),
+        hsv_high:       tuple = (180, 50, 255),
+        canny_low:      int   = 50,
+        canny_high:     int   = 150,
+        morph_k:        int   = 3,
+        tophat_k:       int   = 0,
+        tophat_thresh:  int   = 12,
+        max_fill_ratio: float = 1.0,
+        temporal_window: int  = 1,
     ):
         self.W          = img_width
         self.H          = img_height
@@ -109,6 +149,12 @@ class VisualRays:
         self.canny_high = canny_high
         self.morph_k    = morph_k
         self.n_rays     = n_rays
+
+        # Couches anti-artefacts (cf. white_line_mask) — 0/1.0 = désactivé.
+        self.tophat_k       = tophat_k
+        self.tophat_thresh  = tophat_thresh
+        self.max_fill_ratio = max_fill_ratio
+        self._ray_hist      = deque(maxlen=max(1, int(temporal_window)))
 
         self.row_start = int(img_height * row_band[0])
         self.row_end   = int(img_height * row_band[1])
@@ -122,11 +168,23 @@ class VisualRays:
             0, img_width - 1,
         )
 
+    def set_temporal(self, window: int):
+        """Règle la fenêtre de médiane temporelle (1 = désactivé). Conserve l'historique compatible."""
+        self._ray_hist = deque(self._ray_hist, maxlen=max(1, int(window)))
+
+    def set_row_band(self, lo: float, hi: float):
+        """Règle la bande verticale ROI (fractions 0-1 de la hauteur)."""
+        self.row_start = int(self.H * lo)
+        self.row_end   = int(self.H * hi)
+        self.roi_h     = max(1, self.row_end - self.row_start)
+
     # ── Masque binaire ─────────────────────────────────────────────────────────
     def _mask(self, bgr: np.ndarray) -> np.ndarray:
         return white_line_mask(
             bgr, mode=self.mode, hsv_low=self.hsv_low, hsv_high=self.hsv_high,
             canny_low=self.canny_low, canny_high=self.canny_high, morph_k=self.morph_k,
+            tophat_k=self.tophat_k, tophat_thresh=self.tophat_thresh,
+            max_fill_ratio=self.max_fill_ratio,
         )
 
     # ── Conversion principale ──────────────────────────────────────────────────
@@ -152,6 +210,12 @@ class VisualRays:
                 first_from_bottom = whites[-1]
                 # Normaliser : bas de ROI (proche) → 0.0 | haut de ROI (loin) → 1.0
                 rays[i] = 1.0 - float(first_from_bottom) / self.roi_h
+
+        # Couche 3 — médiane temporelle par rayon : rejette les bords transitoires
+        # (reflets spéculaires qui scintillent) sans toucher aux bords stables.
+        if self._ray_hist.maxlen > 1:
+            self._ray_hist.append(rays)
+            rays = np.median(np.stack(self._ray_hist), axis=0).astype(np.float32)
 
         return rays
 

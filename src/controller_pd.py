@@ -421,9 +421,20 @@ details[open]>summary::before{content:'▼  '}
   <span id=gp_st style="color:var(--mu);font-size:11px">manette: —</span>
   <span class=csep></span>
   <button class="btn bca" id=bcarto onclick="ctoggle()">&#9654; CARTO</button>
+  <button class="btn" id=breset onclick="resetMap()" title="Effacer sans sauvegarder" style="padding:3px 8px;font-size:14px">&#8635;</button>
   <span id=carto_st style="color:var(--mu);font-size:11px">—</span>
   <a href=/map.svg target=_blank style="color:var(--cy);font-size:11px;text-decoration:none">&#128506; Voir carte</a>
+  <button onclick="openMaps()" title="Sélectionner une carte" style="background:none;border:none;color:var(--cy);font-size:13px;cursor:pointer;padding:0 4px;vertical-align:middle">&#128194;</button>
 </div>
+<dialog id=dmaps style="background:var(--s);color:var(--ft);border:1px solid #333;border-radius:10px;padding:0;min-width:380px;max-width:520px">
+<div style="padding:16px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <b>&#128506; Cartes enregistrées</b>
+    <button onclick="document.getElementById('dmaps').close()" style="background:none;border:none;color:var(--mu);font-size:20px;cursor:pointer;line-height:1">&#215;</button>
+  </div>
+  <div id=mapslist style="max-height:55vh;overflow-y:auto"></div>
+</div>
+</dialog>
 <details><summary>R&#233;glage masque</summary>
 <div class=mbtns>
 <button onclick="K('t')" id=bt>t top-hat</button>
@@ -470,6 +481,35 @@ function ctoggle(){var u=_co?'/stop_map':'/start_map';
 function _ucarto(){var b=document.getElementById('bcarto');
   b.className='btn bca'+(_co?' rec':'');
   b.textContent=_co?'&#9209; STOP CARTO':'&#9654; CARTO';}
+function resetMap(){
+  if(!confirm('Effacer la carto en cours sans sauvegarder ?'))return;
+  fetch('/reset_map').then(r=>r.text()).then(function(t){_co=false;_ucarto();toast(t);});}
+function openMaps(){
+  fetch('/maps').then(r=>r.json()).then(function(maps){
+    var l=document.getElementById('mapslist');
+    if(!maps.length){l.innerHTML='<p style="color:var(--mu);text-align:center;padding:20px">Aucune carte enregistrée.</p>';}
+    else{l.innerHTML=maps.map(function(m){
+      var mt=m.meta||{};
+      var dur=mt.elapsed_s!=null?mt.elapsed_s.toFixed(0)+'s':'?';
+      var turns=mt.n_turns!=null?mt.n_turns:'?';
+      var wpts=mt.total_frames||'?';
+      var base=m.name.replace('.json','');
+      return '<div style="padding:10px 0;border-bottom:1px solid #222;display:flex;justify-content:space-between;align-items:center">'+
+        '<div>'+
+          '<div style="font-size:12px;font-weight:600">'+m.name+'</div>'+
+          '<div style="font-size:11px;color:var(--mu)">'+dur+' &bull; '+turns+' virages &bull; '+wpts+' wpts</div>'+
+        '</div>'+
+        '<div style="display:flex;gap:8px;align-items:center;flex-shrink:0">'+
+          '<a href="/map.svg?name='+base+'" target="_blank" style="color:var(--cy);font-size:11px;text-decoration:none">Voir &#8599;</a>'+
+          '<button onclick="deleteMap(\''+m.name+'\')" style="background:none;border:1px solid var(--re);color:var(--re);border-radius:4px;font-size:11px;cursor:pointer;padding:2px 6px">&#128465;</button>'+
+        '</div>'+
+      '</div>';}
+    ).join('');}
+    document.getElementById('dmaps').showModal();
+  }).catch(function(){toast('Erreur chargement cartes');});}
+function deleteMap(name){
+  if(!confirm('Supprimer '+name+' ?'))return;
+  fetch('/delete_map?name='+encodeURIComponent(name)).then(r=>r.text()).then(function(t){toast(t);openMaps();});}
 function _col(v,w,e){return v==null?'var(--mu)':v>=e?'var(--re)':v>=w?'var(--or)':'var(--tx)'}
 function _batpct(v){
   if(v==null)return null;
@@ -559,6 +599,7 @@ _vesc_ref   = [None]  # référence au VESC pour le thread poll
 _calibrate_request = [False]       # mis à True par /calibrate → PDController applique l'offset
 _calibrate_result  = [None]        # renseigné par PDController avec la valeur appliquée
 _finish_map_request = [False]      # mis à True par /finish_map → sauvegarde track_map.json
+_map_ts_path        = [None]       # chemin horodaté pour la prochaine sauvegarde
 _mapper_ref         = [None]       # référence au TrackMapper actif (pour /map.svg)
 
 # ── Gamepad (manette Logitech F710 XInput) ────────────────────────────────────
@@ -835,14 +876,29 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             if m is None or not m.is_mapping:
                 self._send_text("idle:{}wpts".format(len(m.waypoints) if m else 0))
             else:
+                import time as _tt
+                ts = _tt.strftime("%Y%m%d_%H%M%S")
+                base = args.map_file.replace(".json", "_{}.json".format(ts))
+                _map_ts_path[0] = base
                 m.finish_requested = True
-                self._send_text("MAPPING_STOPPED:{}wpts".format(len(m.waypoints)))
-                print("[track] /stop_map recu — {} waypoints".format(len(m.waypoints)))
+                _finish_map_request[0] = True
+                self._send_text("Saved: {}wpts → {}".format(len(m.waypoints), base))
+                print("[track] /stop_map → {}".format(base))
             return
         if path == "/finish_map":
             _finish_map_request[0] = True
             self._send_text("MAPPING_FINISH_REQUESTED")
             print("[track] /finish_map recu")
+            return
+        if path == "/reset_map":
+            m = _mapper_ref[0]
+            if m is None:
+                self._send_text("ERREUR: mapper non initialisé")
+            else:
+                m._reset()
+                _map_ts_path[0] = None
+                self._send_text("Carto réinitialisée")
+                print("[track] /reset_map — carto effacée")
             return
         if path == "/map_status":
             m = _mapper_ref[0]
@@ -852,6 +908,27 @@ class MJPEGHandler(BaseHTTPRequestHandler):
                 self._send_text("rec:{}wpts".format(len(m.waypoints)))
             else:
                 self._send_text("idle:{}wpts".format(len(m.waypoints)))
+            return
+        if path == "/maps":
+            import json as _json, glob as _glob, os as _os
+            data_dir = _os.path.dirname(_os.path.abspath(args.map_file)) or "."
+            files = sorted(_glob.glob(_os.path.join(data_dir, "track_map*.json")), reverse=True)
+            maps = []
+            for f in files:
+                entry = {"name": _os.path.basename(f)}
+                try:
+                    with open(f) as fh:
+                        entry["meta"] = _json.load(fh).get("meta", {})
+                except Exception:
+                    pass
+                maps.append(entry)
+            body = _json.dumps(maps).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
             return
         if path == "/telemetry":
             import json as _json
@@ -897,14 +974,51 @@ class MJPEGHandler(BaseHTTPRequestHandler):
                 self._send_text("manette: non connectée (--gamepad)")
             return
         if path == "/map.svg":
-            svg = _mapper_ref[0].render_svg() if _mapper_ref[0] is not None else "<svg/>"
-            body = svg.encode("utf-8")
+            from urllib.parse import parse_qs, urlparse as _up3
+            import os as _os
+            qp = parse_qs(_up3(self.path).query)
+            name = qp.get("name", [None])[0]
+            if name:
+                data_dir = _os.path.dirname(_os.path.abspath(args.map_file)) or "."
+                svg_name = name if name.endswith(".svg") else name.replace(".json", "") + ".svg"
+                svg_path = _os.path.join(data_dir, _os.path.basename(svg_name))
+                try:
+                    with open(svg_path, "rb") as f:
+                        body = f.read()
+                except Exception:
+                    body = b"<svg><text x='10' y='30' fill='red'>Carte introuvable</text></svg>"
+            else:
+                svg = _mapper_ref[0].render_svg() if _mapper_ref[0] is not None else "<svg/>"
+                body = svg.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
+            return
+        if path == "/delete_map":
+            from urllib.parse import parse_qs, urlparse as _up4
+            import os as _os
+            qp = parse_qs(_up4(self.path).query)
+            name = qp.get("name", [None])[0]
+            if not name:
+                self._send_text("ERREUR: nom manquant")
+                return
+            data_dir = _os.path.dirname(_os.path.abspath(args.map_file)) or "."
+            base = _os.path.basename(name.replace(".json", ""))
+            json_path = _os.path.join(data_dir, base + ".json")
+            svg_path  = _os.path.join(data_dir, base + ".svg")
+            deleted = []
+            for p in (json_path, svg_path):
+                try:
+                    _os.remove(p)
+                    deleted.append(_os.path.basename(p))
+                except Exception:
+                    pass
+            msg = "Supprimé: " + ", ".join(deleted) if deleted else "Fichier introuvable"
+            print("[track] /delete_map {} — {}".format(base, msg))
+            self._send_text(msg)
             return
         if path == "/":
             body = _UI_PAGE.encode("utf-8")
@@ -2534,7 +2648,14 @@ def run(args):
             mapper.process_frame(gyro_z, throttle_duty=throttle, dt=None)
             if _finish_map_request[0]:
                 _finish_map_request[0] = False
-                mapper.save(args.map_file, args.map_file.replace(".json", ".svg"))
+                save_path = _map_ts_path[0] or args.map_file
+                _map_ts_path[0] = None
+                svg_path = save_path.replace(".json", ".svg")
+                mapper.save(save_path, svg_path)
+                if save_path != args.map_file:
+                    import shutil as _sh
+                    try: _sh.copy2(save_path, args.map_file)
+                    except Exception: pass
                 mapper.summary()
         if navigator is not None:
             nav = navigator.update(gyro_z, info["n_blobs"], info["err"])

@@ -95,21 +95,34 @@ class _Hub:
 
 def _capture(hub):
     import depthai as dai
-    pipeline = dai.Pipeline()
-    cam = pipeline.create(dai.node.ColorCamera)
-    cam.setPreviewSize(hub.W, hub.H)
-    cam.setInterleaved(False)
-    cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-    cam.setFps(30)
-    xout = pipeline.create(dai.node.XLinkOut)
-    xout.setStreamName("rgb")
-    cam.preview.link(xout.input)
-    with dai.Device(pipeline) as device:
-        q = device.getOutputQueue("rgb", maxSize=4, blocking=False)
-        print("[hub] OAK-D OK — diffuse les frames")
-        while hub.running:
-            hub.set(q.get().getCvFrame())
-    print("[hub] capture terminée")
+    attempt = 0
+    while hub.running:
+        try:
+            attempt += 1
+            pipeline = dai.Pipeline()
+            cam = pipeline.create(dai.node.ColorCamera)
+            # Full FOV : ISP downscale 1080P -> 640x360 plein capteur (memes params que controller)
+            cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+            cam.setIspScale(1, 3)
+            cam.setPreviewSize(hub.W, hub.H)
+            cam.setInterleaved(False)
+            cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
+            cam.setFps(15)
+            xout = pipeline.create(dai.node.XLinkOut)
+            xout.setStreamName("rgb")
+            cam.preview.link(xout.input)
+            with dai.Device(pipeline) as device:
+                q = device.getOutputQueue("rgb", maxSize=1, blocking=False)
+                print("[hub] OAK-D OK (attempt {}) — diffuse les frames".format(attempt))
+                attempt = 0
+                while hub.running:
+                    hub.set(q.get().getCvFrame())
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            print("[hub] OAK-D crash ({}) — reconnexion dans 5s...".format(e))
+            time.sleep(5)
+    print("[hub] capture terminee")
 
 
 def _serve_client(conn, hub):

@@ -1929,12 +1929,7 @@ class PDController:
         mask_clean, mask_rejected = clean_mask_artifacts(mask, bgr=bgr, corner_mode=self.corner_mode)
 
         # ── FanRays en éventail depuis bas-centre ──────────────────────────
-        # Masque FanRays : masque brut + fermeture horizontale uniquement.
-        # clean_mask_artifacts rejette les blobs hauts/petits → lignes lointaines invisibles.
-        # Les FanRays n'ont pas besoin du filtrage artefact car leur signal est une distance, pas une position.
-        _kh = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 3))
-        mask_fan = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, _kh)
-        fan_vals = self.fr(mask_fan)
+        fan_vals = self.fr(mask_clean)
         fan_pts  = self.fr.endpoints(fan_vals)
         # fan_asym : tiers gauche vs tiers droite — signal de virage diagonal
         _nf = len(fan_vals)

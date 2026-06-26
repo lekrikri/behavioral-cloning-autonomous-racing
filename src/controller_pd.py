@@ -410,6 +410,7 @@ details[open]>summary::before{content:'▼  '}
     <div class=ct>&#129517; Navigation</div>
     <div id=nav_mode class="mb min">— INIT</div>
     <div class=mr><span class=ml>Steer</span><span class=mv id=steer_v>—</span></div>
+    <div class=mr><span class=ml>Vitesse</span><span class=mv id=speed_v>—</span></div>
     <div class=mr><span class=ml>Erreur</span><span class=mv id=err_v>—</span></div>
     <div class=mr><span class=ml>Ray asym</span><span class=mv id=ray_v>—</span></div>
     <div class=mr><span class=ml>Blobs</span><span class=mv id=blobs_v>—</span></div>
@@ -566,6 +567,7 @@ setInterval(function(){
     nm.className='mb '+mc;nm.textContent=mi+' '+st;
     var sv=d.steer||0;
     var se=document.getElementById('steer_v');se.textContent=(sv>=0?'+':'')+sv.toFixed(2);se.style.color=Math.abs(sv)>0.8?'var(--or)':'var(--tx)';
+    document.getElementById('speed_v').textContent=d.speed_kmh!=null?d.speed_kmh.toFixed(2)+' km/h':'—';
     document.getElementById('err_v').textContent=d.err!=null?(d.err>=0?'+':'')+d.err+'px':'—';
     document.getElementById('ray_v').textContent=d.ray!=null?(d.ray>=0?'+':'')+d.ray.toFixed(2):'—';
     document.getElementById('blobs_v').textContent=d.blobs!=null?d.blobs:'—';
@@ -2784,6 +2786,8 @@ def run(args):
         _ctrl_telem["blobs"]    = info["n_blobs"]
         _ctrl_telem["fps"]      = round(_fps_now, 1)
         _ctrl_telem["ray"]      = round(info.get("ray_asym", 0.0), 3)
+        _t_duty = min(abs(throttle), args.max_duty)
+        _ctrl_telem["speed_kmh"] = round(_t_duty * 3.0 * 3.6, 2)  # V_PER_DUTY=3.0 m/s
         if frame_n[0] % (CAM_FPS * 3) == 0:
             fps = frame_n[0] / max(time.time() - t0[0], 0.001)
             mid = CAM_W // 2

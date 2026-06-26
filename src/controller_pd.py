@@ -230,7 +230,7 @@ class _MaskState:
 
     def __init__(self):
         self._lock       = threading.Lock()
-        self.hsv_v_min   = 195
+        self.hsv_v_min   = 150
         self.tophat_k    = 0
         self.tophat_thresh = 12
         self.max_fill    = 1.0
@@ -313,6 +313,10 @@ button:hover{background:#333}button.on{background:#155;color:#0ff}
   <button onclick="C('/stop')" style="background:#511">STOP</button>
   <button onclick="C('/go')" style="background:#151">GO</button>
   <span class=sep></span>status: <span id=st>—</span>
+  <span class=sep></span><span class=sep></span>
+  <button onclick="setMode('auto')" id=bm_auto style="background:#153;border:2px solid #0f0">AUTONOME</button>
+  <button onclick="setMode('teleop')" id=bm_teleop style="background:#333">MANUEL (manette)</button>
+  <span class=sep></span><span id=gp_status style="color:#888">manette: —</span>
 </div>
 <div class=row>
 <b>Masque :</b>
@@ -350,6 +354,16 @@ function S(){fetch('/save_mask').then(r=>r.text()).then(t=>{
   el.textContent='Sauvegarde : '+t;
   setTimeout(function(){el.textContent='';},4000);
 });}
+function setMode(m){fetch('/set_mode?m='+m).then(r=>r.text()).then(t=>{
+  document.getElementById('bm_auto').style.border=m=='auto'?'2px solid #0f0':'2px solid #333';
+  document.getElementById('bm_auto').style.background=m=='auto'?'#153':'#333';
+  document.getElementById('bm_teleop').style.border=m=='teleop'?'2px solid #ff0':'2px solid #333';
+  document.getElementById('bm_teleop').style.background=m=='teleop'?'#553':'#333';
+  document.getElementById('gp_status').textContent='mode: '+t;
+});}
+setInterval(function(){fetch('/gp_status').then(r=>r.text()).then(t=>{
+  document.getElementById('gp_status').textContent=t;
+}).catch(function(){});},1000);
 document.addEventListener('keydown',function(e){
   var k=e.key;if(k===' '||k.length===1){e.preventDefault();K(k);}
 });
@@ -372,6 +386,129 @@ _calibrate_request = [False]       # mis à True par /calibrate → PDController
 _calibrate_result  = [None]        # renseigné par PDController avec la valeur appliquée
 _finish_map_request = [False]      # mis à True par /finish_map → sauvegarde track_map.json
 _mapper_ref         = [None]       # référence au TrackMapper actif (pour /map.svg)
+
+# ── Gamepad (manette Logitech F710 XInput) ────────────────────────────────────
+_gp_active   = [False]   # True si thread gamepad tourne et manette connectée
+_gp_mode     = ["auto"]  # "auto" | "teleop"
+_gp_steer    = [0.0]     # steering manette [-1..1]
+_gp_throttle = [0.0]     # throttle manette (duty signé)
+
+# Mapping boutons F710 XInput (js0)
+_GP_EVENT_FMT  = "IhBB"
+_GP_EVENT_SIZE = struct.calcsize(_GP_EVENT_FMT)
+_GP_TYPE_BTN   = 0x01
+_GP_TYPE_AXIS  = 0x02
+_GP_TYPE_INIT  = 0x80
+_GP_AXIS_STEER = 3   # right stick X
+_GP_AXIS_ACCEL = 5   # R2 / RT
+_GP_AXIS_BRAKE = 2   # L2 / LT
+_GP_BTN_Y      = 3   # Y → toggle AUTO/TELEOP
+_GP_BTN_SELECT = 6   # BACK/SELECT → start/stop mapping
+_GP_BTN_START  = 7   # START → finish map + save
+
+
+def _gamepad_thread(js_path, max_duty, deadzone_val, map_file):
+    """Thread de lecture manette — non-bloquant via O_NONBLOCK."""
+    import os as _os
+    import struct as _struct
+
+    def _deadzone(x, dz):
+        if abs(x) < dz:
+            return 0.0
+        return (x - dz * (1.0 if x > 0 else -1.0)) / (1.0 - dz)
+
+    def _trig_frac(raw, rest):
+        frac = (raw - rest) / (1.0 - rest) if rest < 1.0 else 0.0
+        return max(0.0, min(1.0, frac))
+
+    try:
+        fd = _os.open(js_path, _os.O_RDONLY | _os.O_NONBLOCK)
+    except OSError as e:
+        print("[gp] Manette introuvable {} : {} — gamepad désactivé".format(js_path, e))
+        return
+
+    _gp_active[0] = True
+    axes = {}
+    buttons = {}
+    just_pressed = {}
+
+    # Calibration triggers au repos (~0.4s)
+    t_end = time.time() + 0.5
+    while time.time() < t_end:
+        try:
+            data = _os.read(fd, _GP_EVENT_SIZE)
+            _, value, etype, number = _struct.unpack(_GP_EVENT_FMT, data)
+            etype &= ~_GP_TYPE_INIT
+            if etype == _GP_TYPE_AXIS:
+                axes[number] = max(-1.0, min(1.0, value / 32767.0))
+        except BlockingIOError:
+            pass
+        time.sleep(0.02)
+    rest_r2 = axes.get(_GP_AXIS_ACCEL, -1.0)
+    rest_l2 = axes.get(_GP_AXIS_BRAKE, -1.0)
+    print("[gp] Manette prête — Y=toggle AUTO/TELEOP | SELECT=map | START=save")
+    print("[gp] Mode actuel: {} | rest R2={:.2f} L2={:.2f}".format(
+        _gp_mode[0], rest_r2, rest_l2))
+
+    try:
+        while _gp_active[0]:
+            # Lire tous les events disponibles
+            while True:
+                try:
+                    data = _os.read(fd, _GP_EVENT_SIZE)
+                except BlockingIOError:
+                    break
+                if not data or len(data) < _GP_EVENT_SIZE:
+                    break
+                _, value, etype, number = _struct.unpack(_GP_EVENT_FMT, data)
+                etype &= ~_GP_TYPE_INIT
+                if etype == _GP_TYPE_AXIS:
+                    axes[number] = max(-1.0, min(1.0, value / 32767.0))
+                elif etype == _GP_TYPE_BTN:
+                    prev = buttons.get(number, 0)
+                    buttons[number] = value
+                    if value == 1 and prev == 0:
+                        just_pressed[number] = True
+
+            # Bouton Y → toggle AUTO/TELEOP
+            if just_pressed.pop(_GP_BTN_Y, False):
+                _gp_mode[0] = "teleop" if _gp_mode[0] == "auto" else "auto"
+                print("[gp] Mode → {}".format(_gp_mode[0].upper()))
+
+            # Bouton SELECT → start/stop mapping
+            if just_pressed.pop(_GP_BTN_SELECT, False):
+                if _mapper_ref[0] is not None and not _mapper_ref[0].is_mapping:
+                    _mapper_ref[0].start()
+                    print("[gp] MAPPING DÉMARRÉ via manette")
+                elif _mapper_ref[0] is not None and _mapper_ref[0].is_mapping:
+                    print("[gp] Mapping déjà actif — appuie START pour terminer")
+
+            # Bouton START → finish map + save
+            if just_pressed.pop(_GP_BTN_START, False):
+                if _mapper_ref[0] is not None and _mapper_ref[0].is_mapping:
+                    _finish_map_request[0] = True
+                    print("[gp] FINISH MAP via manette → sauvegarde {}".format(map_file))
+
+            # Axes → steering + throttle
+            steer = _deadzone(axes.get(_GP_AXIS_STEER, 0.0), deadzone_val)
+            rt    = _trig_frac(axes.get(_GP_AXIS_ACCEL, rest_r2), rest_r2)
+            lt    = _trig_frac(axes.get(_GP_AXIS_BRAKE, rest_l2), rest_l2)
+            throttle = (rt - lt * 0.6) * max_duty
+
+            _gp_steer[0]    = steer
+            _gp_throttle[0] = throttle
+
+            time.sleep(0.02)  # ~50Hz
+
+    except Exception as e:
+        print("[gp] Erreur thread gamepad: {}".format(e))
+    finally:
+        _gp_active[0] = False
+        try:
+            _os.close(fd)
+        except Exception:
+            pass
+        print("[gp] Thread gamepad terminé")
 
 def _make_placeholder():
     img = np.zeros((CAM_H, CAM_W, 3), dtype=np.uint8)
@@ -430,6 +567,22 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             _finish_map_request[0] = True
             self._send_text("MAPPING_FINISH_REQUESTED")
             print("[track] /finish_map recu")
+            return
+        if path == "/set_mode":
+            from urllib.parse import parse_qs, urlparse as _up2
+            _m = parse_qs(_up2(self.path).query).get("m", ["auto"])[0]
+            if _m in ("auto", "teleop"):
+                _gp_mode[0] = _m
+                print("[gp] Mode → {} (HTTP)".format(_m.upper()))
+            self._send_text(_gp_mode[0])
+            return
+        if path == "/gp_status":
+            if _gp_active[0]:
+                s = _gp_steer[0]; t = _gp_throttle[0]
+                self._send_text("manette: {} | steer={:+.2f} thr={:+.2f}".format(
+                    _gp_mode[0].upper(), s, t))
+            else:
+                self._send_text("manette: non connectée (--gamepad)")
             return
         if path == "/map.svg":
             svg = _mapper_ref[0].render_svg() if _mapper_ref[0] is not None else "<svg/>"
@@ -1412,8 +1565,8 @@ class PDController:
                 print("[ctrl] U-TURN détecté angle={:.0f}deg accum={:.2f}".format(
                     math.degrees(self.corner_imu_angle), self.gyro_accum_corner))
 
-            # ── Q5 : Watchdog cohérence direction (désactivé en U-turn profond) ──
-            _q5_active = not (self.is_u_turn and self.corner_imu_angle > 1.0)
+            # ── Q5 : Watchdog cohérence direction (désactivé en U-turn) ──
+            _q5_active = not self.is_u_turn
             if _q5_active and ray_asym * self.corner_dir < -0.30:
                 self.corner_sanity_ctr += 1
                 if self.corner_sanity_ctr >= 5:
@@ -1904,6 +2057,12 @@ def parse_args():
                    help="Source camera : device=OAK-D direct | hub=camera_hub partage")
     p.add_argument("--hub-port",    type=int, default=8077,
                    help="Port du camera_hub (--source hub, defaut 8077)")
+    p.add_argument("--gamepad",     action="store_true",
+                   help="Activer la manette (Logitech F710 XInput) — toggle AUTO/TELEOP via bouton Y")
+    p.add_argument("--js",          default="/dev/input/js0",
+                   help="Chemin joystick (defaut: /dev/input/js0)")
+    p.add_argument("--gamepad-deadzone", type=float, default=0.08,
+                   help="Zone morte manette (defaut: 0.08)")
     return p.parse_args()
 
 
@@ -1974,6 +2133,17 @@ def run(args):
                 navigator = None
             else:
                 print("[track] Mode RACING actif")
+
+    # ── Thread gamepad (manette) ──────────────────────────────────────────────
+    if args.gamepad:
+        _gp_thread = threading.Thread(
+            target=_gamepad_thread,
+            args=(args.js, args.max_duty, args.gamepad_deadzone,
+                  getattr(args, "map_file", "track_map.json")),
+            daemon=True,
+        )
+        _gp_thread.start()
+        print("[gp] Thread manette démarré — {} | Y=toggle TELEOP/AUTO".format(args.js))
 
     # Mode replay : charge le CSV de piste enregistrée
     replay_data = None
@@ -2070,8 +2240,12 @@ def run(args):
             })
         if abs(steering) < 0.5 and throttle > 0:
             _coast_steer[0] = steering; _coast_throttle[0] = throttle
+        # ── Override manette en mode TELEOP ──────────────────────────────────
+        if _gp_active[0] and _gp_mode[0] == "teleop":
+            steering = _gp_steer[0]
+            throttle = _gp_throttle[0]
         if vesc is not None:
-            t_capped = min(throttle, args.max_duty)
+            t_capped = min(abs(throttle), args.max_duty) * (1.0 if throttle >= 0 else -1.0)
             try:
                 vesc.drive(steering, t_capped) if _drive_enabled else vesc.stop()
             except Exception as e:

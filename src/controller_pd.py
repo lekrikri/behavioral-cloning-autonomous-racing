@@ -881,7 +881,10 @@ class MJPEGHandler(BaseHTTPRequestHandler):
                 ts = _tt.strftime("%Y%m%d_%H%M%S")
                 base = args.map_file.replace(".json", "_{}.json".format(ts))
                 _map_ts_path[0] = base
-                m.finish_requested = True
+                # Fermer le segment courant et arrêter is_mapping immédiatement
+                # (évite la race condition avec le poll télémétrie 500ms)
+                m._close_segment(len(m.waypoints))
+                m.is_mapping = False
                 _finish_map_request[0] = True
                 self._send_text("Saved: {}wpts → {}".format(len(m.waypoints), base))
                 print("[track] /stop_map → {}".format(base))

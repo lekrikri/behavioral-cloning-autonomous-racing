@@ -487,28 +487,29 @@ function resetMap(){
 function openMaps(){
   fetch('/maps').then(r=>r.json()).then(function(maps){
     var l=document.getElementById('mapslist');
-    if(!maps.length){l.innerHTML='<p style="color:var(--mu);text-align:center;padding:20px">Aucune carte enregistrée.</p>';}
-    else{l.innerHTML=maps.map(function(m){
-      var mt=m.meta||{};
-      var dur=mt.elapsed_s!=null?mt.elapsed_s.toFixed(0)+'s':'?';
-      var turns=mt.n_turns!=null?mt.n_turns:'?';
-      var wpts=mt.total_frames||'?';
-      var base=m.name.replace('.json','');
-      return '<div style="padding:10px 0;border-bottom:1px solid #222;display:flex;justify-content:space-between;align-items:center">'+
-        '<div>'+
-          '<div style="font-size:12px;font-weight:600">'+m.name+'</div>'+
-          '<div style="font-size:11px;color:var(--mu)">'+dur+' &bull; '+turns+' virages &bull; '+wpts+' wpts</div>'+
-        '</div>'+
-        '<div style="display:flex;gap:8px;align-items:center;flex-shrink:0">'+
-          '<a href="/map.svg?name='+base+'" target="_blank" style="color:var(--cy);font-size:11px;text-decoration:none">Voir &#8599;</a>'+
-          '<button onclick="deleteMap(\''+m.name+'\')" style="background:none;border:1px solid var(--re);color:var(--re);border-radius:4px;font-size:11px;cursor:pointer;padding:2px 6px">&#128465;</button>'+
-        '</div>'+
-      '</div>';}
-    ).join('');}
+    if(!maps.length){l.innerHTML='<p style="color:var(--mu);padding:20px;text-align:center">Aucune carte.</p>';}
+    else{
+      var h='';
+      for(var i=0;i<maps.length;i++){
+        var m=maps[i];var mt=m.meta||{};
+        var dur=mt.elapsed_s!=null?Math.round(mt.elapsed_s)+'s':'?';
+        var turns=mt.n_turns!=null?mt.n_turns:'?';
+        var wpts=mt.total_frames||'?';
+        var base=m.name.replace('.json','');
+        h+='<div style="padding:10px 0;border-bottom:1px solid #222;display:flex;justify-content:space-between;align-items:center">';
+        h+='<div><div style="font-size:12px;font-weight:600">'+m.name+'</div>';
+        h+='<div style="font-size:11px;color:var(--mu)">'+dur+' | '+turns+' virages | '+wpts+' pts</div></div>';
+        h+='<div style="display:flex;gap:8px;flex-shrink:0">';
+        h+='<a href="/map.svg?name='+base+'" target="_blank" style="color:var(--cy);font-size:11px;text-decoration:none">Voir &#8599;</a>';
+        h+='<button data-n="'+base+'" onclick="deleteMap(this.dataset.n)" style="background:none;border:1px solid var(--re);color:var(--re);border-radius:4px;font-size:11px;cursor:pointer;padding:2px 6px">Suppr.</button>';
+        h+='</div></div>';
+      }
+      l.innerHTML=h;
+    }
     document.getElementById('dmaps').showModal();
-  }).catch(function(){toast('Erreur chargement cartes');});}
+  }).catch(function(){toast('Erreur cartes');});}
 function deleteMap(name){
-  if(!confirm('Supprimer '+name+' ?'))return;
+  if(!confirm('Supprimer '+name+'?'))return;
   fetch('/delete_map?name='+encodeURIComponent(name)).then(r=>r.text()).then(function(t){toast(t);openMaps();});}
 function _col(v,w,e){return v==null?'var(--mu)':v>=e?'var(--re)':v>=w?'var(--or)':'var(--tx)'}
 function _batpct(v){

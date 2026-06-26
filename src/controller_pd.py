@@ -268,6 +268,35 @@ class _MaskState:
                 self.hsv_v_min, self.tophat_k, self.tophat_thresh,
                 self.max_fill, self.temporal, int(self.roi_frac * 100)))
 
+    # Chemin du fichier de config masque (à côté du script)
+    MASK_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mask_params.json")
+
+    def save(self):
+        import json as _j
+        data = dict(hsv_v_min=self.hsv_v_min, tophat_k=self.tophat_k,
+                    tophat_thresh=self.tophat_thresh, max_fill=self.max_fill,
+                    temporal=self.temporal, roi_frac=self.roi_frac)
+        with open(self.MASK_CONFIG, "w") as f:
+            _j.dump(data, f, indent=2)
+        return data
+
+    def load(self):
+        import json as _j
+        try:
+            with open(self.MASK_CONFIG) as f:
+                data = _j.load(f)
+            with self._lock:
+                self.hsv_v_min    = int(data.get("hsv_v_min",   self.hsv_v_min))
+                self.tophat_k     = int(data.get("tophat_k",    self.tophat_k))
+                self.tophat_thresh= int(data.get("tophat_thresh",self.tophat_thresh))
+                self.max_fill     = float(data.get("max_fill",  self.max_fill))
+                self.temporal     = int(data.get("temporal",    self.temporal))
+                self.roi_frac     = float(data.get("roi_frac",  self.roi_frac))
+            print("[mask] Config chargee : {}".format(data))
+            return True
+        except (FileNotFoundError, KeyError, ValueError):
+            return False
+
 _mask_state = _MaskState()
 
 _UI_PAGE = """<!doctype html><html><head><meta charset=utf-8><title>Virida Robocar</title>
@@ -300,6 +329,9 @@ button:hover{background:#333}button.on{background:#155;color:#0ff}
 <button onclick="K('-')">- V</button><button onclick="K('=')">+ V</button>
 <button onclick="K('o')">o crop+</button><button onclick="K('p')">p crop-</button>
 <button onclick="K('m')">m mask</button><button onclick="K('r')">r rays</button>
+<span class=sep></span>
+<button onclick="S()" style="background:#353;color:#0f0;font-weight:bold">Sauvegarder config anti-blob</button>
+<span id=sv style="color:#0f0;margin-left:8px"></span>
 </div>
 <div class=row>etat: <span id=k>—</span></div>
 <script>
@@ -310,6 +342,11 @@ function K(k){fetch('/key?k='+encodeURIComponent(k)).then(r=>r.text()).then(t=>{
   document.getElementById('bc').className=t.includes('TEMP=1')||t.includes('TEMP=off')?'':'on';
 });}
 function C(p){fetch(p).then(r=>r.text()).then(t=>{document.getElementById('st').textContent=t;});}
+function S(){fetch('/save_mask').then(r=>r.text()).then(t=>{
+  var el=document.getElementById('sv');
+  el.textContent='Sauvegarde : '+t;
+  setTimeout(function(){el.textContent='';},4000);
+});}
 document.addEventListener('keydown',function(e){
   var k=e.key;if(k===' '||k.length===1){e.preventDefault();K(k);}
 });
@@ -396,6 +433,16 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+        if path == "/save_mask":
+            try:
+                data = _mask_state.save()
+                self._send_text("V>={} TH(k={},thr={}) FILL={} TEMP={} ROI={}%".format(
+                    data["hsv_v_min"], data["tophat_k"], data["tophat_thresh"],
+                    data["max_fill"], data["temporal"], int(data["roi_frac"]*100)))
+                print("[mask] Config sauvegardee → {}".format(_mask_state.MASK_CONFIG))
+            except Exception as e:
+                self._send_text("ERREUR: {}".format(e))
             return
         if path == "/key":
             from urllib.parse import parse_qs, urlparse as _up
@@ -1934,6 +1981,9 @@ def run(args):
     speed_str = "fixed={:.2f}".format(args.fixed_speed) if args.fixed_speed else "adaptatif"
     print("[ctrl] Niveau {} | {} | KP={} | offset={}px | steer_max={}".format(
         args.level, speed_str, KP, CAMERA_OFFSET_PX, STEERING_MAX))
+
+    # Charger la config masque sauvegardée si elle existe
+    _mask_state.load()
 
     frame_n = [0]
     t0      = [time.time()]

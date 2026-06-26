@@ -580,11 +580,15 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
         # La voiture est TOUJOURS entre les 2 lignes → ne pas rejeter les blobs côté gauche
         _in_wall_zone = (bx + bw < CAM_W * 0.10 and by + bh < CAM_H * 0.25)
 
+        # Blob très allongé = vraie ligne de piste → pas de contrainte de position verticale
+        _asp_early = float(max(bw, bh)) / max(min(bw, bh), 1)
+        _is_long_line = (_asp_early > 4.0)
+
         if area < _area_min:
             reason = "small"
         elif _in_wall_zone:
             reason = "wall_zone"
-        elif y_bot < _y_bot_thresh:
+        elif y_bot < _y_bot_thresh and not _is_long_line:
             reason = "high"
         else:
             asp = float(max(bw, bh)) / max(min(bw, bh), 1)

@@ -319,6 +319,12 @@ button:hover{background:#333}button.on{background:#155;color:#0ff}
   <span class=sep></span><span id=gp_status style="color:#888">manette: —</span>
 </div>
 <div class=row>
+  Carto :
+  <button onclick="cartoToggle()" id=bcarto style="background:#225;border:2px solid #339">&#9654; DÉMARRER CARTO</button>
+  <span class=sep></span><span id=carto_status style="color:#888">—</span>
+  <span class=sep></span><a href="/map.svg" target="_blank" style="color:#08f;text-decoration:none">&#128506; Voir carte</a>
+</div>
+<div class=row>
 <b>Masque :</b>
 <button onclick="K('t')" id=bt>t top-hat</button>
 <button onclick="K(',')">, k-</button><button onclick="K('.')">. k+</button>
@@ -364,6 +370,27 @@ function setMode(m){fetch('/set_mode?m='+m).then(r=>r.text()).then(t=>{
 setInterval(function(){fetch('/gp_status').then(r=>r.text()).then(t=>{
   document.getElementById('gp_status').textContent=t;
 }).catch(function(){});},1000);
+var _carto_on=false;
+function cartoToggle(){
+  var url=_carto_on?'/stop_map':'/start_map';
+  fetch(url).then(r=>r.text()).then(function(t){
+    _carto_on=!_carto_on;
+    var b=document.getElementById('bcarto');
+    if(_carto_on){b.textContent='■ ARRÊTER CARTO';b.style.background='#511';b.style.borderColor='#f44';}
+    else{b.textContent='▶ DÉMARRER CARTO';b.style.background='#225';b.style.borderColor='#339';}
+    document.getElementById('carto_status').textContent=t;
+  }).catch(function(){});
+}
+setInterval(function(){fetch('/map_status').then(r=>r.text()).then(function(t){
+  document.getElementById('carto_status').textContent=t;
+  var on=t.startsWith('rec:');
+  if(on!==_carto_on){
+    _carto_on=on;
+    var b=document.getElementById('bcarto');
+    if(_carto_on){b.textContent='■ ARRÊTER CARTO';b.style.background='#511';b.style.borderColor='#f44';}
+    else{b.textContent='▶ DÉMARRER CARTO';b.style.background='#225';b.style.borderColor='#339';}
+  }
+}).catch(function(){});},2000);
 document.addEventListener('keydown',function(e){
   var k=e.key;if(k===' '||k.length===1){e.preventDefault();K(k);}
 });
@@ -563,10 +590,39 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             else:
                 self._send_text("ERREUR: b<2 ou pas assez de frames stables")
             return
+        if path == "/start_map":
+            m = _mapper_ref[0]
+            if m is None:
+                self._send_text("ERREUR: mapper non initialisé (relancer avec --mapping ou utiliser le bouton CARTO)")
+            elif m.is_mapping:
+                self._send_text("DEJA_EN_COURS")
+            else:
+                m.start()
+                self._send_text("MAPPING_STARTED")
+                print("[track] /start_map recu")
+            return
+        if path == "/stop_map":
+            m = _mapper_ref[0]
+            if m is None or not m.is_mapping:
+                self._send_text("idle:{}wpts".format(len(m.waypoints) if m else 0))
+            else:
+                m.finish_requested = True
+                self._send_text("MAPPING_STOPPED:{}wpts".format(len(m.waypoints)))
+                print("[track] /stop_map recu — {} waypoints".format(len(m.waypoints)))
+            return
         if path == "/finish_map":
             _finish_map_request[0] = True
             self._send_text("MAPPING_FINISH_REQUESTED")
             print("[track] /finish_map recu")
+            return
+        if path == "/map_status":
+            m = _mapper_ref[0]
+            if m is None:
+                self._send_text("off")
+            elif m.is_mapping:
+                self._send_text("rec:{}wpts".format(len(m.waypoints)))
+            else:
+                self._send_text("idle:{}wpts".format(len(m.waypoints)))
             return
         if path == "/set_mode":
             from urllib.parse import parse_qs, urlparse as _up2
@@ -2120,12 +2176,15 @@ def run(args):
     mapper    = None
     navigator = None
     if _TRACK_MODULES_OK:
+        # Mapper toujours initialisé (démarrage via bouton UI ou --mapping)
+        mapper = TrackMapper()
+        _mapper_ref[0] = mapper
         if args.mapping:
-            mapper = TrackMapper()
             mapper.start()
-            _mapper_ref[0] = mapper
             print("[track] Mode MAPPING actif -> {}  /map.svg pour preview".format(args.map_file))
-        elif args.racing:
+        else:
+            print("[track] Mapper prêt (bouton CARTO dans UI ou /start_map)")
+        if args.racing:
             navigator = TrackNavigator()
             ok = navigator.load(args.map_file)
             if not ok:

@@ -237,21 +237,48 @@ class VESCInterface:
 
     def get_rpm(self) -> float:
         """Best-effort read of motor eRPM via COMM_GET_VALUES (firmware-dependent)."""
+        v = self.get_all_values()
+        return float(v.get("rpm", 0))
+
+    def get_all_values(self) -> dict:
+        """Lit la télémétrie VESC complète via COMM_GET_VALUES.
+        Layout fw3.x: id(1) temp_fet(2) temp_motor(2) motor_i(4) input_i(4)
+                      id_d(4) id_q(4) duty(2) rpm(4) v_in(2) ...
+        Retourne {} si non disponible.
+        """
         if self._sim_mode or not self.ser or not self.ser.is_open:
-            return 0.0
+            return {}
         try:
             with self._lock:
                 self.ser.reset_input_buffer()
                 self.ser.write(_GET_VALUES_FRAME)
-                time.sleep(0.01)
-                payload = self._unframe(self.ser.read(80))
-            if payload and payload[0] == COMM_GET_VALUES and len(payload) >= 27:
-                # fw 3.x layout: id, temp_fet(2), temp_motor(2), motor_i(4),
-                # input_i(4), id(4), iq(4), duty(2), rpm(4) -> rpm at offset 23
-                return float(struct.unpack(">i", payload[23:27])[0])
+                time.sleep(0.02)
+                payload = self._unframe(self.ser.read(120))
+            if not payload or payload[0] != COMM_GET_VALUES or len(payload) < 27:
+                return {}
+            def i16(o): return struct.unpack(">h", payload[o:o+2])[0]
+            def i32(o): return struct.unpack(">i", payload[o:o+4])[0]
+            temp_fet   = i16(1)  / 10.0
+            temp_motor = i16(3)  / 10.0
+            motor_i    = i32(5)  / 100.0
+            input_i    = i32(9)  / 100.0
+            duty       = i16(21) / 1000.0
+            rpm        = i32(23)
+            out = {
+                "temp_fet":   round(temp_fet,   1),
+                "temp_motor": round(temp_motor, 1),
+                "motor_i":    round(motor_i,    2),
+                "input_i":    round(input_i,    2),
+                "duty":       round(duty,        3),
+                "rpm":        int(rpm),
+            }
+            if len(payload) >= 29:
+                v_in = i16(27) / 10.0
+                if 6.0 <= v_in <= 20.0:  # sanity: LiPo 2S–5S
+                    out["v_in"] = round(v_in, 1)
+            return out
         except Exception:
-            pass
-        return 0.0
+            return {}
 
     @staticmethod
     def _unframe(raw: bytes):

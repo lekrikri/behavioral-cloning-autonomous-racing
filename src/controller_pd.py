@@ -299,101 +299,229 @@ class _MaskState:
 
 _mask_state = _MaskState()
 
-_UI_PAGE = """<!doctype html><html><head><meta charset=utf-8><title>Virida Robocar</title>
-<style>body{background:#111;color:#ddd;font-family:monospace;margin:0;padding:8px}
-img{max-width:100%;border:1px solid #333}
-button{background:#222;color:#ddd;border:1px solid #444;padding:6px 10px;margin:2px;cursor:pointer;font-family:monospace}
-button:hover{background:#333}button.on{background:#155;color:#0ff}
-#k{color:#6cf}.row{margin:6px 0}#st{color:#fc6}
-.sep{display:inline-block;width:8px}
+_UI_PAGE = """<!doctype html>
+<html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Robocar HQ</title><style>
+:root{--bg:#090b10;--s:#0d1117;--s2:#111827;--b:#1e2d3e;--b2:#243447;
+--cy:#00d4ff;--gr:#39d353;--re:#f85149;--or:#f08030;--ye:#e3b341;--pu:#a371f7;
+--tx:#cdd9e5;--mu:#6e7681;--r:8px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font-family:'Segoe UI',system-ui,sans-serif;font-size:13px}
+.hdr{display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(--s);
+  border-bottom:1px solid var(--b);position:sticky;top:0;z-index:10;flex-wrap:wrap}
+.logo{font-size:15px;font-weight:800;letter-spacing:2px;color:var(--cy)}
+.badge{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:1px;
+  background:#1a2535;border:1px solid var(--b2);color:var(--mu);transition:all .3s}
+.badge.run{background:#0d2616;border-color:var(--gr);color:var(--gr)}
+.badge.stp{background:#2a1116;border-color:var(--re);color:var(--re)}
+.sp{flex:1}.fps{color:var(--mu);font-size:11px;font-variant-numeric:tabular-nums}
+.btn{padding:6px 14px;border:1px solid var(--b2);border-radius:6px;background:var(--s2);
+  color:var(--tx);cursor:pointer;font-size:12px;font-weight:600;letter-spacing:.5px;
+  transition:all .15s;font-family:inherit}
+.btn:hover{filter:brightness(1.3)}
+.bstop{background:#3a1520;border-color:var(--re);color:var(--re)}
+.bgo{background:#0d2616;border-color:var(--gr);color:var(--gr)}
+img{width:100%;display:block;background:#000}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:10px}
+@media(max-width:700px){.metrics{grid-template-columns:repeat(2,1fr)}}
+.card{background:var(--s);border:1px solid var(--b);border-radius:var(--r);
+  padding:12px;position:relative;overflow:hidden}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,var(--ca,var(--cy)),transparent)}
+.ct{font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;
+  color:var(--mu);margin-bottom:10px}
+.cv{font-size:26px;font-weight:700;font-family:Consolas,monospace;
+  color:var(--ca,var(--cy));margin-bottom:4px;line-height:1}
+.cs{font-size:11px;color:var(--mu);margin-top:4px}
+.bbw{background:#1a2535;border-radius:4px;height:6px;margin:8px 0;overflow:hidden}
+.bb{height:100%;border-radius:4px;transition:width .5s,background .5s}
+.mr{display:flex;justify-content:space-between;align-items:center;padding:3px 0;
+  border-bottom:1px solid #111827}
+.mr:last-child{border-bottom:none}
+.ml{color:var(--mu);font-size:11px}
+.mv{font-family:Consolas,monospace;font-size:12px;font-weight:600}
+.mb{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;
+  font-size:11px;font-weight:700;letter-spacing:1px;margin-bottom:7px}
+.mst{background:#0d2616;border:1px solid var(--gr);color:var(--gr)}
+.mco{background:#1a1a0d;border:1px solid var(--ye);color:var(--ye)}
+.mut{background:#2a1116;border:1px solid var(--re);color:var(--re)}
+.min{background:#1a2535;border:1px solid var(--mu);color:var(--mu)}
+.cbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;
+  background:var(--s);border-top:1px solid var(--b);border-bottom:1px solid var(--b)}
+.csep{width:1px;height:20px;background:var(--b2);margin:0 2px}
+.bma{padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;letter-spacing:.5px}
+.bma.aa{background:#0d2616;border-color:var(--gr)!important;color:var(--gr)}
+.bma.at{background:#2a2a0d;border-color:var(--ye)!important;color:var(--ye)}
+.bca{padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600}
+.bca.rec{background:#3a1520;border-color:var(--re)!important;color:var(--re);animation:pu 1.5s infinite}
+@keyframes pu{0%,100%{opacity:1}50%{opacity:.6}}
+details>summary{cursor:pointer;list-style:none;padding:8px 14px;font-size:11px;
+  font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--mu);
+  background:var(--s);border-bottom:1px solid var(--b);user-select:none}
+details>summary::before{content:'▶  '}
+details[open]>summary::before{content:'▼  '}
+.mbtns{display:flex;flex-wrap:wrap;gap:4px;padding:10px 12px;
+  background:var(--s);border-bottom:1px solid var(--b)}
+.mbtns button{padding:4px 8px;font-size:11px;border-radius:4px}
+.mbtns button.on{background:#1a3a3a;border-color:var(--cy);color:var(--cy)}
+.stbar{padding:5px 14px;font-size:11px;font-family:Consolas,monospace;
+  color:var(--mu);background:var(--bg);min-height:26px}
+.led{display:inline-block;width:8px;height:8px;border-radius:50%;
+  background:var(--mu);margin-right:4px;vertical-align:middle}
+.led.on{background:var(--gr);box-shadow:0 0 6px var(--gr)}
+.toast{position:fixed;bottom:16px;right:16px;background:#1e2d3e;border:1px solid var(--cy);
+  border-radius:8px;padding:9px 15px;font-size:12px;color:var(--cy);
+  transform:translateY(60px);opacity:0;transition:all .3s;z-index:100;max-width:280px}
+.toast.show{transform:translateY(0);opacity:1}
 </style></head><body>
-<div class=row><img id=fr style="max-width:100%;border:1px solid #333"></div>
-<div class=row style="border:1px solid #533;padding:6px">
-  conduite :
-  <button onclick="C('/stop')" style="background:#511">STOP</button>
-  <button onclick="C('/go')" style="background:#151">GO</button>
-  <span class=sep></span>status: <span id=st>—</span>
-  <span class=sep></span><span class=sep></span>
-  <button onclick="setMode('auto')" id=bm_auto style="background:#153;border:2px solid #0f0">AUTONOME</button>
-  <button onclick="setMode('teleop')" id=bm_teleop style="background:#333">MANUEL (manette)</button>
-  <span class=sep></span><span id=gp_status style="color:#888">manette: —</span>
+<div class=hdr>
+  <span class=logo>&#127950; ROBOCAR HQ</span>
+  <span id=hdr_badge class="badge stp">&#9679; STOPPED</span>
+  <span class=sp></span>
+  <span class=fps id=hdr_fps>— fps</span>
+  <button class="btn bstop" onclick="drv('/stop')">&#9632; STOP</button>
+  <button class="btn bgo"   onclick="drv('/go')">&#9654; GO</button>
 </div>
-<div class=row>
-  Carto :
-  <button onclick="cartoToggle()" id=bcarto style="background:#225;border:2px solid #339">&#9654; DÉMARRER CARTO</button>
-  <span class=sep></span><span id=carto_status style="color:#888">—</span>
-  <span class=sep></span><a href="/map.svg" target="_blank" style="color:#08f;text-decoration:none">&#128506; Voir carte</a>
+<img id=fr alt=stream>
+<div class=metrics>
+  <div class=card style="--ca:var(--gr)">
+    <div class=ct>&#9889; Batterie</div>
+    <div class=cv><span id=v_in>—</span><span style="font-size:14px"> V</span></div>
+    <div class=bbw><div id=bb class=bb style="width:0%;background:var(--gr)"></div></div>
+    <div class=cs><span id=bat_pct>—</span>% &nbsp;&#183;&nbsp; <span id=input_i>—</span> A &nbsp;&#183;&nbsp; <span id=pw>—</span> W</div>
+  </div>
+  <div class=card style="--ca:var(--cy)">
+    <div class=ct>&#9881; Moteur VESC</div>
+    <div class=mr><span class=ml>Duty</span><span class=mv id=duty>—</span></div>
+    <div class=mr><span class=ml>RPM</span><span class=mv id=rpm>—</span></div>
+    <div class=mr><span class=ml>I moteur</span><span class=mv id=motor_i>—</span></div>
+    <div class=mr><span class=ml>T&#176; FET</span><span class=mv id=temp_fet>—</span></div>
+    <div class=mr><span class=ml>T&#176; moteur</span><span class=mv id=temp_motor>—</span></div>
+  </div>
+  <div class=card style="--ca:var(--pu)">
+    <div class=ct>&#128187; Jetson Nano</div>
+    <div class=mr><span class=ml>CPU T&#176;</span><span class=mv id=cpu_temp>—</span></div>
+    <div class=mr><span class=ml>GPU T&#176;</span><span class=mv id=gpu_temp>—</span></div>
+    <div class=mr><span class=ml>CPU %</span><span class=mv id=cpu_pct>—</span></div>
+    <div class=mr><span class=ml>RAM</span><span class=mv id=ram>—</span></div>
+  </div>
+  <div class=card style="--ca:var(--or)">
+    <div class=ct>&#129517; Navigation</div>
+    <div id=nav_mode class="mb min">— INIT</div>
+    <div class=mr><span class=ml>Steer</span><span class=mv id=steer_v>—</span></div>
+    <div class=mr><span class=ml>Erreur</span><span class=mv id=err_v>—</span></div>
+    <div class=mr><span class=ml>Ray asym</span><span class=mv id=ray_v>—</span></div>
+    <div class=mr><span class=ml>Blobs</span><span class=mv id=blobs_v>—</span></div>
+  </div>
 </div>
-<div class=row>
-<b>Masque :</b>
+<div class=cbar>
+  <span class=led id=gp_led></span>
+  <button class="btn bma" id=bma onclick="setMode('auto')">AUTONOME</button>
+  <button class="btn bma" id=bmt onclick="setMode('teleop')">MANUEL</button>
+  <span id=gp_st style="color:var(--mu);font-size:11px">manette: —</span>
+  <span class=csep></span>
+  <button class="btn bca" id=bcarto onclick="ctoggle()">&#9654; CARTO</button>
+  <span id=carto_st style="color:var(--mu);font-size:11px">—</span>
+  <a href=/map.svg target=_blank style="color:var(--cy);font-size:11px;text-decoration:none">&#128506; Voir carte</a>
+</div>
+<details><summary>R&#233;glage masque</summary>
+<div class=mbtns>
 <button onclick="K('t')" id=bt>t top-hat</button>
-<button onclick="K(',')">, k-</button><button onclick="K('.')">. k+</button>
-<button onclick="K('[')">[ thr-</button><button onclick="K(']')">] thr+</button>
-<span class=sep></span>
+<button onclick="K(',')">k&#8722;</button><button onclick="K('.')">k+</button>
+<button onclick="K('[')">thr&#8722;</button><button onclick="K(']')">thr+</button>
 <button onclick="K('f')" id=bf>f forme</button>
-<button onclick="K(';')">; fill-</button><button onclick="K(&quot;'&quot;)">' fill+</button>
-<span class=sep></span>
+<button onclick="K(';')">fill&#8722;</button><button onclick="K(\"'\")">fill+</button>
 <button onclick="K('c')" id=bc>c temp</button>
-<button onclick="K('b')">b win-</button><button onclick="K('n')">n win+</button>
-<span class=sep></span>
-<button onclick="K('-')">- V</button><button onclick="K('=')">+ V</button>
-<button onclick="K('o')">o crop+</button><button onclick="K('p')">p crop-</button>
-<button onclick="K('m')">m mask</button><button onclick="K('r')">r rays</button>
-<span class=sep></span>
-<button onclick="S()" style="background:#353;color:#0f0;font-weight:bold">Sauvegarder config anti-blob</button>
-<span id=sv style="color:#0f0;margin-left:8px"></span>
-</div>
-<div class=row>etat: <span id=k>—</span></div>
+<button onclick="K('b')">win&#8722;</button><button onclick="K('n')">win+</button>
+<button onclick="K('-')">V&#8722;</button><button onclick="K('=')">V+</button>
+<button onclick="K('o')">crop+</button><button onclick="K('p')">crop&#8722;</button>
+<button onclick="K('m')">mask</button><button onclick="K('r')">rays</button>
+<button onclick="S()" style="background:#1a3a2a;border-color:var(--gr);color:var(--gr);font-weight:700">&#128190; Sauvegarder config</button>
+<span id=sv style="color:var(--gr);font-size:11px"></span>
+</div></details>
+<div class=stbar id=k>—</div>
+<div class=toast id=toast></div>
 <script>
-var _poll=true;
-function _refresh(){if(!_poll)return;var i=document.getElementById('fr');var n='/snapshot?t='+Date.now();var tmp=new Image();tmp.onload=function(){i.src=n;if(_poll)setTimeout(_refresh,80);};tmp.onerror=function(){if(_poll)setTimeout(_refresh,200);};tmp.src=n;}
-_refresh();
-function K(k){fetch('/key?k='+encodeURIComponent(k)).then(r=>r.text()).then(t=>{
+var _p=true;
+function _rf(){if(!_p)return;var i=document.getElementById('fr');var n='/snapshot?t='+Date.now();
+  var t=new Image();t.onload=function(){i.src=n;if(_p)setTimeout(_rf,80);};
+  t.onerror=function(){if(_p)setTimeout(_rf,300);};t.src=n;}
+_rf();
+var _tt=null;
+function toast(m){var t=document.getElementById('toast');t.textContent=m;t.classList.add('show');
+  clearTimeout(_tt);_tt=setTimeout(function(){t.classList.remove('show');},3000);}
+function drv(p){fetch(p).then(r=>r.text()).then(function(t){toast(t);});}
+function K(k){fetch('/key?k='+encodeURIComponent(k)).then(r=>r.text()).then(function(t){
   document.getElementById('k').textContent=t;
   document.getElementById('bt').className=t.includes('TH(k=0')?'':'on';
   document.getElementById('bf').className=t.includes('FILL=1.0')||t.includes('FILL=off')?'':'on';
-  document.getElementById('bc').className=t.includes('TEMP=1')||t.includes('TEMP=off')?'':'on';
-});}
-function C(p){fetch(p).then(r=>r.text()).then(t=>{document.getElementById('st').textContent=t;});}
-function S(){fetch('/save_mask').then(r=>r.text()).then(t=>{
-  var el=document.getElementById('sv');
-  el.textContent='Sauvegarde : '+t;
-  setTimeout(function(){el.textContent='';},4000);
-});}
-function setMode(m){fetch('/set_mode?m='+m).then(r=>r.text()).then(t=>{
-  document.getElementById('bm_auto').style.border=m=='auto'?'2px solid #0f0':'2px solid #333';
-  document.getElementById('bm_auto').style.background=m=='auto'?'#153':'#333';
-  document.getElementById('bm_teleop').style.border=m=='teleop'?'2px solid #ff0':'2px solid #333';
-  document.getElementById('bm_teleop').style.background=m=='teleop'?'#553':'#333';
-  document.getElementById('gp_status').textContent='mode: '+t;
-});}
-setInterval(function(){fetch('/gp_status').then(r=>r.text()).then(t=>{
-  document.getElementById('gp_status').textContent=t;
-}).catch(function(){});},1000);
-var _carto_on=false;
-function cartoToggle(){
-  var url=_carto_on?'/stop_map':'/start_map';
-  fetch(url).then(r=>r.text()).then(function(t){
-    _carto_on=!_carto_on;
-    var b=document.getElementById('bcarto');
-    if(_carto_on){b.textContent='■ ARRÊTER CARTO';b.style.background='#511';b.style.borderColor='#f44';}
-    else{b.textContent='▶ DÉMARRER CARTO';b.style.background='#225';b.style.borderColor='#339';}
-    document.getElementById('carto_status').textContent=t;
+  document.getElementById('bc').className=t.includes('TEMP=1')||t.includes('TEMP=off')?'':'on';});}
+function S(){fetch('/save_mask').then(r=>r.text()).then(function(t){
+  var e=document.getElementById('sv');e.textContent='&#10003; '+t;
+  setTimeout(function(){e.textContent='';},4000);toast('Config masque sauvegard&#233;e');});}
+document.addEventListener('keydown',function(e){var k=e.key;if(k===' '||k.length===1){e.preventDefault();K(k);}});
+function setMode(m){fetch('/set_mode?m='+m).then(r=>r.text()).then(function(){_umode(m);toast('Mode: '+m.toUpperCase());});}
+function _umode(m){
+  document.getElementById('bma').className='btn bma'+(m==='auto'?' aa':'');
+  document.getElementById('bmt').className='btn bma'+(m==='teleop'?' at':'');}
+var _co=false;
+function ctoggle(){var u=_co?'/stop_map':'/start_map';
+  fetch(u).then(r=>r.text()).then(function(t){_co=!_co;_ucarto();toast(t);});}
+function _ucarto(){var b=document.getElementById('bcarto');
+  b.className='btn bca'+(_co?' rec':'');
+  b.textContent=_co?'&#9209; STOP CARTO':'&#9654; CARTO';}
+function _col(v,w,e){return v==null?'var(--mu)':v>=e?'var(--re)':v>=w?'var(--or)':'var(--tx)'}
+function _batpct(v){return v==null?null:Math.max(0,Math.min(100,Math.round((v-9.9)/(12.6-9.9)*100)));}
+function _batcol(p){return p==null?'var(--gr)':p<15?'var(--re)':p<35?'var(--or)':'var(--gr)';}
+setInterval(function(){
+  fetch('/telemetry').then(r=>r.json()).then(function(d){
+    var b=document.getElementById('hdr_badge');
+    b.className='badge '+(d.drive?'run':'stp');
+    b.textContent=d.drive?'&#9679; RUNNING':'&#9679; STOPPED';
+    document.getElementById('hdr_fps').textContent=(d.fps||0).toFixed(0)+' fps';
+    var vk=d.vesc||{};
+    var v=vk.v_in!=null?vk.v_in:null;
+    var ai=vk.input_i!=null?vk.input_i:null;
+    var vi=document.getElementById('v_in');
+    vi.textContent=v!=null?v.toFixed(1):'—';
+    vi.style.color=v!=null&&v<10.5?'var(--re)':v!=null&&v<11.1?'var(--or)':'var(--gr)';
+    var p=_batpct(v);
+    document.getElementById('bat_pct').textContent=p!=null?p:'—';
+    var bar=document.getElementById('bb');bar.style.width=(p||0)+'%';bar.style.background=_batcol(p);
+    document.getElementById('input_i').textContent=ai!=null?ai.toFixed(1)+'A':'—';
+    document.getElementById('pw').textContent=(v!=null&&ai!=null)?(v*ai).toFixed(0):'—';
+    document.getElementById('duty').textContent=vk.duty!=null?Math.round(vk.duty*100)+'%':'—';
+    document.getElementById('rpm').textContent=vk.rpm!=null?vk.rpm:'—';
+    document.getElementById('motor_i').textContent=vk.motor_i!=null?vk.motor_i.toFixed(1)+' A':'—';
+    var tf=vk.temp_fet,tm=vk.temp_motor;
+    var tfe=document.getElementById('temp_fet');tfe.textContent=tf!=null?tf.toFixed(0)+'&#176;C':'—';tfe.style.color=_col(tf,60,80);
+    var tmo=document.getElementById('temp_motor');tmo.textContent=tm!=null?tm.toFixed(0)+'&#176;C':'—';tmo.style.color=_col(tm,70,90);
+    var sk=d.sys||{};
+    var ct=sk.cpu_temp,gt=sk.gpu_temp;
+    var cte=document.getElementById('cpu_temp');cte.textContent=ct!=null?ct.toFixed(0)+'&#176;C':'—';cte.style.color=_col(ct,65,80);
+    var gte=document.getElementById('gpu_temp');gte.textContent=gt!=null?gt.toFixed(0)+'&#176;C':'—';gte.style.color=_col(gt,70,85);
+    var cpe=document.getElementById('cpu_pct');cpe.textContent=sk.cpu_pct!=null?sk.cpu_pct.toFixed(0)+'%':'—';cpe.style.color=_col(sk.cpu_pct,70,90);
+    document.getElementById('ram').textContent=sk.ram_used!=null?sk.ram_used.toFixed(1)+'/'+sk.ram_total.toFixed(1)+' GB':'—';
+    var st=d.state||'INIT';
+    var nm=document.getElementById('nav_mode');
+    var mc='min',mi='&#8212;';
+    if(st.indexOf('STRAIGHT')>=0||st.indexOf('LANE')>=0){mc='mst';mi='&#8593;';}
+    else if(st.indexOf('UTURN')>=0){mc='mut';mi='&#8617;';}
+    else if(st.indexOf('CORNER')>=0){mc='mco';mi='&#8599;';}
+    nm.className='mb '+mc;nm.textContent=mi+' '+st;
+    var sv=d.steer||0;
+    var se=document.getElementById('steer_v');se.textContent=(sv>=0?'+':'')+sv.toFixed(2);se.style.color=Math.abs(sv)>0.8?'var(--or)':'var(--tx)';
+    document.getElementById('err_v').textContent=d.err!=null?(d.err>=0?'+':'')+d.err+'px':'—';
+    document.getElementById('ray_v').textContent=d.ray!=null?(d.ray>=0?'+':'')+d.ray.toFixed(2):'—';
+    document.getElementById('blobs_v').textContent=d.blobs!=null?d.blobs:'—';
+    _umode(d.gp_mode||'auto');
+    var gl=document.getElementById('gp_led');
+    gl.className='led'+(d.gp_active?' on':'');
+    document.getElementById('gp_st').textContent=d.gp_active?'manette: '+d.gp_mode:'manette: non connect&#233;e';
+    if(d.mapper_on!==_co){_co=d.mapper_on;_ucarto();}
+    document.getElementById('carto_st').textContent=d.mapper_on?'&#9679; REC '+d.mapper_wpts+'pts':d.mapper_wpts>0?'idle: '+d.mapper_wpts+'pts':'idle';
   }).catch(function(){});
-}
-setInterval(function(){fetch('/map_status').then(r=>r.text()).then(function(t){
-  document.getElementById('carto_status').textContent=t;
-  var on=t.startsWith('rec:');
-  if(on!==_carto_on){
-    _carto_on=on;
-    var b=document.getElementById('bcarto');
-    if(_carto_on){b.textContent='■ ARRÊTER CARTO';b.style.background='#511';b.style.borderColor='#f44';}
-    else{b.textContent='▶ DÉMARRER CARTO';b.style.background='#225';b.style.borderColor='#339';}
-  }
-}).catch(function(){});},2000);
-document.addEventListener('keydown',function(e){
-  var k=e.key;if(k===' '||k.length===1){e.preventDefault();K(k);}
-});
+},500);
 </script></body></html>"""
 
 _latest_jpeg = None
@@ -409,6 +537,13 @@ _coast_throttle = [0.06]           # dernier throttle valide pour coast mode
 _coast_crash_t  = [0.0]            # timestamp du début du crash caméra actuel
 _drive_enabled = False  # démarre ARRÊTÉ — GO requis depuis UI
 _go_reset = [False]         # mis à True par /go → PDController reset son état CORNER/Kalman
+
+# ── Télémétrie temps réel (partagée entre boucle + serveur HTTP) ──────────────
+_ctrl_telem = {"steer": 0.0, "throttle": 0.0, "err": None,
+               "state": "INIT", "blobs": 0, "fps": 0.0, "ray": 0.0}
+_vesc_telem = {}   # rempli par _vesc_poll_thread
+_sys_telem  = {}   # rempli par _sys_poll_thread
+_vesc_ref   = [None]  # référence au VESC pour le thread poll
 _calibrate_request = [False]       # mis à True par /calibrate → PDController applique l'offset
 _calibrate_result  = [None]        # renseigné par PDController avec la valeur appliquée
 _finish_map_request = [False]      # mis à True par /finish_map → sauvegarde track_map.json
@@ -545,6 +680,87 @@ def _make_placeholder():
     return jpg.tobytes()
 
 
+def _vesc_poll_thread():
+    """Lit la télémétrie VESC toutes les 2s sans perturber la boucle de contrôle."""
+    while True:
+        time.sleep(2.0)
+        v = _vesc_ref[0]
+        if v is not None:
+            vals = v.get_all_values()
+            if vals:
+                _vesc_telem.update(vals)
+
+
+def _sys_poll_thread():
+    """Lit températures / CPU / RAM Jetson toutes les 3s via /sys et /proc."""
+    def _read_int(path, default=None):
+        try:
+            return int(open(path).read().strip())
+        except Exception:
+            return default
+
+    prev_idle = prev_total = 0
+    while True:
+        # ── Températures (/sys/class/thermal) ────────────────────────────
+        temps = {}
+        for i in range(10):
+            raw = _read_int("/sys/class/thermal/thermal_zone{}/temp".format(i))
+            if raw is None:
+                break
+            try:
+                zone_type = open("/sys/class/thermal/thermal_zone{}/type".format(i)).read().strip()
+            except Exception:
+                zone_type = "zone{}".format(i)
+            temps[zone_type] = round(raw / 1000.0, 1)
+
+        def _pick(keys):
+            for k in keys:
+                if k in temps:
+                    return temps[k]
+            return list(temps.values())[0] if temps else None
+
+        cpu_temp = _pick(["CPU-therm", "cpu-thermal", "cpu0-thermal", "CPU", "zone0"])
+        gpu_temp = _pick(["GPU-therm", "gpu-thermal", "GPU"])
+
+        # ── CPU usage (/proc/stat) ────────────────────────────────────────
+        cpu_pct = None
+        try:
+            parts = open("/proc/stat").readline().split()[1:]
+            vals  = [int(x) for x in parts]
+            idle  = vals[3]
+            total = sum(vals)
+            if prev_total > 0:
+                d_idle  = idle  - prev_idle
+                d_total = total - prev_total
+                cpu_pct = round(100.0 * (1.0 - d_idle / max(d_total, 1)), 1)
+            prev_idle, prev_total = idle, total
+        except Exception:
+            pass
+
+        # ── RAM (/proc/meminfo) ───────────────────────────────────────────
+        ram_used = ram_total = None
+        try:
+            mi = {}
+            for line in open("/proc/meminfo").readlines()[:10]:
+                k, v = line.split(":")
+                mi[k.strip()] = int(v.strip().split()[0])  # kB
+            ram_total_kb = mi.get("MemTotal", 0)
+            ram_free_kb  = mi.get("MemFree", 0) + mi.get("Buffers", 0) + mi.get("Cached", 0)
+            ram_total = round(ram_total_kb / 1024.0 / 1024.0, 1)
+            ram_used  = round((ram_total_kb - ram_free_kb) / 1024.0 / 1024.0, 1)
+        except Exception:
+            pass
+
+        _sys_telem.update({
+            "cpu_temp": cpu_temp,
+            "gpu_temp": gpu_temp,
+            "cpu_pct":  cpu_pct,
+            "ram_used": ram_used,
+            "ram_total": ram_total,
+        })
+        time.sleep(3.0)
+
+
 class MJPEGHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -623,6 +839,33 @@ class MJPEGHandler(BaseHTTPRequestHandler):
                 self._send_text("rec:{}wpts".format(len(m.waypoints)))
             else:
                 self._send_text("idle:{}wpts".format(len(m.waypoints)))
+            return
+        if path == "/telemetry":
+            import json as _json
+            m = _mapper_ref[0]
+            payload = {
+                "drive":      _drive_enabled,
+                "steer":      _ctrl_telem["steer"],
+                "throttle":   _ctrl_telem["throttle"],
+                "err":        _ctrl_telem["err"],
+                "state":      _ctrl_telem["state"],
+                "blobs":      _ctrl_telem["blobs"],
+                "fps":        _ctrl_telem["fps"],
+                "ray":        _ctrl_telem["ray"],
+                "gp_mode":    _gp_mode[0],
+                "gp_active":  _gp_active[0],
+                "vesc":       dict(_vesc_telem),
+                "sys":        dict(_sys_telem),
+                "mapper_on":  (m.is_mapping if m else False),
+                "mapper_wpts":(len(m.waypoints) if m else 0),
+            }
+            body = _json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
             return
         if path == "/set_mode":
             from urllib.parse import parse_qs, urlparse as _up2
@@ -2204,6 +2447,10 @@ def run(args):
         _gp_thread.start()
         print("[gp] Thread manette démarré — {} | Y=toggle TELEOP/AUTO".format(args.js))
 
+    # ── Threads télémétrie ────────────────────────────────────────────────────
+    threading.Thread(target=_sys_poll_thread, daemon=True).start()
+    # _vesc_poll_thread est démarré après la création du VESC (plus bas)
+
     # Mode replay : charge le CSV de piste enregistrée
     replay_data = None
     if args.replay:
@@ -2230,6 +2477,8 @@ def run(args):
                              current_max=CURRENT_MAX,
                              throttle_mode="duty", max_duty=1.0,
                              invert_motor=False)
+        _vesc_ref[0] = vesc
+        threading.Thread(target=_vesc_poll_thread, daemon=True).start()
         print("[ctrl] VESC connecte sur {}".format(args.port))
     else:
         print("[ctrl] DRY-RUN — VESC non commande")
@@ -2313,6 +2562,15 @@ def run(args):
             push_frame(bgr, info.get("mask_clean", mask), info, info.get("rejected_blobs"))
         _last_frame_time[0] = time.time()
         frame_n[0] += 1
+        # ── Mise à jour télémétrie temps réel ────────────────────────────────
+        _fps_now = frame_n[0] / max(time.time() - t0[0], 0.001)
+        _ctrl_telem["steer"]    = round(steering, 3)
+        _ctrl_telem["throttle"] = round(throttle, 3)
+        _ctrl_telem["err"]      = int(info["err"]) if info["err"] is not None else None
+        _ctrl_telem["state"]    = info["state"]
+        _ctrl_telem["blobs"]    = info["n_blobs"]
+        _ctrl_telem["fps"]      = round(_fps_now, 1)
+        _ctrl_telem["ray"]      = round(info.get("ray_asym", 0.0), 3)
         if frame_n[0] % (CAM_FPS * 3) == 0:
             fps = frame_n[0] / max(time.time() - t0[0], 0.001)
             mid = CAM_W // 2

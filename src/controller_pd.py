@@ -363,7 +363,7 @@ def push_frame(bgr, mask, info, rejected_blobs=None):
             cv2.rectangle(vis, (x, yt), (x + w, yt + h), (0, 128, 255), 1)
             cv2.putText(vis, rb["reason"], (x, max(yt - 2, 8)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.28, (0, 128, 255), 1)
-    # Ligne verticale blanche = cible (la voiture doit rester ici)
+    # Ligne verticale blanche = centre image (référence fixe)
     cv2.line(vis, (CAM_W // 2, int(CAM_H * ROI_FAR)), (CAM_W // 2, CAM_H), (255, 255, 255), 1)
     # Lignes JAUNES verticales = positions détectées par histogramme
     y_hist = int(CAM_H * 0.62)
@@ -371,6 +371,13 @@ def push_frame(bgr, mask, info, rejected_blobs=None):
         cv2.line(vis, (info["hist_left_cx"], y_hist), (info["hist_left_cx"], CAM_H), (0, 220, 255), 2)
     if info.get("hist_right_cx") is not None:
         cv2.line(vis, (info["hist_right_cx"], y_hist), (info["hist_right_cx"], CAM_H), (0, 220, 255), 2)
+    # Ligne MAGENTA = milieu exact entre les deux lignes (invariant : voiture toujours entre elles)
+    # Quand cette ligne coïncide avec la blanche → err=0 → voiture parfaitement centrée
+    if info.get("hist_left_cx") is not None and info.get("hist_right_cx") is not None:
+        _lane_mid = (info["hist_left_cx"] + info["hist_right_cx"]) // 2
+        cv2.line(vis, (_lane_mid, int(CAM_H * 0.45)), (_lane_mid, CAM_H), (255, 0, 255), 2)
+        cv2.putText(vis, "C", (_lane_mid + 3, int(CAM_H * 0.48)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 0, 255), 1)
     # Lignes ORANGE POINTILLÉES = positions PRÉDITES (ligne disparue, extrapolée par velocity)
     for _pcx in [info.get("pred_left_cx"), info.get("pred_right_cx")]:
         if _pcx is not None:
@@ -1306,6 +1313,9 @@ class PDController:
                 n_blobs += 1
 
             # ── Centrage si b=2 (y compris prédictions + track_width) ────────
+            # INVARIANT : la voiture est TOUJOURS entre les deux lignes blanches.
+            # Si les deux lignes sont réellement détectées cette frame → centrage exact, sans biais.
+            # Inner_bias seulement si au moins une ligne est prédite (hors champ).
             _center_used = False
             if left_cx is not None and right_cx is not None:
                 _tw_c = right_cx - left_cx
@@ -1313,12 +1323,17 @@ class PDController:
                                   and _tw_c > 80)
                 if _car_between_c:
                     _center_c = (left_cx + right_cx) // 2
-                    # Apex dynamique selon courbure mesurée (valeurs réduites pour éviter sur-correction)
-                    _bias_map = {"straight": 8, "medium": 15, "tight": 25, "uturn": 50}
-                    _inner_bias = _bias_map.get(self.curv_class,
-                                                CORNER_INNER_BIAS_U if self.is_u_turn
-                                                else CORNER_INNER_BIAS_S)
-                    err = (_center_c - CAM_W // 2 - effective_offset) - _inner_bias * self.corner_dir
+                    _both_real = (self.left_age == 0 and self.right_age == 0)
+                    if _both_real:
+                        # Deux vraies lignes vues → err = milieu exact, pas d'inner_bias
+                        err = _center_c - CAM_W // 2 - effective_offset
+                    else:
+                        # Au moins une ligne prédite → légère poussée vers l'intérieur
+                        _bias_map = {"straight": 8, "medium": 15, "tight": 25, "uturn": 50}
+                        _inner_bias = _bias_map.get(self.curv_class,
+                                                    CORNER_INNER_BIAS_U if self.is_u_turn
+                                                    else CORNER_INNER_BIAS_S)
+                        err = (_center_c - CAM_W // 2 - effective_offset) - _inner_bias * self.corner_dir
                     _center_used = True
             if not _center_used:
                 _err_force = U_ERR_FORCE if self.is_u_turn else 220.0

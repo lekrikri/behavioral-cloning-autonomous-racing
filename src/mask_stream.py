@@ -9,6 +9,8 @@ seules les frames rendues + compressées transitent vers le PC.
 
 ── Jetson ──
   OPENBLAS_CORETYPE=ARMV8 python3 mask_stream.py [--port 8088] [--width 512] [--height 256]
+  # --source hub : lit camera_hub (preview + conduite autonome partagent la caméra).
+  #   Le hub est AUTO-LANCÉ s'il n'écoute pas déjà (--no-auto-hub pour le gérer à part).
 
 ── PC (LG Gram) ──
   ssh -L 8088:localhost:8088 robocar      # forward le port (sens laptop→Jetson, OK Tailscale)
@@ -397,6 +399,28 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
+def ensure_hub(hub_port, width, height):
+    """Lance camera_hub.py si aucun hub n'écoute déjà sur hub_port.
+    Retourne le Popen géré (à terminer en sortie), ou None si un hub tournait déjà."""
+    import socket as _socket
+    try:
+        c = _socket.create_connection(("127.0.0.1", hub_port), 1.0)
+        c.close()
+        print(f"[stream] hub déjà actif sur :{hub_port}")
+        return None
+    except OSError:
+        pass  # aucun hub → on le lance
+    here = os.path.dirname(os.path.abspath(__file__))
+    env = dict(os.environ)
+    env["OPENBLAS_CORETYPE"] = "ARMV8"
+    proc = subprocess.Popen(
+        [sys.executable, os.path.join(here, "camera_hub.py"),
+         "--port", str(hub_port), "--width", str(width), "--height", str(height)],
+        env=env)
+    print(f"[stream] hub auto-lancé (pid {proc.pid}) sur :{hub_port}")
+    return proc
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port",     type=int, default=8088)
@@ -405,12 +429,18 @@ def main():
     parser.add_argument("--source",   choices=["device", "hub"], default="device",
                         help="device=ouvre l'OAK-D directement | hub=lit camera_hub")
     parser.add_argument("--hub-port", type=int, default=8077)
+    parser.add_argument("--no-auto-hub", action="store_true",
+                        help="ne pas auto-lancer camera_hub en --source hub (si lancé à part)")
     args = parser.parse_args()
 
     state = State(args.width, args.height)
     Handler.state = state
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     Handler.driver = Driver(repo_root, args.hub_port)
+
+    hub_proc = None
+    if args.source == "hub" and not args.no_auto_hub:
+        hub_proc = ensure_hub(args.hub_port, args.width, args.height)
 
     t = threading.Thread(target=capture_loop,
                          args=(state, args.source, args.hub_port), daemon=True)
@@ -427,6 +457,8 @@ def main():
         state.running = False
         if Handler.driver is not None:
             Handler.driver.shutdown()  # coupe la conduite + stop VESC
+        if hub_proc is not None:
+            hub_proc.terminate()       # tue le hub auto-lancé
         time.sleep(0.2)
 
 

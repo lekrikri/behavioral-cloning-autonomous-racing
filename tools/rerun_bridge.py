@@ -95,6 +95,7 @@ class Bridge:
 
         for key, entity in (("color_jpeg", "camera/color"),
                             ("depth_jpeg", "camera/depth"),
+                            ("mask_raw_jpeg", "camera/mask_raw"),
                             ("mask_jpeg", "camera/mask")):
             b64 = msg.get(key)
             if b64:
@@ -105,6 +106,10 @@ class Bridge:
         if msg.get("erpm") is not None:
             rr.log("plots/erpm", rr.Scalars(float(msg["erpm"])))
         rr.log("plots/heading_deg", rr.Scalars(float(np.degrees(theta))))
+        if msg.get("loop_hz") is not None:
+            rr.log("plots/loop_hz", rr.Scalars(float(msg["loop_hz"])))
+        if msg.get("frame_age_ms") is not None:
+            rr.log("plots/frame_age_ms", rr.Scalars(float(msg["frame_age_ms"])))
 
         self.n_msg += 1
 

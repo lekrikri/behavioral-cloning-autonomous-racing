@@ -31,7 +31,7 @@ if _SRC not in sys.path:
 
 from vesc_interface import VESCInterface
 from visual_rays import white_line_mask
-from camera_hub import FrameClient, IMUClient
+from camera_hub import FrameClient, IMUClient, DepthClient
 from teleop_gamepad import (
     Gamepad, deadzone, calibrate_trigger_rest, trigger_fraction,
     AXIS_STEER, AXIS_ACCEL, AXIS_BRAKE, BTN_QUIT,
@@ -51,29 +51,35 @@ def parse_args():
     p.add_argument("--hub-host", default=None, help="override car.env HUB_HOST")
     p.add_argument("--deadzone", type=float, default=0.08)
     p.add_argument("--hz", type=float, default=30.0)
-    p.add_argument("--no-images", action="store_true", help="don't stream color/mask (saves bandwidth)")
+    p.add_argument("--no-depth", action="store_true", help="don't use the depth ground filter")
+    p.add_argument("--no-images", action="store_true", help="don't stream color/mask/depth (saves bandwidth)")
     p.add_argument("--img-every", type=int, default=8, help="encode+send images every N loops")
     p.add_argument("--img-quality", type=int, default=50)
     return p.parse_args()
 
 
-class _FrameReader(threading.Thread):
-    """Background reader so the loop always has the latest hub color frame, no lag."""
+class _Reader(threading.Thread):
+    """Background reader so the loop always has the latest hub frame, no lag.
 
-    def __init__(self, client):
-        super(_FrameReader, self).__init__()
+    getter is the client method name ('getCvFrame' for color, 'getFrame' for depth)."""
+
+    def __init__(self, client, getter="getCvFrame"):
+        super(_Reader, self).__init__()
         self.daemon = True
         self.client = client
+        self.getter = getter
         self.lock = threading.Lock()
         self.frame = None
+        self.t_recv = 0.0
         self.running = True
 
     def run(self):
         while self.running:
             try:
-                f = self.client.getCvFrame()
+                f = getattr(self.client, self.getter)()
                 with self.lock:
                     self.frame = f
+                    self.t_recv = time.time()
             except Exception:
                 time.sleep(0.2)
                 try:
@@ -83,12 +89,17 @@ class _FrameReader(threading.Thread):
 
     def latest(self):
         with self.lock:
-            return self.frame
+            return self.frame, self.t_recv
 
 
 def _jpeg_b64(img, quality):
     ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
     return base64.b64encode(buf).decode("ascii") if ok else None
+
+
+def _depth_jpeg_b64(depth_mm, max_mm, quality):
+    d8 = np.clip(depth_mm.astype(np.float32) / max_mm * 255.0, 0, 255).astype(np.uint8)
+    return _jpeg_b64(cv2.applyColorMap(d8, cv2.COLORMAP_JET), quality)
 
 
 def calibrate_gyro_bias(imu, seconds):
@@ -121,8 +132,20 @@ def main():
         print("[map] cannot reach the hub at %s (%s)." % (host, e))
         print("      Start it first:  OPENBLAS_CORETYPE=ARMV8 python3 src/camera_hub.py")
         return
-    reader = _FrameReader(frames)
+    reader = _Reader(frames, "getCvFrame")
     reader.start()
+
+    depth_cli = None
+    depth_reader = None
+    if not args.no_depth:
+        depth_cli = DepthClient(host=host, port=cfg.hub_depth_port)
+        try:
+            depth_cli.connect()
+            depth_reader = _Reader(depth_cli, "getFrame")
+            depth_reader.start()
+        except OSError as e:
+            print("[map] no depth channel (%s) -> ground filter disabled" % e)
+            depth_cli = None
 
     try:
         pad = Gamepad("/dev/input/js0")
@@ -169,10 +192,16 @@ def main():
     prev_t = None
     step = 0
     consec_err = 0
+    loop_hz = 0.0
+    last_loop = None
 
     try:
         while True:
             t_loop = time.time()
+            if last_loop is not None:
+                inst = 1.0 / max(1e-3, t_loop - last_loop)
+                loop_hz = 0.9 * loop_hz + 0.1 * inst if loop_hz else inst
+            last_loop = t_loop
             try:
                 pad.poll()
                 if pad.button(BTN_QUIT):
@@ -185,12 +214,19 @@ def main():
                 if not args.no_motor:
                     vesc.drive(steer, rt - lt)
 
-                color = reader.latest()
+                color, t_recv = reader.latest()
+                frame_age_ms = (t_loop - t_recv) * 1000.0 if t_recv else -1.0
+                depth = depth_reader.latest()[0] if depth_reader is not None else None
                 dists_m = None
-                mask = None
+                mask_raw = None
+                mask_f = None
                 if color is not None:
-                    mask = white_line_mask(color)
-                    dists_m, _ = polar(mask)
+                    mask_raw = white_line_mask(color)
+                    if depth is not None and depth.shape == mask_raw.shape:
+                        mask_f = polar.filter_ground(mask_raw, depth, cfg.depth_filter_tol)
+                    else:
+                        mask_f = mask_raw
+                    dists_m, _ = polar(mask_f)
 
                 erpm = vesc.get_rpm()
                 speed = cfg.vesc_k_erpm_to_ms * erpm * cfg.vesc_erpm_sign
@@ -213,16 +249,23 @@ def main():
                     "ray_max_m": cfg.ray_max_m,
                     "speed": speed,
                     "erpm": erpm,
+                    "loop_hz": loop_hz,
+                    "frame_age_ms": frame_age_ms,
                 }
                 if not args.no_images and step % args.img_every == 0 and color is not None:
                     payload["color_jpeg"] = _jpeg_b64(color, args.img_quality)
-                    if mask is not None:
-                        payload["mask_jpeg"] = _jpeg_b64(mask, args.img_quality)
+                    if mask_f is not None:
+                        payload["mask_jpeg"] = _jpeg_b64(mask_f, args.img_quality)
+                    if mask_raw is not None:
+                        payload["mask_raw_jpeg"] = _jpeg_b64(mask_raw, args.img_quality)
+                    if depth is not None:
+                        payload["depth_jpeg"] = _depth_jpeg_b64(depth, cfg.ray_max_m * 1000.0, args.img_quality)
                 tel.publish(payload)
 
                 if step % 30 == 0:
-                    print("\r x=%+.2f y=%+.2f th=%+.1f deg  v=%+.2f m/s   " %
-                          (dr.x, dr.y, np.degrees(dr.theta), speed), end="", flush=True)
+                    print("\r x=%+.2f y=%+.2f th=%+.1f deg  v=%+.2f m/s  %4.1f Hz  frame %3.0f ms   " %
+                          (dr.x, dr.y, np.degrees(dr.theta), speed, loop_hz, frame_age_ms),
+                          end="", flush=True)
                 step += 1
                 consec_err = 0
             except KeyboardInterrupt:
@@ -246,12 +289,16 @@ def main():
         print("\n[map] Ctrl-C -> stop")
     finally:
         reader.running = False
+        if depth_reader is not None:
+            depth_reader.running = False
         vesc.stop()
         vesc.close()
         pad.close()
         tel.close()
         frames.close()
         imu.close()
+        if depth_cli is not None:
+            depth_cli.close()
         _save_map(args, dr, grid)
 
 

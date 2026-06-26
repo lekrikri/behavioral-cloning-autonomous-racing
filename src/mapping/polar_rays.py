@@ -36,6 +36,19 @@ class PolarRays:
         # sector centre angles, left(+) to right(-) — same convention as pose.ray_angles
         self.angles = np.linspace(self.fan / 2.0, -self.fan / 2.0, n_rays)
 
+        # Predicted ground depth (camera optical-axis Z, mm) per image ROW. For a flat
+        # ground and no roll it depends only on the row, so precompute once. inf above
+        # the horizon. Used by the optional depth filter to reject off-ground pixels.
+        rows = np.arange(img_height, dtype=np.float64)
+        yc = (rows - self.cy) / self.fy
+        denom = yc * self._cphi + self._sphi
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t = self.h / denom
+            X = t * (self._cphi - yc * self._sphi)
+            z_mm = (self._cphi * X + self._sphi * self.h) * 1000.0
+        z_mm[denom <= 1e-6] = np.inf
+        self._ground_z_mm = z_mm.astype(np.float32)
+
     def ground_xy(self, u, v):
         """Pixel (u,v) -> ground (forward X, lateral Y) in metres, or None if above horizon."""
         xc = (u - self.cx) / self.fx
@@ -46,8 +59,21 @@ class PolarRays:
         t = self.h / denom
         return t * (self._cphi - yc * self._sphi), t * (-xc)
 
-    def __call__(self, mask):
-        """mask: uint8 (H,W) 0/255. Returns (distances_m[n_rays], angles_rad[n_rays])."""
+    def filter_ground(self, mask, depth_mm, tol=0.35):
+        """Drop mask pixels whose VALID depth is well closer than the ground plane
+        (off-ground objects: walls, chair legs). Invalid depth (textureless asphalt)
+        is kept. depth_mm must be aligned to the color frame, same size as mask."""
+        thresh = self._ground_z_mm * (1.0 - tol)        # (H,)
+        reject = (depth_mm > 0) & (depth_mm.astype(np.float32) < thresh[:, None])
+        out = mask.copy()
+        out[reject] = 0
+        return out
+
+    def __call__(self, mask, depth_mm=None, tol=0.35):
+        """mask: uint8 (H,W) 0/255. Optional depth_mm (same size, aligned) filters out
+        off-ground pixels. Returns (distances_m[n_rays], angles_rad[n_rays])."""
+        if depth_mm is not None:
+            mask = self.filter_ground(mask, depth_mm, tol)
         sub = mask[self.row_start:self.row_end, :]
         ys, xs = np.where(sub > 0)
         out = np.full(self.n_rays, self.max_range, dtype=np.float32)
@@ -114,6 +140,19 @@ def _selftest():
     print("rays hit: %d / %d | min=%.2f max=%.2f m" % (len(hit), pr.n_rays, hit.min(), hit.max()))
     # nearest detected distance should match the closest truth point (0.5 m)
     assert abs(hit.min() - 0.5) < 0.05, "closest ray = %.3f (expected ~0.5)" % hit.min()
+
+    # depth filter: a ground pixel (depth ~= ground Z) is kept; an off-ground pixel
+    # (depth much closer than the ground) is dropped.
+    u, v = _project(pr, 0.5, 0.0)
+    vi, ui = int(round(v)), int(round(u))
+    depth = np.zeros((256, 512), np.uint16)
+    depth[vi, ui] = int(pr._ground_z_mm[vi])           # exactly ground depth -> keep
+    kept = pr.filter_ground(mask, depth)
+    assert kept[vi, ui] == 255, "ground pixel wrongly dropped"
+    depth[vi, ui] = int(pr._ground_z_mm[vi] * 0.4)     # much closer -> off-ground
+    dropped = pr.filter_ground(mask, depth)
+    assert dropped[vi, ui] == 0, "off-ground pixel not filtered"
+    print("depth ground-filter OK (keeps ground, drops off-ground)")
     print("PolarRays self-test OK")
 
 

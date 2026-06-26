@@ -29,6 +29,7 @@ import time
 import numpy as np
 
 MAGIC  = b"RC"
+DEPTH_MAGIC = b"RD"
 HEADER = struct.Struct(">2sHHI")  # magic, height, width, seq
 
 
@@ -128,6 +129,48 @@ class IMUClient:
                 self.sock = None
 
 
+class DepthClient:
+    """Reads aligned depth frames (uint16 mm, same size as color) from the hub."""
+
+    def __init__(self, host="127.0.0.1", port=8079, timeout=5.0):
+        self.addr = (host, port)
+        self.timeout = timeout
+        self.sock = None
+
+    def connect(self):
+        s = socket.create_connection(self.addr, self.timeout)
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.sock = s
+
+    def _recv_exact(self, n):
+        buf = b""
+        while len(buf) < n:
+            chunk = self.sock.recv(n - len(buf))
+            if not chunk:
+                raise ConnectionError("hub fermé")
+            buf += chunk
+        return buf
+
+    def get(self):
+        if self.sock is None:
+            self.connect()
+        magic, h, w, seq = HEADER.unpack(self._recv_exact(HEADER.size))
+        if magic != DEPTH_MAGIC:
+            raise ConnectionError("header depth invalide")
+        data = self._recv_exact(h * w * 2)
+        return seq, np.frombuffer(data, np.uint16).reshape(h, w)
+
+    def getFrame(self):
+        return self.get()[1]
+
+    def close(self):
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            finally:
+                self.sock = None
+
+
 class _Hub:
     def __init__(self, width, height):
         self.W = width
@@ -135,6 +178,8 @@ class _Hub:
         self.lock = threading.Lock()
         self.frame = None
         self.seq = 0
+        self.depth = None
+        self.depth_seq = 0
         self.running = True
         self.imu_clients = []
         self.imu_lock = threading.Lock()
@@ -147,6 +192,15 @@ class _Hub:
     def snapshot(self):
         with self.lock:
             return self.seq, self.frame
+
+    def set_depth(self, frame):
+        with self.lock:
+            self.depth = frame
+            self.depth_seq = (self.depth_seq + 1) & 0xFFFFFFFF
+
+    def depth_snapshot(self):
+        with self.lock:
+            return self.depth_seq, self.depth
 
     def add_imu_client(self, conn):
         with self.imu_lock:
@@ -193,10 +247,32 @@ def _capture(hub):
     ximu.setStreamName("imu")
     imu.out.link(ximu.input)
 
+    # Stereo depth aligned to the color camera (CAM_A) so depth pixels match the
+    # color/mask pixels — used downstream to reject off-ground detections.
+    mono_l = pipeline.create(dai.node.MonoCamera)
+    mono_r = pipeline.create(dai.node.MonoCamera)
+    stereo = pipeline.create(dai.node.StereoDepth)
+    mono_l.setBoardSocket(dai.CameraBoardSocket.CAM_B)
+    mono_r.setBoardSocket(dai.CameraBoardSocket.CAM_C)
+    mono_l.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+    mono_r.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+    mono_l.setFps(30)
+    mono_r.setFps(30)
+    stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
+    stereo.setLeftRightCheck(True)
+    stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
+    mono_l.out.link(stereo.left)
+    mono_r.out.link(stereo.right)
+    xdepth = pipeline.create(dai.node.XLinkOut)
+    xdepth.setStreamName("depth")
+    stereo.depth.link(xdepth.input)
+
     with dai.Device(pipeline) as device:
+        import cv2
         q = device.getOutputQueue("rgb", maxSize=4, blocking=False)
         qi = device.getOutputQueue("imu", maxSize=50, blocking=False)
-        print("[hub] OAK-D OK — diffuse frames + IMU")
+        qd = device.getOutputQueue("depth", maxSize=4, blocking=False)
+        print("[hub] OAK-D OK — diffuse frames + IMU + depth")
         while hub.running:
             hub.set(q.get().getCvFrame())
             d = qi.tryGet()
@@ -206,6 +282,12 @@ def _capture(hub):
                     hub.broadcast_imu(g.getTimestampDevice().total_seconds(),
                                       (g.x, g.y, g.z), (a.x, a.y, a.z))
                 d = qi.tryGet()
+            dd = qd.tryGet()
+            if dd is not None:
+                depth = dd.getFrame()
+                if depth.shape != (hub.H, hub.W):
+                    depth = cv2.resize(depth, (hub.W, hub.H), interpolation=cv2.INTER_NEAREST)
+                hub.set_depth(depth)
     print("[hub] capture terminée")
 
 
@@ -227,10 +309,29 @@ def _serve_client(conn, hub):
         conn.close()
 
 
+def _serve_depth_client(conn, hub):
+    conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    last = -1
+    try:
+        while hub.running:
+            seq, depth = hub.depth_snapshot()
+            if depth is not None and seq != last:
+                last = seq
+                conn.sendall(HEADER.pack(DEPTH_MAGIC, depth.shape[0], depth.shape[1], seq)
+                             + depth.tobytes())
+            else:
+                time.sleep(0.003)
+    except (BrokenPipeError, ConnectionResetError, OSError):
+        pass
+    finally:
+        conn.close()
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port",     type=int, default=8077)
-    parser.add_argument("--imu-port", type=int, default=8078)
+    parser.add_argument("--port",       type=int, default=8077)
+    parser.add_argument("--imu-port",   type=int, default=8078)
+    parser.add_argument("--depth-port", type=int, default=8079)
     parser.add_argument("--width",  type=int, default=512)
     parser.add_argument("--height", type=int, default=256)
     args = parser.parse_args()
@@ -249,7 +350,14 @@ def main():
     imu_srv.listen(8)
     threading.Thread(target=_accept_imu, args=(imu_srv, hub), daemon=True).start()
 
-    print(f"[hub] frames :{args.port} | IMU :{args.imu_port} ({args.width}x{args.height}) — Ctrl+C")
+    depth_srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    depth_srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    depth_srv.bind(("0.0.0.0", args.depth_port))
+    depth_srv.listen(8)
+    threading.Thread(target=_accept_depth, args=(depth_srv, hub), daemon=True).start()
+
+    print(f"[hub] frames :{args.port} | IMU :{args.imu_port} | depth :{args.depth_port}"
+          f" ({args.width}x{args.height}) — Ctrl+C")
     try:
         while True:
             conn, _ = srv.accept()
@@ -260,6 +368,7 @@ def main():
         hub.running = False
         srv.close()
         imu_srv.close()
+        depth_srv.close()
 
 
 def _accept_imu(imu_srv, hub):
@@ -271,6 +380,16 @@ def _accept_imu(imu_srv, hub):
         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         hub.add_imu_client(conn)
         print("[hub] client IMU connecté")
+
+
+def _accept_depth(depth_srv, hub):
+    while hub.running:
+        try:
+            conn, _ = depth_srv.accept()
+        except OSError:
+            break
+        threading.Thread(target=_serve_depth_client, args=(conn, hub), daemon=True).start()
+        print("[hub] client depth connecté")
 
 
 if __name__ == "__main__":

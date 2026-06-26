@@ -307,7 +307,7 @@ button:hover{background:#333}button.on{background:#155;color:#0ff}
 #k{color:#6cf}.row{margin:6px 0}#st{color:#fc6}
 .sep{display:inline-block;width:8px}
 </style></head><body>
-<div class=row><img src="/stream"></div>
+<div class=row><img id=fr style="max-width:100%;border:1px solid #333"></div>
 <div class=row style="border:1px solid #533;padding:6px">
   conduite :
   <button onclick="C('/stop')" style="background:#511">STOP</button>
@@ -335,6 +335,9 @@ button:hover{background:#333}button.on{background:#155;color:#0ff}
 </div>
 <div class=row>etat: <span id=k>—</span></div>
 <script>
+var _poll=true;
+function _refresh(){if(!_poll)return;var i=document.getElementById('fr');var n='/snapshot?t='+Date.now();var tmp=new Image();tmp.onload=function(){i.src=n;if(_poll)setTimeout(_refresh,80);};tmp.onerror=function(){if(_poll)setTimeout(_refresh,200);};tmp.src=n;}
+_refresh();
 function K(k){fetch('/key?k='+encodeURIComponent(k)).then(r=>r.text()).then(t=>{
   document.getElementById('k').textContent=t;
   document.getElementById('bt').className=t.includes('TH(k=0')?'':'on';
@@ -451,6 +454,18 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             k  = (qs.get("k", [""])[0])[:1]
             label = _mask_state.apply_key(k) if k else ""
             self._send_text(label)
+            return
+        if path == "/snapshot":
+            with _frame_cond:
+                jpg = _latest_jpeg or _placeholder
+            if jpg is None:
+                self.send_response(503); self.end_headers(); return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(jpg)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(jpg)
             return
         if path != "/stream":
             self.send_response(404); self.end_headers(); return

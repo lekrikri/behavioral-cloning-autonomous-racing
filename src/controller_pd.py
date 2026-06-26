@@ -1967,7 +1967,7 @@ def run(args):
             print("[ctrl] ERREUR : vesc_interface non disponible"); sys.exit(1)
         vesc = VescInterface(port=args.port, baudrate=args.baud,
                              current_max=CURRENT_MAX,
-                             throttle_mode="duty", max_duty=args.max_duty,
+                             throttle_mode="duty", max_duty=1.0,
                              invert_motor=False)
         print("[ctrl] VESC connecte sur {}".format(args.port))
     else:
@@ -2039,7 +2039,8 @@ def run(args):
         if abs(steering) < 0.5 and throttle > 0:
             _coast_steer[0] = steering; _coast_throttle[0] = throttle
         if vesc is not None:
-            vesc.drive(steering, throttle) if _drive_enabled else vesc.stop()
+            t_capped = min(throttle, args.max_duty)
+            vesc.drive(steering, t_capped) if _drive_enabled else vesc.stop()
         if args.stream_port > 0:
             push_frame(bgr, info.get("mask_clean", mask), info, info.get("rejected_blobs"))
         _last_frame_time[0] = time.time()
@@ -2054,11 +2055,11 @@ def run(args):
             rec_str = " [REC {}f]".format(frame_n[0]) if record_writer else ""
             rep_str = (" [REPLAY {}/{}]".format(frame_n[0] % len(replay_data),
                         len(replay_data)) if replay_data else "")
-            print("[ctrl] {:.0f}fps | err={} | steer={:.3f} | thr={:.2f} | {} | "
+            print("[ctrl] {:.0f}fps | err={} | steer={:.3f} | thr={:.2f}(duty={:.2f}) | {} | "
                   "blobs={} | cx={} | tw={}px | off={:+.1f} sbias={:+.1f}{}{}".format(
                       fps,
                       int(info["err"]) if info["err"] is not None else "N/A",
-                      steering, throttle, info["state"], info["n_blobs"],
+                      steering, throttle, min(throttle, args.max_duty), info["state"], info["n_blobs"],
                       cx_list, tw, ctrl.auto_offset, ctrl.servo_bias,
                       rec_str, rep_str))
 

@@ -175,8 +175,8 @@ except ImportError:
 # PARAMÈTRES
 # ══════════════════════════════════════════════════════════════════════════════
 
-CAM_W, CAM_H = 480, 240   # hub → 480×240, correspondant à robocar-hub.service
-CAM_FPS      = 20         # hub peut servir jusqu'à ~20fps à 480×240
+CAM_W, CAM_H = 640, 320   # hub → 640×320
+CAM_FPS      = 15         # 640×320 : ~15fps sur Jetson Nano
 
 HSV_LOW      = np.array([0,   0, 150], dtype=np.uint8)   # V>=150 (adapté éclairage faible)
 HSV_HIGH     = np.array([180, 45, 255], dtype=np.uint8)  # S<=45 (blanc incluant reflets tamisés)
@@ -184,11 +184,11 @@ ROI_FAR      = 0.40   # élargi : scan depuis 40% → voit les 2 lignes en virag
 ROI_MID      = 0.65
 ROI_NEAR     = 0.85
 ROI_BOTTOM   = 1.00
-MIN_BLOB_AREA  = 700    # prop. 1250 × (480×240)/(640×320)
-MIN_CORNER_AREA = 5300  # prop. 9375 × 0.5625
+MIN_BLOB_AREA  = 1250
+MIN_CORNER_AREA = 9375
 CORNER_DURATION = 32   # frames de maintien virage
-CORNER_INNER_BIAS_S = 18   # px vers intérieur virage simple (prop. 25 × 480/640)
-CORNER_INNER_BIAS_U = 40   # px vers intérieur U-turn (prop. 55 × 480/640)
+CORNER_INNER_BIAS_S = 25   # px vers intérieur virage simple
+CORNER_INNER_BIAS_U = 55   # px vers intérieur U-turn
 CURV_PIX_PER_RAD    = 300.0  # déplacement apparent ligne (px) par rad/s gyro
 U_DETECT_ANGLE  = 1.35  # rad (~77°) → début détection virage en U
 U_GYRO_ACCUM    = 2.20  # rad accumulés → U confirmé
@@ -198,8 +198,8 @@ U_CORNER_MAX    = 50    # frames max U-turn (vs 32 virage simple)
 U_EXIT_FADE     = 8     # frames fading sortie U (vs 4 virage simple)
 U_SEARCH_FRAMES = 18    # frames SEARCH post-U (vs 10)
 
-TRACK_WIDTH_EST_PX = 260   # prop. 350 × 480/640
-SLIDE_WIN    = 66          # prop. 88 × 480/640
+TRACK_WIDTH_EST_PX = 350
+SLIDE_WIN    = 88
 
 KP           = 0.006         # réduit : 6fps = 167ms par frame, évite sur-braquage
 KD           = 0.007         # augmenté : amortit l'oscillation due au retard visuel

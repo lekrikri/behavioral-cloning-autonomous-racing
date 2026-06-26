@@ -596,15 +596,13 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
             reason = "high"
         else:
             asp = float(max(bw, bh)) / max(min(bw, bh), 1)
-            _is_high_blob = (y_bot < int(CAM_H * 0.40))
-            # En corner_mode + blob haut (ligne extérieure lointaine) : filtre compact désactivé
-            if corner_mode and _is_high_blob:
-                pass   # ligne lointaine en virage → accepter même si petite et compacte
-            elif asp < _asp_compact and area < _compact_thresh:
+            # En corner_mode : tous les blobs blancs sont des lignes → compact et PCA désactivés
+            # (en virage, pas d'artefacts compacts sur une piste de course)
+            if not corner_mode and asp < _asp_compact and area < _compact_thresh:
                 reason = "compact"  # trop carré → reflet, logo, chaussure, mur compact
-            else:
-                # PCA orientation : blobs MOYENS seulement (les vraies lignes ont area > 5000)
-                if bw > 80 and 800 < area < 5000:
+            if reason is None:
+                # PCA orientation : blobs MOYENS seulement — désactivé en corner_mode
+                if not corner_mode and bw > 80 and 800 < area < 5000:
                     roi_m = blob_mask[by:by + bh, bx:bx + bw].astype(np.uint8)
                     _m = cv2.moments(roi_m)
                     if _m["m00"] > 0:

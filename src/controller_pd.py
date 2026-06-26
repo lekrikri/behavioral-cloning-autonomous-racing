@@ -607,6 +607,9 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
 
                 # Sobel : désactivé en CORNER (lignes courbées ont gradient plus doux)
                 _proche = (y_bot > int(CAM_H * 0.75) or asp < 1.5)
+                # Lointain (y_bot < 55%) = flou par perspective → seuil Sobel assoupli
+                _lointain = (y_bot < int(CAM_H * 0.55))
+                _sobel_thresh = 12.0 if _lointain else 20.0
                 if reason is None and not corner_mode and sobel_mag is not None and area < 8000 and not _proche:
                     kernel3 = np.ones((3, 3), np.uint8)
                     blob_u8 = blob_mask.astype(np.uint8) * 255
@@ -614,7 +617,7 @@ def clean_mask_artifacts(mask, bgr=None, corner_mode=False):
                     border_pixels = sobel_mag[border > 0]
                     if len(border_pixels) > 0:
                         mean_grad = float(np.mean(border_pixels))
-                        if mean_grad < 20.0:
+                        if mean_grad < _sobel_thresh:
                             reason = "diffuse"
 
         if reason is not None:

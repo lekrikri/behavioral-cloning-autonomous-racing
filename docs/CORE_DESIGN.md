@@ -67,3 +67,18 @@ enfant du core. Signaux surveillés : présence manette, connexion UI, profil co
 - Config = 2 couches JSON (statique véhicule / profils). ✓
 - Manette = prise de main explicite (détection ≠ bascule). ✓
 - Base = `feat/robocar-core` depuis `main`, branche dédiée. ✓
+
+## Squelette (livré)
+
+Package `src/robocar_core/` (Python 3.6, sans `dataclass`) :
+- `config.py` — charge `configs/vehicle.json` + `configs/profiles.json`.
+- `workers.py` — `WorkerManager` : spawn/kill de workers nommés (subprocess).
+- `gamepad.py` — `GamepadWatcher` : poll `/dev/input/js*` → arme le manuel.
+- `control.py` — endpoint HTTP localhost (`/status`, `/takeover`, `/release`, `/ui/connect`, `/profile`, `/update`).
+- `supervisor.py` — câble : profil → auto worker, manette → armement, prise de main explicite.
+- `__main__.py` — `python3 -m robocar_core`.
+
+**Stubs/TODO** : update (git pull + `sync-services.sh`), modèle→cam (P3/P4), détection « UI
+connectée » réelle, et **décomposition perception/policy** (aujourd'hui l'auto worker = le
+monolithe `controller_pd` / `inference_realcar`).
+

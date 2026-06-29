@@ -465,10 +465,15 @@ def main():
                         help="depth=depth map stéreo | visual=masque HSV/Canny couleur")
     parser.add_argument("--mask-mode",       choices=["hsv", "canny"], default="hsv",
                         help="Mode masque (si --perception-mode visual)")
-    parser.add_argument("--source",   choices=["device", "hub"], default="device",
-                        help="device=ouvre l'OAK-D | hub=lit camera_hub (partage la caméra avec la preview)")
+    parser.add_argument("--source",   choices=["device", "hub"], default="hub",
+                        help="hub=lit camera_hub (défaut, partage la caméra) | device=ouvre l'OAK-D")
     parser.add_argument("--hub-port", type=int, default=8077)
     args = parser.parse_args()
+
+    if args.source == "hub":
+        from src.camera_hub import ensure_hub_or_prompt
+        if not ensure_hub_or_prompt(port=args.hub_port):
+            sys.exit(1)
 
     RealCarInference(
         model_path   = args.model,

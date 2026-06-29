@@ -30,6 +30,36 @@ import numpy as np
 MAGIC  = b"RC"
 HEADER = struct.Struct(">2sHHI")  # magic, height, width, seq
 
+SERVICE_NAME = "robocar-cam-hub.service"
+
+
+def hub_is_up(host="127.0.0.1", port=8077, timeout=1.0):
+    """True si un hub écoute déjà sur (host, port)."""
+    try:
+        with socket.create_connection((host, port), timeout):
+            return True
+    except OSError:
+        return False
+
+
+def ensure_hub_or_prompt(host="127.0.0.1", port=8077, service=SERVICE_NAME):
+    """Vérifie qu'un hub écoute ; sinon avertit (anormal) et indique comment le relancer.
+
+    Le hub tourne en permanence comme service SYSTÈME ('robocar-cam-hub', Restart=always,
+    lancé au boot — voir docs/SERVICES.md). Son absence est un défaut de setup. Comme c'est
+    un service système, le relancer demande des privilèges : le client ne le démarre donc pas
+    à la place de l'utilisateur, il affiche la commande exacte. Retourne True si le hub
+    répond, False sinon (le client doit alors abandonner proprement).
+    """
+    if hub_is_up(host, port):
+        return True
+    print(f"\n[hub] /!\\ aucun hub n'écoute sur :{port} — ce n'est PAS normal.")
+    print(f"[hub]     Le hub doit tourner en permanence (service système '{service}', Restart=always).")
+    print(f"[hub]     Relancer :   sudo systemctl restart {service}")
+    print(f"[hub]     Diagnostic : systemctl status {service} ; journalctl -u {service} -e")
+    print(f"[hub]     Setup :      voir docs/SERVICES.md")
+    return False
+
 
 class FrameClient:
     """Client du hub : lit les dernières frames couleur. API getCvFrame() compatible."""

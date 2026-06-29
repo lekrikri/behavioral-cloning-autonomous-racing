@@ -11,7 +11,9 @@ OAK-D ──> camera_hub.py ──(socket locale)──┬──> mask_stream.py
           (possède la caméra)              └──> inference_realcar.py --source hub  (autonome)
 ```
 Un seul process ouvre l'OAK-D (le **hub**) ; preview et inférence en sont de simples clients →
-preview et conduite autonome **coexistent**. Le hub est **auto-lancé** par `mask_stream.py --source hub`.
+preview et conduite autonome **coexistent**. Le hub tourne en permanence comme service système
+**`robocar-cam-hub`** (démarré au boot, voir [`SERVICES.md`](SERVICES.md)) ; les clients s'y
+connectent par défaut (`--source hub`).
 
 ## Prérequis (Jetson)
 
@@ -25,13 +27,14 @@ preview et conduite autonome **coexistent**. Le hub est **auto-lancé** par `mas
 
 ## Procédure
 
-### 1. Lancer le streamer (auto-démarre le hub)
+### 1. Lancer le streamer
 ```bash
-# Jetson — UN seul terminal : le hub démarre tout seul
+# Jetson — le hub tourne déjà en service (robocar-cam-hub). UN seul terminal :
 cd ~/robocar-Paris-lecrabe
-OPENBLAS_CORETYPE=ARMV8 python3 src/mask_stream.py --source hub
+OPENBLAS_CORETYPE=ARMV8 python3 src/mask_stream.py   # --source hub est le défaut
 ```
-Attendre `hub auto-lancé … sur :8077` puis `[stream] source = camera_hub :8077`.
+Attendre `[stream] source = camera_hub :8077`. Si le hub ne répond pas, le streamer avertit
+et indique comment le relancer (`sudo systemctl restart robocar-cam-hub`).
 
 ### 2. Ouvrir l'interface depuis le PC
 ```bash
@@ -54,9 +57,9 @@ l'interface retombe sur `none` et le terminal logge `'manual'/'auto' n'a pas dé
 
 ## Variantes
 
-- **Réglage seul, sans hub** (le plus simple, caméra en direct) : `python3 src/mask_stream.py` (sans `--source hub`).
-- **Hub géré à part** (debug) : lancer `python3 src/camera_hub.py` dans un terminal, puis
-  `python3 src/mask_stream.py --source hub --no-auto-hub`.
+- **Réglage seul, caméra en direct** (sans passer par le hub) : `python3 src/mask_stream.py --source device`.
+- **Hub à la main** (debug, service arrêté) : `sudo systemctl stop robocar-cam-hub`, lancer
+  `python3 src/camera_hub.py` dans un terminal, puis `python3 src/mask_stream.py` (défaut `--source hub`).
 
 ## Dépannage
 

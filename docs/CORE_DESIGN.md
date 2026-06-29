@@ -1,62 +1,69 @@
 # Robocar Core — design (brouillon)
 
-> **Statut : brouillon de cadrage.** Capture la vision validée + une structure proposée +
-> les questions ouvertes. À raffiner avant d'implémenter.
+> **Statut : cadrage en cours.** Vision validée + structure proposée + questions ouvertes.
+> Schémas : [`docs/schemas/`](schemas/). On fige le design avant d'implémenter.
 
 ## Rôle
 
 Le **core** est le soft minimal lancé au boot (`robocar-core.service`). Il ne *fait* ni la
-perception ni le contrôle : c'est un **superviseur** qui orchestre les workers selon le
-**profil** et le **contexte runtime**. Objectif : ne lancer que le strict nécessaire.
+perception ni le contrôle : c'est un **superviseur** qui orchestre des workers en subprocess
+selon le **profil** et le **contexte runtime**. Objectif : ne lancer que le strict nécessaire.
+
+Voir [`schemas/01-architecture.md`](schemas/01-architecture.md).
 
 ## Responsabilités
 
-1. **Lancer le minimum selon le contexte** (à la demande, pas tout en permanence) :
-   - pas de **streaming/UI** tant qu'aucune interface web n'est connectée ;
-   - en mode **manuel** (manette détectée) → pas d'IA/algo de conduite autonome ;
-   - en mode **autonome** → pas de pile de contrôle manuel.
-2. **Cycle de vie du soft** : déclencher les **updates** (git pull explicite + `sync-services.sh`
-   + redémarrage des workers concernés).
+1. **Lancer le minimum selon le contexte** (pas tout en permanence) — voir gamepad ci-dessous
+   et [`schemas/04-boot-lifecycle.md`](schemas/04-boot-lifecycle.md).
+2. **Cycle de vie** : déclencher les **updates** (git pull explicite + `sync-services.sh` +
+   restart) — [`schemas/05-update-flow.md`](schemas/05-update-flow.md).
 3. **Déployer des modèles sur l'OAK-D** (inférence on-camera) à la demande.
-4. **Profils d'usage** : sélectionner une combinaison *lieu de perception × intelligence*.
+4. **Profils d'usage** : combinaison *lieu de perception × intelligence* —
+   [`schemas/02-profiles.md`](schemas/02-profiles.md).
 
-## Profils (proposition)
+## Configuration — deux couches distinctes
 
-| Profil | Perception | Intelligence | Idée |
+On sépare deux concerns qui n'ont rien à voir :
+
+| Couche | Contenu | Change | Reco |
 |---|---|---|---|
-| P1 | masque sur Jetson | algo (PD) | baseline actuelle |
-| P2 | masque sur Jetson | IA (NN Jetson) | modèle BC sur Jetson |
-| P3 | inférence **dans la caméra** | algo (PD) | décharge la Jetson |
-| P4 | inférence **dans la caméra** | IA | tout déporté |
+| **Statique véhicule** | offset/position caméra, vitesse max, duty caps, servo center/range, ports, FOV fixe | quasi jamais (justifié) | **JSON** sous `configs/` (ex. `configs/vehicle.json`) |
+| **Profils** | P1..P4 → workers à lancer + leurs params runtime | à la sélection | **JSON** (ex. `configs/profiles.json`) |
 
-## Modèle de process (proposition)
+**Pourquoi JSON** (et pas YAML/TOML) : zéro dépendance sur la Jetson (Python **3.6**, `json` est
+stdlib ; `tomllib` n'existe qu'en 3.11, YAML demande PyYAML) et cohérent avec `configs/config.json`
+déjà présent. Optionnel : un petit loader typé (dataclass, cf. `src/config.py`) au-dessus du JSON.
+Voir [`schemas/06-config-layers.md`](schemas/06-config-layers.md).
 
-```
-robocar-core.service  ──>  core (superviseur, ce composant)
-                              │ spawn/kill selon profil + contexte
-        ┌─────────────────────┼───────────────────────┐
-   cam-hub (service          perception           policy/intelligence
-   séparé, dépendance)    (mask worker /        (controller_pd PD /
-                           on-cam inference)     inference_realcar NN)
-                                                       │
-                                                  UI web (à la demande)
-```
+## Contrôle manuel (manette) — prise de main *explicite*
 
-- Le core **spawn des workers en subprocess** et gère leur cycle de vie (pas de god-file).
-- `cam-hub` reste un **service séparé** (dépendance), pas un enfant du core.
-- Signaux runtime surveillés : présence manette (`/dev/input/js*`), connexion UI, profil courant.
+Détecter l'**allumage de la manette** ne doit PAS interrompre ce qui tourne. Séquence voulue
+([`schemas/03-gamepad-takeover.md`](schemas/03-gamepad-takeover.md)) :
 
-## Questions ouvertes (à trancher avant de coder)
+1. **Manette OFF** → seul le mode courant tourne (auto / idle).
+2. **Manette détectée** (`/dev/input/js*`) → le core **lance le worker de commande manuelle**,
+   mais **passif** : le mode courant (ex. auto) **continue de tourner**.
+3. **L'user clique « prendre la main »** → le core **coupe le contrôle auto** (s'il tournait) et
+   passe en **manuel actif**.
+4. **« rendre la main »** → retour au mode courant.
 
-1. **Détection « UI connectée »** : le core écoute un port léger / un endpoint, et démarre le
-   stream à la première connexion ? Ou un bouton « activer preview » ?
-2. **Détection manette** : poll `/dev/input/js*` (hotplug via udev ?) → bascule manuel/auto.
-3. **Update** : déclenché d'où (UI ? commande ?) et quoi exactement (code via git pull, services
-   via `sync-services.sh`). Garde-fou : pas d'update pendant la conduite.
-4. **Modèle → caméra** : format `.blob` (depthai `NeuralNetwork`), pipeline on-device, et qui
-   convertit/pousse le modèle.
-5. **Config des profils** : un fichier de config (cf. règle harness « params via config, pas en
-   dur ») décrivant chaque profil et ses workers.
-6. **Communication core ↔ workers** : juste lifecycle subprocess, ou un canal (signaux/IPC) ?
-7. **Prérequis** : `main` n'a pas encore le stack worker hub-capable (vit sur `feat/track-mapping`)
-   → à intégrer pour tester le core de bout en bout.
+## Modèle de process
+
+Le core **spawn/kill des workers** ; `cam-hub` reste un **service séparé** (dépendance), pas un
+enfant du core. Signaux surveillés : présence manette, connexion UI, profil courant.
+
+## Questions ouvertes (restantes)
+
+1. **Détection « UI connectée »** : le core démarre le stream à la 1re connexion (écoute un port
+   léger / endpoint) ? ou bouton « activer preview » ?
+2. **Update** : déclenché d'où (UI / commande) ; garde-fou « pas d'update en conduite ».
+3. **Modèle → caméra** : format `.blob` (depthai `NeuralNetwork`), qui convertit/pousse.
+4. **Communication core ↔ workers** : lifecycle subprocess seul, ou un canal (signaux / IPC) ?
+5. **Prérequis** : `main` n'a pas le stack worker hub-capable (vit sur `feat/track-mapping`) → à
+   intégrer pour tester de bout en bout.
+
+## Résolu
+
+- Config = 2 couches JSON (statique véhicule / profils). ✓
+- Manette = prise de main explicite (détection ≠ bascule). ✓
+- Base = `feat/robocar-core` depuis `main`, branche dédiée. ✓

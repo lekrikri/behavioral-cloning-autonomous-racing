@@ -67,3 +67,7 @@ data/256_128/
 # Garder les dossiers vides
 !data/.gitkeep
 !models/.gitkeep
+
+# Claude Code — overrides personnels (jamais partagés)
+.claude/settings.local.json
+CLAUDE.local.md

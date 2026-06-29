@@ -1,7 +1,7 @@
 """Entrypoint du superviseur.
 
-    python3 -m robocar_core [--profile P1] [--vehicle ...] [--profiles ...]
-ou  python3 src/robocar_core/__main__.py
+    python3 -m core [--profile P1] [--vehicle ...] [--profiles ...]
+ou  python3 core/__main__.py
 """
 import argparse
 import os
@@ -11,7 +11,7 @@ import time
 
 if __package__ in (None, ""):  # exécution directe du fichier
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from robocar_core.supervisor import Supervisor
+    from core.supervisor import Supervisor
 else:
     from .supervisor import Supervisor
 
@@ -24,7 +24,7 @@ def main():
     args = p.parse_args()
 
     # cwd des workers = racine repo (pour que 'src/...' résolve)
-    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     sup = Supervisor(args.vehicle, args.profiles, args.profile, cwd=repo_root)
     sup.start()
 

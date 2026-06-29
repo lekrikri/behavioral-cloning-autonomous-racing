@@ -2,8 +2,8 @@
 import json
 from pathlib import Path
 
-# src/robocar_core/config.py -> repo/configs
-CONFIG_DIR = Path(__file__).resolve().parents[2] / "configs"
+# core/config.py -> repo/configs
+CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
 
 
 def _load_json(path):

@@ -47,7 +47,7 @@ from typing import Optional
 class InputManagerProtocol:
     def start(self): ...
     def stop(self): ...
-    def get_actions(self) -> tuple[float, float]: ...
+    def get_actions(self) -> tuple: ...
     def should_quit(self) -> bool: ...
 
 
@@ -136,7 +136,7 @@ class GamepadManager:
             pass
         print("[Gamepad] Arrêtée.")
 
-    def get_actions(self) -> tuple[float, float]:
+    def get_actions(self) -> tuple:
         with self._lock:
             return round(self._steering, 4), round(self._acceleration, 4)
 
@@ -244,7 +244,7 @@ class KeyboardManager:
         if self._listener:
             self._listener.stop()
 
-    def get_actions(self) -> tuple[float, float]:
+    def get_actions(self) -> tuple:
         with self._lock:
             return round(self._steering, 4), round(self._acceleration, 4)
 
@@ -547,7 +547,7 @@ class MockInputManager:
     def stop(self): pass
     def should_quit(self) -> bool: return False
 
-    def get_actions(self) -> tuple[float, float]:
+    def get_actions(self) -> tuple:
         self._t += 1
         if self._pattern == "straight":
             return 0.0, 0.8

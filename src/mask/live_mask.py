@@ -51,6 +51,8 @@ parser.add_argument("--mode",   choices=["hsv", "canny"], default="hsv",
                     help="hsv=seuil couleur (eclairage homogene) | canny=bords (eclairage variable)")
 parser.add_argument("--canny-low",  type=int, default=50,  help="Seuil bas Canny")
 parser.add_argument("--canny-high", type=int, default=150, help="Seuil haut Canny")
+parser.add_argument("--source", choices=["device", "hub"], default="hub",
+                    help="hub=lit le camera_hub (mémoire partagée, défaut) | device=ouvre l'OAK-D")
 args = parser.parse_args()
 
 W, H = args.width, args.height
@@ -108,7 +110,30 @@ def overlay(bgr, mask):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1)
     return vis, center
 
-# ── Connexion device ───────────────────────────────────────────────────────────
+# ── Source de frames ───────────────────────────────────────────────────────────
+class _HubPkt:
+    """Imite un paquet depthai (getCvFrame/getSequenceNum) au-dessus d'une frame SHM."""
+    __slots__ = ("_seq", "_bgr")
+    def __init__(self, seq, bgr):
+        self._seq, self._bgr = seq, bgr
+    def getCvFrame(self):    return self._bgr
+    def getSequenceNum(self): return self._seq
+
+
+class _HubQueue:
+    """Adapte un FrameClient SHM à l'API queue depthai (.get().getCvFrame())."""
+    def __init__(self):
+        from src.cam.hub import FrameClient
+        self._c = FrameClient()
+    def get(self):
+        try:
+            seq, bgr = self._c.get()
+        except (ConnectionError, OSError) as e:
+            # la boucle de live_mask catch RuntimeError (perte de flux) → sortie propre
+            raise RuntimeError("hub indisponible: {}".format(e))
+        return _HubPkt(seq, bgr)
+
+
 def find_device():
     # Cherche UNBOOTED ou BOOTED
     for d in dai.Device.getAllConnectedDevices():
@@ -116,8 +141,8 @@ def find_device():
         return d
     return None
 
-device_info = find_device()
-if device_info is None:
+device_info = find_device() if args.source == "device" else None
+if args.source == "device" and device_info is None:
     print("Aucun device OAK-D trouve.")
     if sys.platform == "linux":
         print("  -> Verifier les regles udev (voir commentaire en haut du fichier)")
@@ -130,21 +155,25 @@ def run(device):
     global TOPHAT_K, MAX_FILL_RATIO, TEMPORAL_WIN
     print("=" * 50)
     print(f"depthai {dai.__version__} | {'v3 API' if IS_V3 else 'v2 API'}")
-    try:
-        calib = device.readCalibration()
-        intr  = calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, W, H)
-        print(f"Intrinsics {W}x{H} : fx={intr[0][0]:.1f}  fy={intr[1][1]:.1f}  "
-              f"cx={intr[0][2]:.1f}  cy={intr[1][2]:.1f}")
-        print(f"FOV horizontal : {calib.getFov(dai.CameraBoardSocket.CAM_A):.1f} deg")
-    except Exception as e:
-        print(f"Calibration : {e}")
+    if device is not None:
+        try:
+            calib = device.readCalibration()
+            intr  = calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, W, H)
+            print(f"Intrinsics {W}x{H} : fx={intr[0][0]:.1f}  fy={intr[1][1]:.1f}  "
+                  f"cx={intr[0][2]:.1f}  cy={intr[1][2]:.1f}")
+            print(f"FOV horizontal : {calib.getFov(dai.CameraBoardSocket.CAM_A):.1f} deg")
+        except Exception as e:
+            print(f"Calibration : {e}")
     print(f"Capture -> {out}")
     print(f"Mode : {MODE.upper()}")
     print("SPACE=sauver | M=masque | R=raycasts | +/-=seuil V (HSV)")
     print("t=top-hat | f=filtre forme | c=coherence temporelle | Q=quitter")
     print("=" * 50)
 
-    if IS_V3:
+    if device is None:
+        q = _HubQueue()   # frames depuis le hub (SHM, zéro-copie)
+        print("source = hub (SHM /dev/shm/robocar_cam_color)")
+    elif IS_V3:
         pipeline = dai.Pipeline(device)
         cam = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
         q   = cam.requestOutput((W, H), dai.ImgFrame.Type.BGR888p).createOutputQueue(maxSize=4, blocking=False)
@@ -248,5 +277,8 @@ def run(device):
     cv2.destroyAllWindows()
     print(f"Termine — {counter} images dans {out}")
 
-with dai.Device(device_info) as device:
-    run(device)
+if args.source == "hub":
+    run(None)                       # frames depuis le hub (SHM), aucun device ouvert
+else:
+    with dai.Device(device_info) as device:
+        run(device)

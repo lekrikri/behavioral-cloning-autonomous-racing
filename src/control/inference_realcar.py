@@ -199,6 +199,8 @@ class RealCarInference:
             self._perception_depth()
 
     def _perception_depth(self):
+        if self.source == "hub":
+            self._perception_depth_hub(); return
         pipeline = create_depthai_pipeline()
         with dai.Device(pipeline) as device:
             q = device.getOutputQueue("depth", maxSize=1, blocking=False)
@@ -220,6 +222,30 @@ class RealCarInference:
                             self._last_frame_t = time.time()
                 time.sleep(0.005)
 
+    def _perception_depth_hub(self):
+        """Mode depth alimenté par le hub (SHM robocar_cam_depth, zéro-copie)."""
+        from src.cam.hub import FrameClient, SHM_DEPTH
+        client = FrameClient(stream=SHM_DEPTH)
+        print("[Perception] source = hub (SHM robocar_cam_depth) — flux DEPTH")
+        with self._lock:
+            self._last_frame_t     = time.time()
+            self._perception_ready = True
+        while self._running:
+            try:
+                frame = client.getCvFrame()
+            except (ConnectionError, OSError):
+                print("[Perception] hub depth indisponible — reconnexion…")
+                client.close(); time.sleep(0.5); continue
+            if frame.max() < 200:
+                print("\n[Perception] ⚠️  Depth map nulle — hub/OAK-D ?")
+                self.vesc.stop()
+            else:
+                rays = self.depth_bridge(frame)
+                with self._lock:
+                    self._latest_rays  = rays
+                    self._last_frame_t = time.time()
+        client.close()
+
     def _perception_visual_hub(self):
         """Mode visual alimenté par le hub (frames en mémoire partagée, zéro-copie) — pas
         d'ouverture caméra ici. Permet à la preview (mask_stream) et à l'inférence de
@@ -232,8 +258,6 @@ class RealCarInference:
             self._perception_ready = True
         while self._running:
             try:
-                if client.sock is None:
-                    client.connect()
                 bgr = client.getCvFrame()
             except (ConnectionError, OSError):
                 print("[Perception] hub indisponible — reconnexion…")
@@ -272,6 +296,34 @@ class RealCarInference:
                     self._last_frame_t = time.time()
                 time.sleep(0.005)
 
+    def _perception_fusion_hub(self):
+        """Fusion depth+visual alimentée par le hub (SHM, zéro-copie). La couleur cadence la
+        boucle (getCvFrame bloque sur une nouvelle frame) ; le depth est lu en 'dernière dispo'
+        (latest, non bloquant) pour ne pas freiner la couleur."""
+        from src.cam.hub import FrameClient, SHM_COLOR, SHM_DEPTH
+        c_color = FrameClient(stream=SHM_COLOR)
+        c_depth = FrameClient(stream=SHM_DEPTH)
+        print("[Perception] source = hub (SHM color+depth) — flux FUSION")
+        with self._lock:
+            self._last_frame_t     = time.time()
+            self._perception_ready = True
+        while self._running:
+            try:
+                bgr = c_color.getCvFrame()
+            except (ConnectionError, OSError):
+                print("[Perception] hub indisponible — reconnexion…")
+                c_color.close(); c_depth.close(); time.sleep(0.5); continue
+            rays_visual = self.visual_bridge(bgr)
+            depth = c_depth.latest()
+            if depth is not None and depth.max() >= 200:
+                rays_fused = np.minimum(self.depth_bridge(depth), rays_visual)
+            else:
+                rays_fused = rays_visual   # fallback si depth absent/KO
+            with self._lock:
+                self._latest_rays  = rays_fused
+                self._last_frame_t = time.time()
+        c_color.close(); c_depth.close()
+
     def _perception_fusion(self):
         """
         Fusion depth + visual : np.minimum(rays_depth, rays_visual)
@@ -279,6 +331,8 @@ class RealCarInference:
         Depth détecte les murs/obstacles en volume.
         Visual détecte les bords de piste (lignes blanches au sol).
         """
+        if self.source == "hub":
+            self._perception_fusion_hub(); return
         device_info = None
         for d in dai.Device.getAllConnectedDevices():
             device_info = d

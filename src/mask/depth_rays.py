@@ -82,19 +82,15 @@ class DepthToRays:
         return rays
 
 
-def create_depthai_pipeline():
+def add_stereo_depth(pipeline, dai):
+    """Ajoute mono L/R + StereoDepth (config anti-bruit OAK-D Lite) à un pipeline EXISTANT
+    et retourne le nœud stereo (le caller lie `stereo.depth` à sa sortie). SOURCE UNIQUE de
+    la config depth : réutilisée par le hub (cam/hub.py) ET create_depthai_pipeline ci-dessous,
+    pour que DepthToRays (calibré sur cette config) reste valide quelle que soit la source.
     """
-    Crée et retourne un pipeline depthai configuré pour la depth map.
-    Config optimisée pour réduire le bruit stéréo OAK-D Lite.
-    """
-    import depthai as dai
-
-    pipeline = dai.Pipeline()
-
     mono_l = pipeline.create(dai.node.MonoCamera)
     mono_r = pipeline.create(dai.node.MonoCamera)
-    stereo  = pipeline.create(dai.node.StereoDepth)
-    xout    = pipeline.create(dai.node.XLinkOut)
+    stereo = pipeline.create(dai.node.StereoDepth)
 
     # Caméras mono gauche/droite (OAK-D Lite : CAM_B = gauche, CAM_C = droite)
     mono_l.setBoardSocket(dai.CameraBoardSocket.CAM_B)
@@ -113,7 +109,17 @@ def create_depthai_pipeline():
 
     mono_l.out.link(stereo.left)
     mono_r.out.link(stereo.right)
-    stereo.depth.link(xout.input)           # depth en mm (uint16)
-    xout.setStreamName("depth")
+    return stereo
 
+
+def create_depthai_pipeline():
+    """Pipeline depthai autonome pour la depth map (mode --source device). Réutilise la
+    config canonique add_stereo_depth() ; le hub fait de même."""
+    import depthai as dai
+
+    pipeline = dai.Pipeline()
+    stereo = add_stereo_depth(pipeline, dai)
+    xout = pipeline.create(dai.node.XLinkOut)
+    xout.setStreamName("depth")
+    stereo.depth.link(xout.input)           # depth en mm (uint16)
     return pipeline

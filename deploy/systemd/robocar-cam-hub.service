@@ -1,6 +1,5 @@
 [Unit]
-Description=Robocar camera hub (OAK-D shared frame server on :8077)
-After=network.target
+Description=Robocar camera hub (OAK-D owner, publishes frames to /dev/shm)
 
 [Service]
 Type=simple
@@ -9,7 +8,7 @@ User=robocar
 # vers le repo d'où on lance le sync (clone de dev en dev, ce clone-ci en prod).
 WorkingDirectory=/home/robocar/robocar-Paris-PGE_MSC
 Environment=OPENBLAS_CORETYPE=ARMV8
-ExecStart=/usr/bin/python3 -u -m src.cam.hub --port 8077 --width 640 --height 320
+ExecStart=/usr/bin/python3 -u -m src.cam.hub --width 640 --height 320
 Restart=always
 RestartSec=5
 StandardOutput=journal

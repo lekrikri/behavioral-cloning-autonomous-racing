@@ -221,11 +221,12 @@ class RealCarInference:
                 time.sleep(0.005)
 
     def _perception_visual_hub(self):
-        """Mode visual alimenté par camera_hub (frames TCP) — pas d'ouverture caméra ici.
-        Permet à la preview (mask_stream) et à l'inférence de partager l'OAK-D."""
+        """Mode visual alimenté par le hub (frames en mémoire partagée, zéro-copie) — pas
+        d'ouverture caméra ici. Permet à la preview (mask_stream) et à l'inférence de
+        partager l'OAK-D."""
         from src.cam.hub import FrameClient
-        client = FrameClient(port=self.hub_port)
-        print(f"[Perception] source = camera_hub :{self.hub_port} — flux VISUAL (masque)")
+        client = FrameClient()
+        print("[Perception] source = hub (SHM robocar_cam_color) — flux VISUAL (masque)")
         with self._lock:
             self._last_frame_t     = time.time()
             self._perception_ready = True
@@ -471,7 +472,8 @@ def main():
                         help="Mode masque (si --perception-mode visual)")
     parser.add_argument("--source",   choices=["device", "hub"], default="hub",
                         help="hub=lit camera_hub (défaut, partage la caméra) | device=ouvre l'OAK-D")
-    parser.add_argument("--hub-port", type=int, default=8077)
+    parser.add_argument("--hub-port", type=int, default=8077,
+                        help="vestige TCP, ignoré (le hub publie en mémoire partagée /dev/shm)")
     args = parser.parse_args()
 
     if args.source == "hub":

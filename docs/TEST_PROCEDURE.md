@@ -31,7 +31,7 @@ remplace temporairement le worker `auto_pd` par un `sleep` dans `/tmp/pr14/confi
 ## 1. Libérer le VESC (on garde la caméra)
 
 ```bash
-sudo systemctl stop robocar-ctrl     # libère le VESC ; robocar-hub (caméra :8077) reste up
+sudo systemctl stop robocar-ctrl     # libère le VESC ; robocar-cam-hub (caméra, SHM) reste up
 ```
 
 ## 2. Lancer le superviseur

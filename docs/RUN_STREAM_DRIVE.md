@@ -33,7 +33,7 @@ connectent par défaut (`--source hub`).
 cd ~/robocar-Paris-lecrabe
 OPENBLAS_CORETYPE=ARMV8 python3 -m src.mask.stream   # --source hub est le défaut
 ```
-Attendre `[stream] source = camera_hub :8077`. Si le hub ne répond pas, le streamer avertit
+Attendre `[stream] source = hub (SHM ...)`. Si le hub ne publie pas, le streamer avertit
 et indique comment le relancer (`sudo systemctl restart robocar-cam-hub`).
 
 ### 2. Ouvrir l'interface depuis le PC

@@ -54,6 +54,9 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
     episode_id = int(time.time())
     step = 0
+
+    last_active_time = time.time()
+    COASTING_TIMEOUT = 1.5  # 1.5 seconde de délai avant la pause
     
     print(f"\n[Collecte] Prêt. Fichier : {out_path}")
     print("[Collecte] N'oublie pas de lancer le hub avec le flag --depth !")
@@ -96,13 +99,25 @@ def main():
                     gx, gy, gz = 0.0, 0.0, 0.0
                 
                 # Sauvegarde si la voiture est en mouvement (accel significative)
-                if abs(acceleration) > 0.05:
+                # Si on touche à l'accélérateur ou qu'on braque, on met à jour le chrono
+                if abs(acceleration) > 0.05 or abs(steering) > 0.05:
+                    last_active_time = time.time()
+                
+                # Sauvegarde si on a touché la manette dans les 1.5 dernières secondes
+                is_recording = (time.time() - last_active_time) < COASTING_TIMEOUT
+                
+                if is_recording:
                     row = [episode_id, step, time.time()] 
                     row += rays_vis.tolist() 
                     row += rays_depth.tolist() 
                     row += [gx, gy, gz, acceleration, steering, acceleration]
                     writer.writerow(row)
                     step += 1
+                
+                # Feedback console mis à jour
+                if step % 10 == 0:
+                    etat = "REC" if is_recording else "PAUSE"
+                    print(f"\rFrames: {step} [{etat}] | Steer: {steering:+.2f} | Accel: {acceleration:+.2f}   ", end="")
                 
                 # Feedback console
                 if step % 10 == 0:
@@ -122,4 +137,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    

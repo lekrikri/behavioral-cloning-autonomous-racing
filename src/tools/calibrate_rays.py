@@ -25,13 +25,7 @@ while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
     _ROOT = _ROOT.parent
 sys.path.insert(0, str(_ROOT))
 
-try:
-    import depthai as dai
-    _DAI_AVAILABLE = True
-except ImportError:
-    _DAI_AVAILABLE = False
-
-from src.mask.depth_rays import DepthToRays, create_depthai_pipeline
+from src.mask.depth_rays import DepthToRays
 
 OUTPUT_PATH = "models/real_ray_stats.json"
 MIN_FRAMES  = 200
@@ -59,8 +53,8 @@ def validate_stats(rays_arr: np.ndarray):
 
 
 def calibrate():
-    if not _DAI_AVAILABLE:
-        print("[ERROR] depthai non installé.")
+    from src.cam.hub import FrameClient, SHM_DEPTH, ensure_hub_or_prompt
+    if not ensure_hub_or_prompt(SHM_DEPTH):
         sys.exit(1)
 
     bridge = DepthToRays()
@@ -70,35 +64,33 @@ def calibrate():
     print("[Calibration]  Z-score Réel — Stratégie 3 Phases       ")
     print("[Calibration] ══════════════════════════════════════════\n")
 
-    pipeline = create_depthai_pipeline()
+    client = FrameClient(stream=SHM_DEPTH)   # lit le depth du hub (SHM, zéro-copie)
 
-    with dai.Device(pipeline) as device:
-        q = device.getOutputQueue("depth", maxSize=1, blocking=True)
+    for phase_label, phase_desc in PHASES:
+        print(f"\n  ━━━ Phase {phase_label} ━━━")
+        print(f"  {phase_desc}")
+        input("  → Appuie sur Entrée quand tu es prêt...")
 
-        for phase_label, phase_desc in PHASES:
-            print(f"\n  ━━━ Phase {phase_label} ━━━")
-            print(f"  {phase_desc}")
-            input("  → Appuie sur Entrée quand tu es prêt...")
+        t_phase = time.time()
+        n_phase = 0
+        try:
+            while time.time() - t_phase < PHASE_SEC:
+                rays  = bridge(client.getCvFrame())
+                # clip avant stockage (recommandation Gemini)
+                rays  = np.clip(rays, 0.0, 1.0)
+                all_rays.append(rays)
+                n_phase += 1
+                elapsed = time.time() - t_phase
+                if n_phase % 30 == 0:
+                    print(f"\r    {elapsed:.0f}s/{PHASE_SEC}s | {n_phase} frames "
+                          f"| mean={rays.mean():.3f} min={rays.min():.3f}   ",
+                          end="", flush=True)
+        except KeyboardInterrupt:
+            print(f"\n  Arrêt manuel phase ({n_phase} frames)")
 
-            t_phase = time.time()
-            n_phase = 0
-            try:
-                while time.time() - t_phase < PHASE_SEC:
-                    msg   = q.get()
-                    rays  = bridge(msg.getFrame())
-                    # clip avant stockage (recommandation Gemini)
-                    rays  = np.clip(rays, 0.0, 1.0)
-                    all_rays.append(rays)
-                    n_phase += 1
-                    elapsed = time.time() - t_phase
-                    if n_phase % 30 == 0:
-                        print(f"\r    {elapsed:.0f}s/{PHASE_SEC}s | {n_phase} frames "
-                              f"| mean={rays.mean():.3f} min={rays.min():.3f}   ",
-                              end="", flush=True)
-            except KeyboardInterrupt:
-                print(f"\n  Arrêt manuel phase ({n_phase} frames)")
+        print(f"\n  ✅ Phase terminée — {n_phase} frames")
 
-            print(f"\n  ✅ Phase terminée — {n_phase} frames")
+    client.close()
 
     # ── Calcul des stats ────────────────────────────────────────────────────
     n_frames = len(all_rays)

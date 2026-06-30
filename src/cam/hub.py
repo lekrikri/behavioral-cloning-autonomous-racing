@@ -127,6 +127,14 @@ class FrameClient:
     def getCvFrame(self):
         return self.get()[1]
 
+    def latest(self, copy=False):
+        """Dernière frame dispo SANS attendre une nouvelle (None si rien encore publié).
+        Pour les consommateurs qui ne veulent pas bloquer sur ce flux (ex. depth en fusion)."""
+        if self.reader is None:
+            self.connect()
+        out = self.reader.read(copy=copy)
+        return out[1] if out is not None else None
+
     def close(self):
         if self.reader is not None:
             self.reader.close()
@@ -185,15 +193,10 @@ def _build_pipeline(dai, width, height, fps, want_imu, want_depth):
         imu.out.link(ximu.input)
 
     if want_depth:
-        monoL = pipeline.create(dai.node.MonoCamera)
-        monoR = pipeline.create(dai.node.MonoCamera)
-        for m, sock in ((monoL, dai.CameraBoardSocket.LEFT), (monoR, dai.CameraBoardSocket.RIGHT)):
-            m.setResolution(dai.MonoCameraProperties.SensorResolution.THE_480_P)
-            m.setBoardSocket(sock)
-        stereo = pipeline.create(dai.node.StereoDepth)
-        stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
-        monoL.out.link(stereo.left)
-        monoR.out.link(stereo.right)
+        # Config depth canonique partagée avec create_depthai_pipeline → DepthToRays calibré
+        # reste valide quelle que soit la source (hub ou device direct).
+        from src.mask.depth_rays import add_stereo_depth
+        stereo = add_stereo_depth(pipeline, dai)
         xd = pipeline.create(dai.node.XLinkOut)
         xd.setStreamName("depth")
         stereo.depth.link(xd.input)

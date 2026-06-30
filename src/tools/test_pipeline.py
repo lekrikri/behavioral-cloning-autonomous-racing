@@ -32,6 +32,8 @@ sys.path.insert(0, str(_ROOT))
 import onnxruntime as ort
 from src.mask.depth_rays import DepthToRays
 from src.control.vesc_interface import VESCInterface
+from src.features import derive_features
+from src.control_post import SmoothingFilter, accel_from_geometry
 
 # Charger Z-score
 _STATS_PATH = Path("models/real_ray_stats.json")
@@ -71,19 +73,14 @@ def sigmoid(x: float) -> float:
 
 
 def preprocess(rays: np.ndarray) -> np.ndarray:
-    """Z-score + derived features — identique à inference_realcar.py."""
+    """Z-score + derived features via le contrat partagé (cf. src/features.py)."""
     rays_z = (rays - _MU[:20]) / (_SIGMA[:20] + 1e-8)
-    n = len(rays_z); half = n // 2
-    asym  = (rays_z[half:].sum() - rays_z[:half].sum()) / (rays_z.sum() + 1e-8)
-    front = float(rays_z[half-1:half+1].mean())
-    minr  = float(rays_z.min())
-    return np.concatenate([rays_z, [asym, front, minr]]).astype(np.float32)
+    derived = derive_features(rays_z)
+    return np.concatenate([rays_z, derived]).astype(np.float32)
 
 
 def accel_heuristic(steering: float, front_raw: float) -> float:
-    geo_base  = max(0.35, 1.0 - 1.2 * abs(steering))
-    front_cap = 1.0 if front_raw >= 0.65 else (0.45 + 0.70 * front_raw)
-    return float(np.clip(min(geo_base, front_cap), 0.35, 0.95))
+    return accel_from_geometry(steering, front_raw)
 
 
 # ─── Tests ────────────────────────────────────────────────────────────────
@@ -152,7 +149,6 @@ def test_onnx():
 
 def test_smoother():
     print("\n[3] SmoothingFilter — lissage adaptatif")
-    from src.control.inference_realcar import SmoothingFilter
     sm = SmoothingFilter()
 
     # Premier step = valeur brute
@@ -217,7 +213,6 @@ def test_full_pipeline():
     inp    = sess.get_inputs()[0].name
     vesc   = VESCInterface(port="/dev/ttyACM_FAKE")
 
-    from src.control.inference_realcar import SmoothingFilter
     smoother = SmoothingFilter()
 
     rng = np.random.default_rng(0)

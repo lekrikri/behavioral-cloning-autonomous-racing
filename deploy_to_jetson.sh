@@ -56,6 +56,8 @@ fi
 
 # ── Transférer le code source ───────────────────────────────────────────────
 echo "[4] Transfert code source..."
+scp src/features.py          "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/"
+scp src/control_post.py      "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/"
 scp src/mask/depth_rays.py       "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/mask/"
 scp src/control/vesc_interface.py "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/control/"
 scp src/control/inference_realcar.py "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/control/"
@@ -66,7 +68,7 @@ scp src/cam/__init__.py      "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/cam/
 scp src/mask/__init__.py     "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/mask/"
 scp src/control/__init__.py  "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/control/"
 scp src/tools/__init__.py    "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/tools/"
-echo "  ✅ src/ (5 fichiers)"
+echo "  ✅ src/ (7 fichiers)"
 
 # ── Transférer les scripts ──────────────────────────────────────────────────
 echo "[5] Transfert scripts..."

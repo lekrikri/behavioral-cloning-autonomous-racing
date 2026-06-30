@@ -10,6 +10,8 @@ Usage (Jetson Nano) :
   --fixed-speed  : vitesse constante (bypass machine à états) — mode calibration
   --level N      : niveau contrôleur 1-4 (défaut : 3)
   --stream-port  : port HTTP stream MJPEG (défaut : 5601, 0 = désactivé)
+  --source       : hub (défaut, lit le camera_hub en mémoire partagée, partage l'OAK-D) |
+                   device (ouvre l'OAK-D en direct, reconnexion + reset USB)
 """
 
 import sys, time, argparse, os, threading, struct, socket, csv, glob, fcntl
@@ -1207,6 +1209,16 @@ def parse_args():
                    help="Override STEERING_MAX [0.3-1.0] (defaut: 0.85).")
     p.add_argument("--no-corner",   action="store_true",
                    help="Desactive la detection de coin L (mode ligne droite / test).")
+    p.add_argument("--source", choices=["device", "hub"], default="hub",
+                   help="hub=lit le camera_hub en mémoire partagée (défaut, partage l'OAK-D) | "
+                        "device=ouvre l'OAK-D en direct")
+    p.add_argument("--hub-port", type=int, default=8077,
+                   help="vestige TCP, ignoré (le hub publie en mémoire partagée /dev/shm)")
+    p.add_argument("--max-duty", type=float, default=0.50,
+                   help="Duty cycle VESC maximal [0-1] (défaut 0.50).")
+    p.add_argument("--gamepad", action="store_true",
+                   help="Accepté pour compat profils ; la prise de main manette est gérée par "
+                        "le superviseur core/, pas par ce worker (ignoré ici).")
     return p.parse_args()
 
 
@@ -1263,7 +1275,7 @@ def run(args):
             print("[ctrl] ERREUR : vesc_interface non disponible"); sys.exit(1)
         vesc = VescInterface(port=args.port, baudrate=args.baud,
                              current_max=CURRENT_MAX,
-                             throttle_mode="duty", max_duty=0.50,
+                             throttle_mode="duty", max_duty=args.max_duty,
                              invert_motor=False)
         print("[ctrl] VESC connecte sur {}".format(args.port))
     else:
@@ -1290,145 +1302,179 @@ def run(args):
                 _usb_reset_oak()
                 _last_frame_time[0] = time.time()  # reset le timer pour ne pas boucler
 
-    wt = threading.Thread(target=_watchdog, daemon=True)
-    wt.start()
+    # Watchdog USB uniquement en mode device : en mode hub, c'est le hub qui possède l'OAK-D,
+    # un reset USB côté client le perturberait (la péremption des frames est gérée par le timeout
+    # du FrameClient).
+    if args.source == "device":
+        wt = threading.Thread(target=_watchdog, daemon=True)
+        wt.start()
 
-    attempt = 0
-    while True:
-        try:
-            attempt += 1
-            pipeline = dai.Pipeline()
-            cam = pipeline.create(dai.node.ColorCamera)
-            cam.setPreviewSize(CAM_W, CAM_H)
-            cam.setInterleaved(False)
-            cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-            cam.setFps(CAM_FPS)
-            xout = pipeline.create(dai.node.XLinkOut)
-            xout.setStreamName("preview")
-            cam.preview.link(xout.input)
+    if args.gamepad:
+        print("[ctrl] --gamepad ignoré : la prise de main manette est gérée par le superviseur core/.")
 
-            with dai.Device(pipeline, True) as device:
-                q = device.getOutputQueue("preview", maxSize=1, blocking=False)
-                if attempt > 1:
-                    _camera_restarted[0] = True  # signale au controller de reset Kalman
-                attempt = 0
-                t0 = time.time(); frame_n = 0
+    def _drive_loop(get_frame):
+        """Boucle de conduite indépendante de la source. get_frame() → prochaine frame BGR
+        (lève sur échec : crash device en mode device, hub injoignable en mode hub).
+        Tout le traitement (crop → masque → PD → VESC → stream) vit ICI, une seule fois ;
+        les deux sources (OAK-D direct, hub SHM) ne font que fournir get_frame."""
+        t0 = time.time(); frame_n = 0
+        while True:
+            bgr = get_frame()
 
-                while True:
-                    pkt = q.get()
-                    bgr = pkt.getCvFrame()
+            # Crop logiciel + zoom : simule inclinaison + focale augmentée
+            if args.cam_crop_top > 0:
+                y0 = int(CAM_H * args.cam_crop_top)
+                bgr = cv2.resize(bgr[y0:, :], (CAM_W, CAM_H),
+                                 interpolation=cv2.INTER_LINEAR)
 
-                    # Crop logiciel + zoom : simule inclinaison + focale augmentée
-                    if args.cam_crop_top > 0:
-                        y0 = int(CAM_H * args.cam_crop_top)
-                        bgr = cv2.resize(bgr[y0:, :], (CAM_W, CAM_H),
-                                         interpolation=cv2.INTER_LINEAR)
+            mask = white_line_mask(
+                bgr, hsv_low=HSV_LOW, hsv_high=HSV_HIGH,
+                morph_k=5, blur_k=3, use_clahe=True, min_area=MIN_BLOB_AREA,
+            )
+            # Masque large (ROI 45%) pour détection anticipée des coins
+            mask_wide = mask.copy()
+            mask_wide[:int(CAM_H * 0.45), :] = 0
+            # Masque normal (ROI 65%) pour lignes sans bruit fond
+            mask[:int(CAM_H * ROI_FAR), :] = 0
 
-                    mask = white_line_mask(
-                        bgr, hsv_low=HSV_LOW, hsv_high=HSV_HIGH,
-                        morph_k=5, blur_k=3, use_clahe=True, min_area=MIN_BLOB_AREA,
-                    )
-                    # Masque large (ROI 45%) pour détection anticipée des coins
-                    mask_wide = mask.copy()
-                    mask_wide[:int(CAM_H * 0.45), :] = 0
-                    # Masque normal (ROI 65%) pour lignes sans bruit fond
-                    mask[:int(CAM_H * ROI_FAR), :] = 0
+            steering, throttle, info = ctrl.compute(mask, bgr, mask_wide)
 
-                    steering, throttle, info = ctrl.compute(mask, bgr, mask_wide)
+            # ── MODE REPLAY : feedforward + correction PD ──────────────
+            if replay_data is not None:
+                idx = frame_n % len(replay_data)
+                ref = replay_data[idx]
+                w = args.replay_weight
+                # Feedforward (trajectoire mémorisée) + feedback (PD actuel)
+                steering = w * ref["steering"] + (1.0 - w) * steering
+                steering = max(-STEERING_MAX, min(STEERING_MAX, steering))
+                info["state"] = "REPLAY"
 
-                    # ── MODE REPLAY : feedforward + correction PD ──────────────
-                    if replay_data is not None:
-                        idx = frame_n % len(replay_data)
-                        ref = replay_data[idx]
-                        w = args.replay_weight
-                        # Feedforward (trajectoire mémorisée) + feedback (PD actuel)
-                        steering = w * ref["steering"] + (1.0 - w) * steering
-                        steering = max(-STEERING_MAX, min(STEERING_MAX, steering))
-                        info["state"] = "REPLAY"
+            # ── MODE RECORD : enregistre la frame ─────────────────────
+            if record_writer is not None:
+                record_writer.writerow({
+                    "frame":    frame_n,
+                    "t":        round(time.time() - t0, 3),
+                    "err":      info["err"],
+                    "steering": round(steering, 4),
+                    "throttle": round(throttle, 4),
+                    "state":    info["state"],
+                    "blobs":    info["n_blobs"],
+                })
 
-                    # ── MODE RECORD : enregistre la frame ─────────────────────
-                    if record_writer is not None:
-                        record_writer.writerow({
-                            "frame":    frame_n,
-                            "t":        round(time.time() - t0, 3),
-                            "err":      info["err"],
-                            "steering": round(steering, 4),
-                            "throttle": round(throttle, 4),
-                            "state":    info["state"],
-                            "blobs":    info["n_blobs"],
-                        })
+            # Mémoriser pour coast mode (crash caméra)
+            if abs(steering) < 0.5 and throttle > 0:
+                _coast_steer[0]    = steering
+                _coast_throttle[0] = throttle
 
-                    # Mémoriser pour coast mode (crash caméra)
-                    if abs(steering) < 0.5 and throttle > 0:
-                        _coast_steer[0]    = steering
-                        _coast_throttle[0] = throttle
+            if vesc is not None:
+                if _drive_enabled:
+                    vesc.drive(steering, throttle)
+                else:
+                    vesc.stop()
 
-                    if vesc is not None:
-                        if _drive_enabled:
-                            vesc.drive(steering, throttle)
-                        else:
-                            vesc.stop()
+            if args.stream_port > 0:
+                push_frame(bgr, info.get("mask_clean", mask), info, info.get("rejected_blobs"))
+            _last_frame_time[0] = time.time()
 
-                    if args.stream_port > 0:
-                        push_frame(bgr, info.get("mask_clean", mask), info, info.get("rejected_blobs"))
-                    _last_frame_time[0] = time.time()
+            frame_n += 1
+            if frame_n % (CAM_FPS * 3) == 0:
+                fps = frame_n / (time.time() - t0)
+                mid = CAM_W // 2
+                cx_list = info["blobs_cx"]
+                lefts  = [x for x in cx_list if x < mid]
+                rights = [x for x in cx_list if x >= mid]
+                tw = str(min(rights) - max(lefts)) if lefts and rights else "?"
+                rec_str = " [REC {}f]".format(frame_n) if record_writer else ""
+                rep_str = " [REPLAY {}/{}]".format(frame_n % len(replay_data) if replay_data else 0,
+                                                    len(replay_data) if replay_data else 0) if replay_data else ""
+                print("[ctrl] {:.0f}fps | err={} | steer={:.3f} | "
+                      "thr={:.2f} | {} | blobs={} | cx={} | tw={}px | "
+                      "off={:+.1f} sbias={:+.1f}{}{}".format(
+                          fps,
+                          int(info["err"]) if info["err"] is not None else "N/A",
+                          steering, throttle,
+                          info["state"], info["n_blobs"],
+                          cx_list, tw,
+                          ctrl.auto_offset, ctrl.servo_bias,
+                          rec_str, rep_str))
 
-                    frame_n += 1
-                    if frame_n % (CAM_FPS * 3) == 0:
-                        fps = frame_n / (time.time() - t0)
-                        mid = CAM_W // 2
-                        cx_list = info["blobs_cx"]
-                        lefts  = [x for x in cx_list if x < mid]
-                        rights = [x for x in cx_list if x >= mid]
-                        tw = str(min(rights) - max(lefts)) if lefts and rights else "?"
-                        rec_str = " [REC {}f]".format(frame_n) if record_writer else ""
-                        rep_str = " [REPLAY {}/{}]".format(frame_n % len(replay_data) if replay_data else 0,
-                                                            len(replay_data) if replay_data else 0) if replay_data else ""
-                        print("[ctrl] {:.0f}fps | err={} | steer={:.3f} | "
-                              "thr={:.2f} | {} | blobs={} | cx={} | tw={}px | "
-                              "off={:+.1f} sbias={:+.1f}{}{}".format(
-                                  fps,
-                                  int(info["err"]) if info["err"] is not None else "N/A",
-                                  steering, throttle,
-                                  info["state"], info["n_blobs"],
-                                  cx_list, tw,
-                                  ctrl.auto_offset, ctrl.servo_bias,
-                                  rec_str, rep_str))
-
-        except KeyboardInterrupt:
-            print("[ctrl] Arret."); break
-        except Exception as e:
-            print("[ctrl] Erreur ({}) — coast mode + reset USB + reconnexion".format(type(e).__name__))
-            _coast_crash_t[0] = time.time()
-            _usb_reset_oak()
-            delay = max(5, min(5 * attempt, 30))
-            coast_s = float(_coast_steer[0])
-            coast_t = float(_coast_throttle[0])
-            # Coast mode : décroissance progressive pendant le reset USB
-            elapsed = 0.0
-            while elapsed < delay:
-                elapsed = time.time() - _coast_crash_t[0]
-                if vesc and _drive_enabled:
-                    if elapsed < 0.5:
-                        s = coast_s
-                        t = coast_t
-                    elif elapsed < 1.5:
-                        s = coast_s * 0.90
-                        t = coast_t * 0.90
-                    elif elapsed < 2.5:
-                        s = coast_s * 0.70
-                        t = coast_t * 0.60
-                    else:
-                        try: vesc.stop()
-                        except: pass
-                        break
-                    try: vesc.drive(s, t)
-                    except: pass
-                time.sleep(0.05)
+    # ── Source HUB : lit le camera_hub en mémoire partagée (zéro-copie, partage l'OAK-D) ──
+    if args.source == "hub":
+        from src.cam.hub import FrameClient, ensure_hub_or_prompt
+        if not ensure_hub_or_prompt():
             if vesc:
-                try: vesc.stop()
+                try: vesc.stop(); vesc.close()
                 except: pass
-            print("[ctrl] Reconnexion dans {}s restantes...".format(max(0, delay - elapsed)))
+            return
+        client = FrameClient()
+        client.connect()
+        print("[ctrl] source = hub (SHM /dev/shm/robocar_cam_color)")
+        try:
+            _drive_loop(client.getCvFrame)
+        except KeyboardInterrupt:
+            print("[ctrl] Arret.")
+        except Exception as e:
+            print("[ctrl] Hub injoignable ({}) — arret moteur.".format(type(e).__name__))
+        finally:
+            client.close()
+
+    # ── Source DEVICE : ouvre l'OAK-D en direct (reconnexion + coast + reset USB) ──
+    else:
+        attempt = 0
+        while True:
+            try:
+                attempt += 1
+                pipeline = dai.Pipeline()
+                cam = pipeline.create(dai.node.ColorCamera)
+                cam.setPreviewSize(CAM_W, CAM_H)
+                cam.setInterleaved(False)
+                cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
+                cam.setFps(CAM_FPS)
+                xout = pipeline.create(dai.node.XLinkOut)
+                xout.setStreamName("preview")
+                cam.preview.link(xout.input)
+
+                with dai.Device(pipeline, True) as device:
+                    q = device.getOutputQueue("preview", maxSize=1, blocking=False)
+                    if attempt > 1:
+                        _camera_restarted[0] = True  # signale au controller de reset Kalman
+                    attempt = 0
+                    _drive_loop(lambda: q.get().getCvFrame())
+
+            except KeyboardInterrupt:
+                print("[ctrl] Arret."); break
+            except Exception as e:
+                print("[ctrl] Erreur ({}) — coast mode + reset USB + reconnexion".format(type(e).__name__))
+                _coast_crash_t[0] = time.time()
+                _usb_reset_oak()
+                delay = max(5, min(5 * attempt, 30))
+                coast_s = float(_coast_steer[0])
+                coast_t = float(_coast_throttle[0])
+                # Coast mode : décroissance progressive pendant le reset USB
+                elapsed = 0.0
+                while elapsed < delay:
+                    elapsed = time.time() - _coast_crash_t[0]
+                    if vesc and _drive_enabled:
+                        if elapsed < 0.5:
+                            s = coast_s
+                            t = coast_t
+                        elif elapsed < 1.5:
+                            s = coast_s * 0.90
+                            t = coast_t * 0.90
+                        elif elapsed < 2.5:
+                            s = coast_s * 0.70
+                            t = coast_t * 0.60
+                        else:
+                            try: vesc.stop()
+                            except: pass
+                            break
+                        try: vesc.drive(s, t)
+                        except: pass
+                    time.sleep(0.05)
+                if vesc:
+                    try: vesc.stop()
+                    except: pass
+                print("[ctrl] Reconnexion dans {}s restantes...".format(max(0, delay - elapsed)))
 
     if vesc:
         try: vesc.stop(); vesc.close()

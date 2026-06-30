@@ -1,0 +1,12 @@
+# OAK-D Lite — disable USB autosuspend (Luxonis/Movidius VID 03e7)
+#
+# Why: the OAK-D drops off the USB bus when idle (kernel autosuspend), causing
+# "No available devices" / X_LINK errors. A powered USB hub alone does NOT fix it.
+# Matching by idVendor keeps it robust across USB ports and boot/booted states
+# (bootloader 03e7:2485 -> booted 03e7:f63b, same VID).
+#
+# Install on the Jetson:
+#   sudo cp configs/udev/80-oak-no-autosuspend.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="03e7", TEST=="power/control", ATTR{power/control}="on"

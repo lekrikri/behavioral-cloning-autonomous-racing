@@ -52,7 +52,7 @@ parser.add_argument("--mode",   choices=["hsv", "canny"], default="hsv",
 parser.add_argument("--canny-low",  type=int, default=50,  help="Seuil bas Canny")
 parser.add_argument("--canny-high", type=int, default=150, help="Seuil haut Canny")
 parser.add_argument("--source", choices=["device", "hub"], default="hub",
-                    help="hub=lit le camera_hub (mémoire partagée, défaut) | device=ouvre l'OAK-D")
+                    help="hub=lit le hub caméra en mémoire partagée (défaut) | device=ouvre l'OAK-D")
 args = parser.parse_args()
 
 W, H = args.width, args.height

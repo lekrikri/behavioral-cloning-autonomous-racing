@@ -7,8 +7,8 @@
 ## Architecture
 
 ```
-OAK-D ──> camera_hub.py ──(socket locale)──┬──> mask_stream.py   (preview + UI navigateur)
-          (possède la caméra)              └──> inference_realcar.py --source hub  (autonome)
+OAK-D ──> src/cam/hub.py ──(/dev/shm, zéro-copie)──┬──> mask/stream.py   (preview + UI navigateur)
+          (possède la caméra)                      └──> control/inference_realcar.py --source hub  (autonome)
 ```
 Un seul process ouvre l'OAK-D (le **hub**) ; preview et inférence en sont de simples clients →
 preview et conduite autonome **coexistent**. Le hub tourne en permanence comme service système

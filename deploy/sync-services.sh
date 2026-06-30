@@ -24,6 +24,12 @@ for u in "${UNITS[@]}"; do
   sudo chmod 0644 "$DEST/$u"
 done
 
+# Exclut les régions SHM du hub du nettoyage systemd-tmpfiles (mmap ne bump pas mtime →
+# sinon tmpfiles supprime /dev/shm/robocar_cam_* en pleine utilisation).
+echo "[sync] install tmpfiles.d/robocar-cam-hub.conf -> /etc/tmpfiles.d/"
+sudo cp "$HERE/tmpfiles.d/robocar-cam-hub.conf" /etc/tmpfiles.d/robocar-cam-hub.conf
+sudo chmod 0644 /etc/tmpfiles.d/robocar-cam-hub.conf
+
 sudo systemctl daemon-reload
 sudo systemctl enable "${UNITS[@]}"
 sudo systemctl restart "${UNITS[@]}"

@@ -35,7 +35,6 @@ class Supervisor:
         """Params véhicule interpolés dans les argv des workers — source unique vehicle.json."""
         v = self.vehicle
         return {
-            "hub_port": v.get("camera", {}).get("hub_port", 8077),
             "max_duty": v.get("control", {}).get("max_duty", 0.05),
             "teleop_max_duty": v.get("control", {}).get("teleop_max_duty", 0.12),
             "steering_max": v.get("control", {}).get("steering_max", 1.0),

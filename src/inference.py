@@ -19,43 +19,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.client import RobocarEnv
-
-
-class SmoothingFilter:
-    """
-    Filtre adaptatif : alpha élevé en virage (réactif), bas en ligne droite (stable).
-    Deadzone sur le steering pour supprimer le micro-zigzag.
-    Recommandé Grok/Gemini v2.
-    """
-
-    def __init__(self, alpha: float = 0.57, alpha_max: float = 0.92, deadzone: float = 0.06):
-        self.alpha_base = alpha
-        self.alpha_max = alpha_max
-        self.deadzone = deadzone
-        self._smoothed: Optional[np.ndarray] = None
-
-    def reset(self):
-        self._smoothed = None
-
-    def update(self, raw: np.ndarray) -> np.ndarray:
-        raw = np.nan_to_num(raw, nan=0.0, posinf=1.0, neginf=-1.0)
-
-        if self._smoothed is None:
-            self._smoothed = raw.copy()
-        else:
-            # Alpha adaptatif : plus réactif si changement de steering fort (virage)
-            delta = abs(raw[0] - self._smoothed[0])
-            alpha = self.alpha_base + (self.alpha_max - self.alpha_base) * min(delta, 1.0)
-            self._smoothed = alpha * raw + (1.0 - alpha) * self._smoothed
-
-        result = self._smoothed.copy()
-        # Deadzone steering : supprime le micro-zigzag en ligne droite
-        if abs(result[0]) < self.deadzone:
-            result[0] = 0.0
-        return result
-
-    def __call__(self, raw: np.ndarray) -> np.ndarray:
-        return self.update(raw)
+from src.features import derive_features
+from src.control_post import SmoothingFilter, apply_steer_offset, accel_from_geometry
 
 
 class JerkTracker:
@@ -221,14 +186,7 @@ def run_inference_pytorch(
                 # Features dérivées (asymétrie, front_ray, min_ray) — seulement si le modèle en a
                 model_n_derived = getattr(model, "n_derived", 0)
                 if model_n_derived >= 3:
-                    n = len(rays)
-                    half = n // 2
-                    left_sum = rays[:half].sum()
-                    right_sum = rays[half:].sum()
-                    asymmetry = (right_sum - left_sum) / (left_sum + right_sum + 1e-8)
-                    front_ray = float(rays[half - 1 : half + 1].mean())
-                    min_ray = rays.min()
-                    derived = np.array([asymmetry, front_ray, min_ray], dtype=np.float32)
+                    derived = derive_features(rays)
                     if model_n_derived == 4:
                         derived = np.append(derived, prev_steering).astype(np.float32)
                 else:
@@ -268,21 +226,10 @@ def run_inference_pytorch(
                     pred = raw.numpy()
 
                 pred_smooth = smoother.update(pred)
-                # Offset gauche -0.02 sur virages doux (0.05–0.35) : corrige biais droite
-                steer_raw = pred_smooth[0]
-                if 0.05 < abs(steer_raw) < 0.35:
-                    steer_raw = steer_raw - 0.02 * np.sign(steer_raw)
+                steer_raw = apply_steer_offset(pred_smooth[0])
                 steering = float(np.clip(steer_raw, -1.0, 1.0))
-
-                # Accel : anticipation front_raw — freine seulement si virage réellement proche
-                # front_raw > 0.65 (ligne droite / mur loin) → pleine vitesse, pas de cap
-                # front_raw < 0.65 (virage approche)         → cap progressif [0.45, 0.90]
-                geo_base = max(0.35, 1.0 - 1.2 * abs(steering))
-                if front_raw >= 0.65:
-                    front_cap = 1.0                           # libre sur ligne droite
-                else:
-                    front_cap = 0.45 + 0.70 * front_raw      # 0→0.45 | 0.65→0.91
-                acceleration = float(np.clip(min(geo_base, front_cap), 0.35, 0.95))
+                # sim : pas de corner_damp, plancher accel 0.35
+                acceleration = accel_from_geometry(steering, front_raw)
 
                 # Mettre à jour prev_steering pour le prochain step (action conditioning)
                 prev_steering = float(np.clip(pred_smooth[0], -1.0, 1.0))

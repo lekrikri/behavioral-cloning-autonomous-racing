@@ -56,6 +56,8 @@ except ImportError:
 from src.mask.depth_rays import DepthToRays, create_depthai_pipeline, add_stereo_depth
 from src.mask.visual_rays   import VisualRays, create_color_pipeline
 from src.control.vesc_interface import VESCInterface
+from src.features import derive_features
+from src.control_post import SmoothingFilter, apply_steer_offset, accel_from_geometry
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 MODEL_PATH          = "models/v18/best.onnx"
@@ -72,33 +74,6 @@ EMERGENCY_VALID_FRAC_MIN = 0.003  # "blackout" : objet collé qui occulte la len
                                   # (~1% de pixels valides en usage normal -> marge x3).
 EMERGENCY_CENTER_BAND   = (0.40, 0.60)  # fraction de colonnes (centre image) scrutée
 DEPTH_DEAD_MAX_MM       = 200    # frame.max() en deçà -> depth map nulle (capteur/hub perdu)
-
-
-class SmoothingFilter:
-    def __init__(self, alpha: float = 0.57, alpha_max: float = 0.92, deadzone: float = 0.06):
-        self.alpha_base = alpha
-        self.alpha_max  = alpha_max
-        self.deadzone   = deadzone
-        self._smoothed: Optional[np.ndarray] = None
-
-    def reset(self):
-        self._smoothed = None
-
-    def update(self, raw: np.ndarray) -> np.ndarray:
-        raw = np.nan_to_num(raw, nan=0.0, posinf=1.0, neginf=-1.0)
-        if self._smoothed is None:
-            self._smoothed = raw.copy()
-        else:
-            delta = abs(raw[0] - self._smoothed[0])
-            alpha = self.alpha_base + (self.alpha_max - self.alpha_base) * min(delta, 1.0)
-            self._smoothed = alpha * raw + (1.0 - alpha) * self._smoothed
-        result = self._smoothed.copy()
-        if abs(result[0]) < self.deadzone:
-            result[0] = 0.0
-        return result
-
-    def __call__(self, raw: np.ndarray) -> np.ndarray:
-        return self.update(raw)
 
 
 class RealCarInference:
@@ -448,12 +423,9 @@ class RealCarInference:
             rays_z = (rays - self.ray_mu[:20]) / (self.ray_sigma[:20] + 1e-8)
 
             # ── Features dérivées ─────────────────────────────────────────
-            half      = len(rays_z) // 2
-            asymmetry = (rays_z[half:].sum() - rays_z[:half].sum()) / (rays_z.sum() + 1e-8)
-            front_ray = float(rays_z[half - 1: half + 1].mean())
-            min_ray   = float(rays_z.min())
-            derived   = np.array([asymmetry, front_ray, min_ray], dtype=np.float32)
-            features  = np.concatenate([rays_z, derived]).astype(np.float32)
+            half     = len(rays_z) // 2   # conservé pour front_raw (heuristique accel)
+            derived  = derive_features(rays_z)
+            features = np.concatenate([rays_z, derived]).astype(np.float32)
 
             # ── Inférence ONNX ────────────────────────────────────────────
             pred      = self.sess.run(None, {self.input_name: features[np.newaxis, :]})[0][0]
@@ -461,19 +433,15 @@ class RealCarInference:
             accel_raw = float(1.0 / (1.0 + np.exp(-pred[1])))  # sigmoid sur logit
 
             # ── Smoothing ─────────────────────────────────────────────────
-            pred_s  = self.smoother.update(np.array([steer_raw, accel_raw], dtype=np.float32))
-            steer   = pred_s[0]
-            if 0.05 < abs(steer) < 0.35:
-                steer -= 0.02 * np.sign(steer)
+            pred_s   = self.smoother.update(np.array([steer_raw, accel_raw], dtype=np.float32))
+            steer    = apply_steer_offset(pred_s[0])
             steering = float(np.clip(steer * self.steer_gain, -1.0, 1.0))
 
             # ── Heuristique accel (front_raw) ─────────────────────────────
-            front_raw = float(rays[half - 1: half + 1].mean())
-            geo_base  = max(0.35, 1.0 - 1.2 * abs(steering))
-            front_cap = 1.0 if front_raw >= 0.65 else (0.45 + 0.70 * front_raw)
-            # Sécurité virage (recommandation Grok) : réduire accel si steer élevé
-            corner_damp = 1.0 - 0.5 * abs(steering)
-            acceleration = float(np.clip(min(geo_base, front_cap) * corner_damp, 0.50, 0.95))
+            # réel : corner_damp ON + plancher 0.50 (diverge du sim — voir control_post)
+            front_raw    = float(rays[half - 1: half + 1].mean())
+            acceleration = accel_from_geometry(steering, front_raw,
+                                               corner_damp=True, accel_floor=0.50)
 
             # ── Envoi VESC ────────────────────────────────────────────────
             self.vesc.send(steering, acceleration)
@@ -487,7 +455,7 @@ class RealCarInference:
             if self._csv_writer and self._step % 3 == 0:
                 self._csv_writer.writerow([
                     round(time.time() - self._start_time, 3),
-                    round(steering, 4), round(steer_raw, 4), round(float(asymmetry), 4),
+                    round(steering, 4), round(steer_raw, 4), round(float(derived[0]), 4),
                     round(acceleration, 4),
                     round(front_raw, 4), round(float(rays.min()), 4),
                     round(fps, 1),

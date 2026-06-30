@@ -1,23 +1,23 @@
 """
-collect_passive.py — Collecte de données en "Écoute Passive".
-Laisse le 'core' (teleop_gamepad.py) piloter le VESC. Ce script se contente 
-de lire la RAM pour associer les images aux commandes du pilote. ZÉRO ACCOUP.
+collect_passive.py — Collecte de données en "Écoute Passive" (ENREGISTREMENT CONTINU).
+Laisse le 'core' (teleop_gamepad.py) piloter le VESC. Ce script enregistre 
+en permanence la caméra et la télémétrie à ~30Hz. ZÉRO ACCOUP.
 """
 
 import argparse
 import csv
 import time
 import sys
+import os
 from pathlib import Path
 import numpy as np
-import os
 
 from src.cam.hub import FrameClient, ensure_hub_or_prompt, SHM_COLOR, SHM_DEPTH, SHM_IMU
 from src.mask.visual_rays import VisualRays
 from src.mask.depth_rays import DepthToRays
 
 def get_telemetry():
-    """Lit les actions actuelles du pilote depuis la RAM."""
+    """Lit les actions actuelles du pilote depuis la RAM (généré par le core)."""
     try:
         with open("/dev/shm/robocar_telemetry.txt", "r") as f:
             data = f.read().split(',')
@@ -53,19 +53,16 @@ def main():
     episode_id = int(time.time())
     step = 0
     
-    last_active_time = time.time()
-    COASTING_TIMEOUT = 1.5
-    
-    print(f"\n[Collecte Passive] Prêt. Fichier : {out_path}")
-    print("[Collecte Passive] En attente des actions du pilote (Allumez la manette)...")
-    print("[Collecte Passive] Appuyez sur Ctrl+C ici pour arrêter et sauvegarder.\n")
+    print(f"\n[Collecte Continue] Prêt. Fichier : {out_path}")
+    print("[Collecte Continue] Enregistrement SANS PAUSE (30 FPS).")
+    print("[Collecte Continue] Appuyez sur Ctrl+C ici pour arrêter et fermer le fichier.\n")
 
     with open(out_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(header)
         
         try:
-            # La boucle est rythmée par la caméra (30 Hz)
+            # La boucle est rythmée par l'arrivée des images de la caméra (30 Hz)
             while True:
                 try:
                     # Attente bloquante de la prochaine image
@@ -77,7 +74,7 @@ def main():
                 depth = client_depth.latest()
                 imu_data = client_imu.latest()
                 
-                # Lecture passive des actions du pilote (dictées par le Core)
+                # Lecture passive des actions du pilote dictées par le Core
                 steer, accel = get_telemetry()
                 
                 rays_vis = vr(bgr)
@@ -91,23 +88,17 @@ def main():
                 else:
                     gx, gy, gz = 0.0, 0.0, 0.0
                 
-                # Sauvegarde intelligente (avec Coasting)
-                if abs(accel) > 0.05 or abs(steer) > 0.05:
-                    last_active_time = time.time()
+                # Sauvegarde immédiate et continue
+                row = [episode_id, step, time.time()] 
+                row += rays_vis.tolist() 
+                row += rays_depth.tolist() 
+                row += [gx, gy, gz, accel, steer, accel]
+                writer.writerow(row)
+                step += 1
                 
-                is_recording = (time.time() - last_active_time) < COASTING_TIMEOUT
-                
-                if is_recording:
-                    row = [episode_id, step, time.time()] 
-                    row += rays_vis.tolist() 
-                    row += rays_depth.tolist() 
-                    row += [gx, gy, gz, accel, steer, accel]
-                    writer.writerow(row)
-                    step += 1
-                
+                # Affichage console tous les 10 steps (3 fois par seconde)
                 if step % 10 == 0:
-                    etat = "REC" if is_recording else "PAUSE"
-                    print(f"\rFrames: {step} [{etat}] | Steer: {steer:+.2f} | Accel: {accel:+.2f}   ", end="")
+                    print(f"\rFrames: {step} [REC] | Steer: {steer:+.2f} | Accel: {accel:+.2f}   ", end="")
                     
         except KeyboardInterrupt:
             print("\nArrêt manuel de la collecte.")
@@ -120,7 +111,8 @@ def main():
     if os.path.exists("/dev/shm/robocar_telemetry.txt"):
         os.remove("/dev/shm/robocar_telemetry.txt")
         
-    print(f"\n[Collecte Passive] Terminé. {step} frames enregistrées dans {out_path}.")
+    print(f"\n[Collecte Continue] Terminé. {step} frames enregistrées dans {out_path}.")
 
 if __name__ == "__main__":
     main()
+    

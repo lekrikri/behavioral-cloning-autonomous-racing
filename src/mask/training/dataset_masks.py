@@ -40,7 +40,7 @@ class MaskDataset(Dataset):
                 f"Aucune paire image/masque trouvée.\n"
                 f"  images : {self.images_dir}\n"
                 f"  masques : {self.masks_dir}\n"
-                f"Génère d'abord les masques : python src/mask_generator.py"
+                f"Génère d'abord les masques : python -m src.mask.training.mask_generator"
             )
         print(f"MaskDataset ({'train+aug' if augment else 'val'}) : {len(self.samples)} paires")
 

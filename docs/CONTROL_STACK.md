@@ -12,7 +12,7 @@
 ```
 NOTRE code applicatif        "tourne à -0.3, accélère à 0.5"
       │
-src/vesc_interface.py   ◄── le plus bas niveau QU'ON écrit
+src/control/vesc_interface.py   ◄── le plus bas niveau QU'ON écrit
    • framing  0x02 | len | payload | crc | 0x03
    • CRC-16/XMODEM · IDs de commande · scaling (Ampères, position servo)
       │  octets bruts
@@ -111,7 +111,7 @@ toutes les **300 ms** (thread daemon dans `VESCInterface`). Régler le timeout c
   sur `crccheck`), avec une API encore différente (classes de messages non exposées au
   top-level). Bref : « pyvesc 1.0.5 » = plusieurs codebases incompatibles selon la source.
 
-→ Le protocole étant trivial, on l'implémente nous-mêmes dans `src/vesc_interface.py` :
+→ Le protocole étant trivial, on l'implémente nous-mêmes dans `src/control/vesc_interface.py` :
 **zéro dépendance VESC**, juste `pyserial`. Portable Python 3.6 ↔ 3.8, pas de patch.
 
 ### Validation du CRC (test sans matériel)

@@ -1,7 +1,7 @@
 # Réglage du masque de lignes — couches anti-artefacts
 
 > Procédure pour régler les couches qui éliminent les **faux positifs** du masque de
-> lignes blanches (plinthes, reflets spéculaires, tapis clair). Outil : [`src/mask_stream.py`](../src/mask_stream.py).
+> lignes blanches (plinthes, reflets spéculaires, tapis clair). Outil : [`src/mask/stream.py`](../src/mask/stream.py).
 > Voir aussi [pourquoi pas le monochrome](hardware/components/oak-d-lite.md#pourquoi-pas-du-monochrome-pour-la-détection-de-lignes).
 
 ## Le principe (à comprendre avant de régler)
@@ -101,9 +101,9 @@ vraie ligne ET l'artefact à tuer**. À chaque étape, surveillez les deux éche
 Une fois les bonnes valeurs identifiées, reportez-les comme **défauts** dans le code (elles
 sont aujourd'hui OFF par défaut pour préserver le comportement historique) :
 
-- [`src/visual_rays.py`](../src/visual_rays.py) — défauts de `white_line_mask()` et `VisualRays`
+- [`src/mask/visual_rays.py`](../src/mask/visual_rays.py) — défauts de `white_line_mask()` et `VisualRays`
   (`tophat_k`, `tophat_thresh`, `max_fill_ratio`, `temporal_window`).
-- [`src/live_mask_oak.py`](../src/live_mask_oak.py) — constantes `TOPHAT_K_ON` / `MAX_FILL_ON` / `TEMPORAL_ON`.
+- [`src/mask/live_mask.py`](../src/mask/live_mask.py) — constantes `TOPHAT_K_ON` / `MAX_FILL_ON` / `TEMPORAL_ON`.
 
-Le mode `visual`/`fusion` de [`src/inference_realcar.py`](../src/inference_realcar.py) lit
+Le mode `visual`/`fusion` de [`src/control/inference_realcar.py`](../src/control/inference_realcar.py) lit
 ces défauts via `VisualRays` → les bonnes valeurs s'appliquent automatiquement à l'inférence.

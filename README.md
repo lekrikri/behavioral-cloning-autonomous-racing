@@ -176,7 +176,7 @@ pip install -r requirements.txt
 ./BuildLinux/RacingSimulator.x86_64 --mlagents-port 5005 --config-path configs/config.json
 
 # 2. Collect data (human driving)
-python src/data_collector.py collect --output data/run_01.csv
+python -m src.tools.data_collector collect --output data/run_01.csv
 
 # 3. Train
 python src/train.py --data data/ --arch cnn --epochs 100 --loss huber
@@ -191,13 +191,13 @@ python src/inference.py --model models/v18/best.onnx
 pip install opencv-python-headless
 
 # Generate masks automatically for all images
-python src/mask_generator.py \
+python -m src.mask.training.mask_generator \
     --input  data/256_128/256_128 \
     --output data/masks_auto \
     --preview data/masks_preview
 
 # Train U-Net on corrected masks
-python src/train_mask.py --masks data/masks_auto --output models/mask_v1
+python -m src.mask.training.train_mask --masks data/masks_auto --output models/mask_v1
 ```
 
 > Full documentation: [docs/MASK_GENERATOR.md](docs/MASK_GENERATOR.md)
@@ -206,13 +206,13 @@ python src/train_mask.py --masks data/masks_auto --output models/mask_v1
 
 ```bash
 # Step 1: servo calibration (mandatory)
-python3.8 src/calibrate_servo.py
+python3.8 -m src.tools.calibrate_servo
 
 # Step 2: OAK-D raycasts calibration (mandatory)
-python3.8 src/calibrate_ray_stats.py
+python3.8 -m src.tools.calibrate_rays
 
 # Step 3: run inference (wheels off ground first!)
-python3.8 src/inference_realcar.py --duty-max 0.15
+python3.8 -m src.control.inference_realcar --duty-max 0.15
 ```
 
 ---

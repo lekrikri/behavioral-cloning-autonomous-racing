@@ -7,7 +7,7 @@ Procédure :
   3. Suivre les instructions à l'écran
 
 Usage :
-  python3.8 src/calibrate_servo.py [--port /dev/ttyACM0]
+  python3.8 -m src.tools.calibrate_servo [--port /dev/ttyACM0]
 """
 
 import time
@@ -15,12 +15,16 @@ import argparse
 import sys
 import numpy as np
 
-sys.path.insert(0, "src")
-from vesc_interface import VESCInterface
+import pathlib
+_ROOT = pathlib.Path(__file__).resolve()
+while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
+    _ROOT = _ROOT.parent
+sys.path.insert(0, str(_ROOT))
+from src.control.vesc_interface import VESCInterface
 
 def send_servo_only(vesc, servo_pos: float):
     """Envoie uniquement la position servo, moteur à 0 (protocole natif)."""
-    from vesc_interface import _cmd_set_servo, _cmd_set_current
+    from src.control.vesc_interface import _cmd_set_servo, _cmd_set_current
     servo_pos = float(np.clip(servo_pos, 0.10, 0.90))
     try:
         vesc.ser.write(_cmd_set_current(0.0))

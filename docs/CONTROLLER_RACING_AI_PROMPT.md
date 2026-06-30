@@ -150,9 +150,9 @@ Paramètres actuels : KP=0.004, KD=0.002, V_MAX=0.30, STEERING_MAX=0.8
 
 ## Fichiers pertinents du projet
 
-- `src/controller_pd.py`   — contrôleur PD 4 niveaux (fichier principal)
-- `src/visual_rays.py`     — pipeline vision HSV + raycasts
-- `src/vesc_interface.py`  — interface UART VESC (duty, current, servo, ERPM)
-- `src/inference_realcar.py` — ancien contrôleur Behavioral Cloning v18 (référence)
+- `src/control/controller_pd.py`   — contrôleur PD 4 niveaux (fichier principal)
+- `src/mask/visual_rays.py`     — pipeline vision HSV + raycasts
+- `src/control/vesc_interface.py`  — interface UART VESC (duty, current, servo, ERPM)
+- `src/control/inference_realcar.py` — ancien contrôleur Behavioral Cloning v18 (référence)
 
 Le modèle BC v18 tourne le circuit en ~24s. L'objectif est de faire mieux avec le PD.

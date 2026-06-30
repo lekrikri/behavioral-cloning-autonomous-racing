@@ -14,16 +14,20 @@ Two tests:
 !!! 90 km/h car — WHEELS OFF THE GROUND. Ctrl-C = emergency stop. !!!
 
 Usage:
-  OPENBLAS_CORETYPE=ARMV8 .venv/bin/python src/bench_erpm.py
-  .venv/bin/python src/bench_erpm.py --hi 12000 --steps 4000,6000,8000,10000 --yes
+  OPENBLAS_CORETYPE=ARMV8 .venv/bin/python -m src.tools.bench_erpm
+  .venv/bin/python -m src.tools.bench_erpm --hi 12000 --steps 4000,6000,8000,10000 --yes
 """
 
 import argparse
 import sys
 import time
 
-sys.path.insert(0, "src")
-from vesc_interface import VESCInterface
+import pathlib
+_ROOT = pathlib.Path(__file__).resolve()
+while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
+    _ROOT = _ROOT.parent
+sys.path.insert(0, str(_ROOT))
+from src.control.vesc_interface import VESCInterface
 
 FW = -1.0   # forward direction for this car
 

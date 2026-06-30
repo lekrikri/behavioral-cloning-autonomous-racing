@@ -2,8 +2,8 @@
 Entraînement du Micro U-Net de segmentation de piste.
 
 Usage :
-  python src/train_mask.py                          # paramètres par défaut
-  python src/train_mask.py --epochs 80 --batch 16   # personnalisé
+  python -m src.mask.training.train_mask                          # paramètres par défaut
+  python -m src.mask.training.train_mask --epochs 80 --batch 16   # personnalisé
 
 Sorties (dans models/mask_v1/) :
   best.pth   — meilleurs poids PyTorch
@@ -18,9 +18,13 @@ import torch
 from torch.utils.data import DataLoader, random_split
 
 # Imports locaux
-sys.path.insert(0, str(Path(__file__).parent))
-from dataset_masks import MaskDataset
-from unet_model import DiceBCELoss, MicroUNet
+import pathlib
+_ROOT = pathlib.Path(__file__).resolve()
+while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
+    _ROOT = _ROOT.parent
+sys.path.insert(0, str(_ROOT))
+from src.mask.training.dataset_masks import MaskDataset
+from src.mask.training.unet_model import DiceBCELoss, MicroUNet
 
 
 def iou_score(pred: torch.Tensor, target: torch.Tensor) -> float:

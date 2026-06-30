@@ -11,7 +11,7 @@
 ```bash
 # Sur le Jetson Nano :
 cd ~/behavioral-cloning-autonomous-racing
-OPENBLAS_CORETYPE=ARMV8 python3 -u src/camera_stream.py --serve --dst-port 5600
+OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.cam.stream --serve --dst-port 5600
 
 # Sur le PC (VLC) :
 # Média > Ouvrir un flux réseau → tcp://192.168.0.100:5600
@@ -54,10 +54,10 @@ ssh robocar@192.168.0.100
 
 # Commande standard (H.264, 640x360, 15fps)
 cd ~/behavioral-cloning-autonomous-racing
-OPENBLAS_CORETYPE=ARMV8 python3 -u src/camera_stream.py --serve --dst-port 5600
+OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.cam.stream --serve --dst-port 5600
 
 # Avec enregistrement local en même temps
-OPENBLAS_CORETYPE=ARMV8 python3 -u src/camera_stream.py --serve --dst-port 5600 --record /tmp/session.h264
+OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.cam.stream --serve --dst-port 5600 --record /tmp/session.h264
 ```
 
 ### Recevoir sur le PC
@@ -121,7 +121,7 @@ Le réseau 4G-CPE-ADC1 classe la connexion Windows en réseau **Public**. Le par
 **UDP si firewall autorisé** :
 ```bash
 # Jetson
-OPENBLAS_CORETYPE=ARMV8 python3 -u src/camera_stream.py --dst-ip 192.168.0.104 --dst-port 5600 --codec h264
+OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.cam.stream --dst-ip 192.168.0.104 --dst-port 5600 --codec h264
 
 # VLC : Média > Ouvrir un flux réseau → rtp://@:5600  (avec fichier SDP)
 ```
@@ -214,7 +214,7 @@ Quand l'OAK-D crashe :
 
 ```bash
 # Réduire FPS et résolution pour diminuer la charge VPU
-OPENBLAS_CORETYPE=ARMV8 python3 -u src/camera_stream.py --serve \
+OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.cam.stream --serve \
   --fps 10 --width 416 --height 312 --bitrate 1000
 ```
 
@@ -297,7 +297,7 @@ sudo cat /sys/bus/i2c/drivers/ina3221x/6-0040/iio\:device0/in_power0_input  # 5V
 
 ## Architecture alternative : NVENC Jetson (recommandée pour stabilité)
 
-> Script : `src/camera_stream_nvenc.py`
+> Script : `src/cam/stream_nvenc.py`
 
 Au lieu de laisser le VPU Myriad X de l'OAK-D encoder le H.264 (grosse conso),
 on sort du NV12 brut et on encode sur le GPU Jetson (NVENC).
@@ -320,17 +320,17 @@ VLC tcp://192.168.0.100:5600
 ### Lancer le mode NVENC
 
 ```bash
-OPENBLAS_CORETYPE=ARMV8 python3 -u src/camera_stream_nvenc.py --serve --dst-port 5600
+OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.cam.stream_nvenc --serve --dst-port 5600
 ```
 
 ### Test A/B pour confirmer la cause des crashs
 
 ```bash
 # Session 1 : encoder Myriad (camera_stream.py) — compter crashs sur 10 min
-OPENBLAS_CORETYPE=ARMV8 python3 -u src/camera_stream.py --serve
+OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.cam.stream --serve
 
 # Session 2 : NVENC Jetson (camera_stream_nvenc.py) — compter crashs sur 10 min
-OPENBLAS_CORETYPE=ARMV8 python3 -u src/camera_stream_nvenc.py --serve
+OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.cam.stream_nvenc --serve
 ```
 
 Si session 2 a nettement moins de crashs → le VPU encoder Myriad X était la cause principale.
@@ -358,7 +358,7 @@ stereo.depth.link(xout_depth.input) # setFpsLimit(5) sur xout_depth
 - [x] Reconnexion automatique après crash OAK-D
 - [x] Mode UDP/RTP disponible (`--codec mjpeg` sans `--serve`)
 - [x] `usb2Mode=True` (réduit pic courant OAK-D, API depthai 2.x correcte)
-- [x] `src/camera_stream_nvenc.py` — NVENC Jetson, décharge VPU Myriad X
+- [x] `src/cam/stream_nvenc.py` — NVENC Jetson, décharge VPU Myriad X
 - [x] **Test A/B validé** (2026-06-18) : NVENC ne réduit PAS les crashs — NV12 brut
   (345KB/frame) génère PLUS de trafic USB que H.264 Myriad (~16KB/frame).
   L'encodeur Myriad X compense son coût VPU par la réduction massive de trafic USB.

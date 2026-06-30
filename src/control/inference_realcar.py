@@ -10,15 +10,15 @@ Architecture multi-thread :
   Watchdog               : arrêt auto si pas de frame depuis WATCHDOG_S secondes
 
 ⚠️  AVANT PREMIER TEST :
-  1. python3.8 src/calibrate_servo.py  → valider center/range/invert
-  2. python3.8 src/calibrate_ray_stats.py  → collecter Z-score réel (3 phases)
+  1. python3.8 -m src.tools.calibrate_servo  → valider center/range/invert
+  2. python3.8 -m src.tools.calibrate_rays  → collecter Z-score réel (3 phases)
   3. VESC Tool → App Settings → General → Timeout = 200ms  (watchdog hardware)
   4. Tester ROUES EN L'AIR avant de poser la voiture au sol
 
 Usage :
-  python3.8 src/inference_realcar.py --duty-max 0.20
-  python3.8 src/inference_realcar.py --duty-max 0.20 --servo-center 0.52 --invert-steer
-  python3.8 src/inference_realcar.py --duty-max 0.20 --perception-mode visual
+  python3.8 -m src.control.inference_realcar --duty-max 0.20
+  python3.8 -m src.control.inference_realcar --duty-max 0.20 --servo-center 0.52 --invert-steer
+  python3.8 -m src.control.inference_realcar --duty-max 0.20 --perception-mode visual
 """
 
 import csv
@@ -32,7 +32,11 @@ from typing import Optional
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import pathlib
+_ROOT = pathlib.Path(__file__).resolve()
+while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
+    _ROOT = _ROOT.parent
+sys.path.insert(0, str(_ROOT))
 
 try:
     import onnxruntime as ort
@@ -48,9 +52,9 @@ except ImportError:
     _DAI_AVAILABLE = False
     print("[WARNING] depthai non installé")
 
-from src.depth_to_rays import DepthToRays, create_depthai_pipeline
-from src.visual_rays   import VisualRays, create_color_pipeline_v3
-from src.vesc_interface import VESCInterface
+from src.mask.depth_rays import DepthToRays, create_depthai_pipeline
+from src.mask.visual_rays   import VisualRays, create_color_pipeline_v3
+from src.control.vesc_interface import VESCInterface
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 MODEL_PATH          = "models/v18/best.onnx"
@@ -219,7 +223,7 @@ class RealCarInference:
     def _perception_visual_hub(self):
         """Mode visual alimenté par camera_hub (frames TCP) — pas d'ouverture caméra ici.
         Permet à la preview (mask_stream) et à l'inférence de partager l'OAK-D."""
-        from src.camera_hub import FrameClient
+        from src.cam.hub import FrameClient
         client = FrameClient(port=self.hub_port)
         print(f"[Perception] source = camera_hub :{self.hub_port} — flux VISUAL (masque)")
         with self._lock:
@@ -471,7 +475,7 @@ def main():
     args = parser.parse_args()
 
     if args.source == "hub":
-        from src.camera_hub import ensure_hub_or_prompt
+        from src.cam.hub import ensure_hub_or_prompt
         if not ensure_hub_or_prompt(port=args.hub_port):
             sys.exit(1)
 

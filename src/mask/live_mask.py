@@ -3,7 +3,7 @@ OAK-D Lite — Live preview + masque lignes blanches HSV
 Compatible Windows (depthai 3.x) et Linux (depthai 2.x ou 3.x)
 
 Usage:
-  python src/live_mask_oak.py [--out ./data/raw_cam] [--width 512] [--height 256]
+  python -m src.mask.live_mask [--out ./data/raw_cam] [--width 512] [--height 256]
 
 Touches:
   ESPACE → sauvegarde image brute + masque (256x128)
@@ -29,7 +29,12 @@ import sys, pathlib, argparse
 import cv2
 import numpy as np
 
-from visual_rays import white_line_mask, VisualRays  # source unique du masquage
+import pathlib
+_ROOT = pathlib.Path(__file__).resolve()
+while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
+    _ROOT = _ROOT.parent
+sys.path.insert(0, str(_ROOT))
+from src.mask.visual_rays import white_line_mask, VisualRays  # source unique du masquage
 
 try:
     import depthai as dai
@@ -39,7 +44,7 @@ except ImportError:
 
 # ── Arguments ─────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser()
-parser.add_argument("--out",    default=str(pathlib.Path(__file__).parent.parent / "data" / "raw_cam"))
+parser.add_argument("--out",    default=str(_ROOT / "data" / "raw_cam"))
 parser.add_argument("--width",  type=int, default=512)
 parser.add_argument("--height", type=int, default=256)
 parser.add_argument("--mode",   choices=["hsv", "canny"], default="hsv",

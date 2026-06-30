@@ -11,7 +11,7 @@ Avantage vs camera_stream.py :
   - NVENC Jetson encode sans impacter le CPU (hardware)
 
 Usage (Jetson Nano) :
-  OPENBLAS_CORETYPE=ARMV8 python3 -u src/camera_stream_nvenc.py --serve --dst-port 5600
+  OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.cam.stream_nvenc --serve --dst-port 5600
 
 VLC : tcp://192.168.0.100:5600
 

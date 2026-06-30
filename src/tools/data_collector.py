@@ -2,7 +2,7 @@
 data_collector.py — Enregistre les trajectoires (observation, action) dans un CSV.
 
 Usage:
-    python src/data_collector.py --output data/run_01.csv --fov 180 --rays 10
+    python -m src.tools.data_collector --output data/run_01.csv --fov 180 --rays 10
 
 Le simulateur doit tourner avant de lancer ce script.
 Conduire avec Z/S/Q/D ou flèches. ESC pour arrêter et sauvegarder.
@@ -19,11 +19,14 @@ from datetime import datetime
 
 import numpy as np
 
-# Ajouter le répertoire parent au path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import pathlib
+_ROOT = pathlib.Path(__file__).resolve()
+while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
+    _ROOT = _ROOT.parent
+sys.path.insert(0, str(_ROOT))
 
 from src.client import RobocarEnv, Observation, SIMULATOR_PATH
-from src.input_manager import create_input_manager
+from src.control.input_manager import create_input_manager
 
 
 def build_csv_header(n_rays: int) -> list[str]:

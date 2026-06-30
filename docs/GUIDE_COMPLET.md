@@ -838,8 +838,8 @@ python src/client.py --test-only  # smoke test
 python src/client.py              # connexion réelle
 
 # 3. Test input
-python src/input_manager.py --gamepad  # test manette
-python src/input_manager.py            # auto-détection
+python -m src.control.input_manager --gamepad  # test manette
+python -m src.control.input_manager            # auto-détection
 ```
 
 **Ce que tu apprends :** gRPC, ML-Agents API, communication client/serveur
@@ -850,15 +850,15 @@ python src/input_manager.py            # auto-détection
 
 ```bash
 # Collecte session 1 (circuit 1, ~10 min de conduite)
-python src/data_collector.py collect \
+python -m src.tools.data_collector collect \
   --output data/run_01.csv
 
 # Collecte session 2 (circuit différent ou style différent)
-python src/data_collector.py collect \
+python -m src.tools.data_collector collect \
   --output data/run_02.csv
 
 # Fusionner toutes les sessions
-python src/data_collector.py merge \
+python -m src.tools.data_collector merge \
   --input-dir data/ \
   --output data/dataset_complet.csv
 ```

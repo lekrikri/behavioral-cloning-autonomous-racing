@@ -24,8 +24,8 @@ SAFETY (90 km/h car):
     - First runs: keep the car on a stand or clear space until you trust the mapping.
 
 Usage:
-    .venv/bin/python src/teleop_gamepad.py            # tuned defaults, no flags needed
-    .venv/bin/python src/teleop_gamepad.py --debug    # live axis/button map to verify your pad
+    .venv/bin/python -m src.control.teleop_gamepad            # tuned defaults, no flags needed
+    .venv/bin/python -m src.control.teleop_gamepad --debug    # live axis/button map to verify your pad
 """
 
 import argparse
@@ -34,8 +34,12 @@ import struct
 import sys
 import time
 
-sys.path.insert(0, "src")
-from vesc_interface import VESCInterface
+import pathlib
+_ROOT = pathlib.Path(__file__).resolve()
+while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
+    _ROOT = _ROOT.parent
+sys.path.insert(0, str(_ROOT))
+from src.control.vesc_interface import VESCInterface
 
 _EVENT_FMT = "IhBB"
 _EVENT_SIZE = struct.calcsize(_EVENT_FMT)   # 8 bytes
@@ -44,7 +48,7 @@ _TYPE_AXIS = 0x02
 _TYPE_INIT = 0x80
 
 # F710 (XInput) mapping under the xpad js driver, confirmed on this car. This file is
-# the source of truth for the js0 teleop; src/input_manager.py is a separate pygame path
+# the source of truth for the js0 teleop; src/control/input_manager.py is a separate pygame path
 # (used by data_collector) with its own mapping — don't assume the two match.
 AXIS_STEER = 3      # right stick X — the only analog horizontal axis on this pad
                     # (axis 6 is the digital D-pad, axis 0/left stick reads tri-state here)

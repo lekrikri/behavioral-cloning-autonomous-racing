@@ -221,16 +221,16 @@ Sans recalibrage → le modèle reçoit des valeurs hors de sa distribution d'en
 │     pip install onnxruntime-gpu depthai pyvesc pyserial     │
 │                                                             │
 │  C. Calibrer le Z-score                                     │
-│     python3 src/calibrate_ray_stats.py                      │
+│     python3 -m src.tools.calibrate_rays                      │
 │     (pousser la voiture 2-5 min sur la piste)               │
 │                                                             │
 │  D. Test 1 — Roues en l'air (OBLIGATOIRE)                   │
-│     python3 src/inference_realcar.py --duty-max 0.15        │
+│     python3 -m src.control.inference_realcar --duty-max 0.15        │
 │     → Vérifier que le servo tourne dans le bon sens         │
 │     → Vérifier que le moteur répond                         │
 │                                                             │
 │  E. Test 2 — Premier tour piste (lent)                      │
-│     python3 src/inference_realcar.py --duty-max 0.15        │
+│     python3 -m src.control.inference_realcar --duty-max 0.15        │
 │     → Quelqu'un avec kill-switch physique                   │
 │     → Observer la trajectoire                               │
 │                                                             │

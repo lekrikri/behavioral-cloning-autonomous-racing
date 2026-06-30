@@ -40,7 +40,12 @@ from urllib.parse import urlparse, parse_qs
 import numpy as np
 import cv2
 
-from visual_rays import white_line_mask, VisualRays  # source unique du masquage
+import pathlib
+_ROOT = pathlib.Path(__file__).resolve()
+while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
+    _ROOT = _ROOT.parent
+sys.path.insert(0, str(_ROOT))
+from src.mask.visual_rays import white_line_mask, VisualRays  # source unique du masquage
 
 try:
     import depthai as dai
@@ -134,10 +139,9 @@ class Driver:
     def _vesc_stop(self):
         """Envoie un stop moteur best-effort (le watchdog VESC coupe déjà si on tue un process)."""
         try:
-            src = os.path.join(self.repo_root, "src")
-            if src not in sys.path:
-                sys.path.insert(0, src)
-            from vesc_interface import VESCInterface
+            if self.repo_root not in sys.path:
+                sys.path.insert(0, self.repo_root)
+            from src.control.vesc_interface import VESCInterface
             v = VESCInterface(port=self.vesc_port)
             v.stop()
             v.close()
@@ -150,10 +154,10 @@ class Driver:
             env = dict(os.environ)
             env["OPENBLAS_CORETYPE"] = "ARMV8"
             if m == "manual":
-                cmd = [sys.executable, "src/teleop_gamepad.py",
+                cmd = [sys.executable, "-m", "src.control.teleop_gamepad",
                        "--port", self.vesc_port, "--js", "/dev/input/js0"]
             elif m == "auto":
-                cmd = [sys.executable, "src/inference_realcar.py",
+                cmd = [sys.executable, "-m", "src.control.inference_realcar",
                        "--perception-mode", "visual", "--source", "hub",
                        "--hub-port", str(self.hub_port),
                        "--model", "models/v18/best_jetson.onnx", "--duty-max", "0.20"]
@@ -238,7 +242,7 @@ def _frames_device(state):
 
 def _frames_hub(state, hub_port):
     """Générateur de frames depuis le camera_hub (préserve preview + autonome)."""
-    from camera_hub import FrameClient
+    from src.cam.hub import FrameClient
     client = FrameClient(port=hub_port)
     print(f"[stream] source = camera_hub :{hub_port}")
     while state.running:
@@ -412,11 +416,11 @@ def main():
 
     state = State(args.width, args.height)
     Handler.state = state
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    repo_root = str(_ROOT)
     Handler.driver = Driver(repo_root, args.hub_port)
 
     if args.source == "hub":
-        from camera_hub import ensure_hub_or_prompt
+        from src.cam.hub import ensure_hub_or_prompt
         if not ensure_hub_or_prompt(port=args.hub_port):
             sys.exit(1)
 

@@ -31,7 +31,7 @@ connectent par défaut (`--source hub`).
 ```bash
 # Jetson — le hub tourne déjà en service (robocar-cam-hub). UN seul terminal :
 cd ~/robocar-Paris-lecrabe
-OPENBLAS_CORETYPE=ARMV8 python3 src/mask_stream.py   # --source hub est le défaut
+OPENBLAS_CORETYPE=ARMV8 python3 -m src.mask.stream   # --source hub est le défaut
 ```
 Attendre `[stream] source = camera_hub :8077`. Si le hub ne répond pas, le streamer avertit
 et indique comment le relancer (`sudo systemctl restart robocar-cam-hub`).
@@ -57,9 +57,9 @@ l'interface retombe sur `none` et le terminal logge `'manual'/'auto' n'a pas dé
 
 ## Variantes
 
-- **Réglage seul, caméra en direct** (sans passer par le hub) : `python3 src/mask_stream.py --source device`.
+- **Réglage seul, caméra en direct** (sans passer par le hub) : `python3 -m src.mask.stream --source device`.
 - **Hub à la main** (debug, service arrêté) : `sudo systemctl stop robocar-cam-hub`, lancer
-  `python3 src/camera_hub.py` dans un terminal, puis `python3 src/mask_stream.py` (défaut `--source hub`).
+  `python3 -m src.cam.hub` dans un terminal, puis `python3 -m src.mask.stream` (défaut `--source hub`).
 
 ## Dépannage
 

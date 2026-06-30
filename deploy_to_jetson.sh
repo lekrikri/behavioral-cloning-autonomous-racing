@@ -35,7 +35,7 @@ ssh -o ConnectTimeout=5 "${JETSON_USER}@${JETSON_IP}" "echo '  Connexion OK'" ||
 
 # ── Créer les répertoires distants ─────────────────────────────────────────
 echo "[1] Création des répertoires..."
-ssh "${JETSON_USER}@${JETSON_IP}" "mkdir -p ${REMOTE_DIR}/models/v18 ${REMOTE_DIR}/src"
+ssh "${JETSON_USER}@${JETSON_IP}" "mkdir -p ${REMOTE_DIR}/models/v18 ${REMOTE_DIR}/src/cam ${REMOTE_DIR}/src/mask ${REMOTE_DIR}/src/control ${REMOTE_DIR}/src/tools"
 
 # ── Transférer le modèle ONNX ───────────────────────────────────────────────
 echo "[2] Transfert modèle ONNX v18..."
@@ -49,19 +49,23 @@ if [ -f "models/real_ray_stats.json" ]; then
     echo "  ✅ real_ray_stats.json (données RÉELLES)"
 elif [ -f "models/ray_stats.json" ]; then
     scp models/ray_stats.json "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/models/"
-    echo "  ⚠️  ray_stats.json (stats simulation — recalibrer avec calibrate_ray_stats.py)"
+    echo "  ⚠️  ray_stats.json (stats simulation — recalibrer avec src.tools.calibrate_rays)"
 else
     echo "  ⚠️  Aucun ray_stats.json trouvé — inférence utilisera fallback simulation"
 fi
 
 # ── Transférer le code source ───────────────────────────────────────────────
 echo "[4] Transfert code source..."
-scp src/depth_to_rays.py     "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/"
-scp src/vesc_interface.py    "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/"
-scp src/inference_realcar.py "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/"
-scp src/calibrate_ray_stats.py "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/"
-scp src/test_pipeline.py     "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/"
+scp src/mask/depth_rays.py       "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/mask/"
+scp src/control/vesc_interface.py "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/control/"
+scp src/control/inference_realcar.py "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/control/"
+scp src/tools/calibrate_rays.py  "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/tools/"
+scp src/tools/test_pipeline.py   "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/tools/"
 scp src/__init__.py          "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/"
+scp src/cam/__init__.py      "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/cam/"
+scp src/mask/__init__.py     "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/mask/"
+scp src/control/__init__.py  "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/control/"
+scp src/tools/__init__.py    "${JETSON_USER}@${JETSON_IP}:${REMOTE_DIR}/src/tools/"
 echo "  ✅ src/ (5 fichiers)"
 
 # ── Transférer les scripts ──────────────────────────────────────────────────
@@ -85,8 +89,8 @@ echo "     sudo nvpmodel -m 0 && sudo jetson_clocks"
 echo ""
 echo "  3. Calibrer Z-score (2-5 min sur piste)"
 echo "     cd ${REMOTE_DIR}"
-echo "     python3 src/calibrate_ray_stats.py"
+echo "     python3 -m src.tools.calibrate_rays"
 echo ""
 echo "  4. Test roues en l'air !"
-echo "     python3 src/inference_realcar.py --duty-max 0.15"
+echo "     python3 -m src.control.inference_realcar --duty-max 0.15"
 echo "════════════════════════════════════════════════"

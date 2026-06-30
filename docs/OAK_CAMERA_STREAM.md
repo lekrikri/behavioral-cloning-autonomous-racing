@@ -295,60 +295,12 @@ sudo cat /sys/bus/i2c/drivers/ina3221x/6-0040/iio\:device0/in_power0_input  # 5V
 
 ---
 
-## Architecture alternative : NVENC Jetson (recommandée pour stabilité)
+## NVENC Jetson — testé puis écarté
 
-> Script : `src/cam/stream_nvenc.py`
-
-Au lieu de laisser le VPU Myriad X de l'OAK-D encoder le H.264 (grosse conso),
-on sort du NV12 brut et on encode sur le GPU Jetson (NVENC).
-
-```
-OAK-D Lite (cam.video → NV12 brut)
-      │ USB2 (~350-450mA vs ~750-900mA avant)
-      ▼
-Jetson — nvvidconv (CPU→NVMM zero-copy)
-      ▼
-nvv4l2h264enc (NVENC hardware, quasi 0% CPU)
-      ▼
-mpegtsmux ! tcpserversink
-      ▼
-VLC tcp://192.168.0.100:5600
-```
-
-**Gain estimé** : -30 à 50% de consommation OAK-D (plus d'encodeur Myriad X actif).
-
-### Lancer le mode NVENC
-
-```bash
-OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.cam.stream_nvenc --serve --dst-port 5600
-```
-
-### Test A/B pour confirmer la cause des crashs
-
-```bash
-# Session 1 : encoder Myriad (camera_stream.py) — compter crashs sur 10 min
-OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.cam.stream --serve
-
-# Session 2 : NVENC Jetson (camera_stream_nvenc.py) — compter crashs sur 10 min
-OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.cam.stream_nvenc --serve
-```
-
-Si session 2 a nettement moins de crashs → le VPU encoder Myriad X était la cause principale.
-
-### Intégration depth map + NVENC (inférence temps réel)
-
-Pour le pipeline complet (streaming + inférence BC simultanés) :
-
-```python
-# Pipeline depthai recommandé (faible conso)
-cam.video.link(xout_rgb.input)      # NV12 brut → NVENC → stream VLC
-# Depth separée, basse fréquence :
-stereo.depth.link(xout_depth.input) # setFpsLimit(5) sur xout_depth
-
-# Au lieu d'envoyer la depth map entière (500KB/frame)
-# Calculer les 20 raycasts sur Jetson (80 bytes/frame)
-# → division trafic USB par ~6250
-```
+> Le script `src/cam/stream_nvenc.py` (encodage NVENC côté Jetson à partir du NV12 brut
+> de l'OAK, au lieu du VideoEncoder Myriad X) a été **retiré**. Le test A/B (voir Roadmap)
+> a montré qu'il n'améliore pas la stabilité et génère **plus** de trafic USB que le H.264
+> du Myriad X. `cam/stream.py` (VideoEncoder OAK-D) reste la solution principale.
 
 ---
 
@@ -358,7 +310,7 @@ stereo.depth.link(xout_depth.input) # setFpsLimit(5) sur xout_depth
 - [x] Reconnexion automatique après crash OAK-D
 - [x] Mode UDP/RTP disponible (`--codec mjpeg` sans `--serve`)
 - [x] `usb2Mode=True` (réduit pic courant OAK-D, API depthai 2.x correcte)
-- [x] `src/cam/stream_nvenc.py` — NVENC Jetson, décharge VPU Myriad X
+- [x] NVENC Jetson (ex `stream_nvenc.py`, **retiré**) — testé puis écarté
 - [x] **Test A/B validé** (2026-06-18) : NVENC ne réduit PAS les crashs — NV12 brut
   (345KB/frame) génère PLUS de trafic USB que H.264 Myriad (~16KB/frame).
   L'encodeur Myriad X compense son coût VPU par la réduction massive de trafic USB.

@@ -7,7 +7,7 @@
 
 | Service | Rôle | Dépend de |
 |---|---|---|
-| **`robocar-cam-hub.service`** | Hub caméra : possède l'OAK-D, rediffuse les frames sur `:8077`. | — |
+| **`robocar-cam-hub.service`** | Hub caméra : possède l'OAK-D, publie les flux en mémoire partagée (`/dev/shm/robocar_cam_*`, zéro-copie). | — |
 | **`robocar-core.service`** | Noyau du soft : **superviseur** (`python3 -m core`) qui orchestre les workers selon le profil. | `robocar-cam-hub` (`Requires=`) |
 
 Un seul process possède l'OAK-D → tout passe par le hub. `robocar-core` ne démarre qu'avec le

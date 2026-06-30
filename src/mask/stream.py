@@ -241,10 +241,10 @@ def _frames_device(state):
 
 
 def _frames_hub(state, hub_port):
-    """Générateur de frames depuis le camera_hub (préserve preview + autonome)."""
+    """Générateur de frames depuis le hub (mémoire partagée, zéro-copie)."""
     from src.cam.hub import FrameClient
-    client = FrameClient(port=hub_port)
-    print(f"[stream] source = camera_hub :{hub_port}")
+    client = FrameClient()
+    print("[stream] source = hub (SHM /dev/shm/robocar_cam_color)")
     while state.running:
         try:
             if client.sock is None:
@@ -411,7 +411,8 @@ def main():
     parser.add_argument("--height",   type=int, default=256)
     parser.add_argument("--source",   choices=["device", "hub"], default="hub",
                         help="hub=lit camera_hub (défaut, partage la caméra) | device=ouvre l'OAK-D")
-    parser.add_argument("--hub-port", type=int, default=8077)
+    parser.add_argument("--hub-port", type=int, default=8077,
+                        help="vestige TCP, ignoré (le hub publie en mémoire partagée /dev/shm)")
     args = parser.parse_args()
 
     state = State(args.width, args.height)

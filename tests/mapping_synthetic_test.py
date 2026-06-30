@@ -12,10 +12,10 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from mapping.pose import DeadReckoning, close_loop, ray_angles
-from mapping.occupancy import OccupancyGrid
+from src.mapping.pose import DeadReckoning, close_loop, ray_angles
+from src.mapping.occupancy import OccupancyGrid
 
 
 def test_perfect_circle_closes():

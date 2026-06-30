@@ -26,11 +26,11 @@ import time
 import numpy as np
 import rerun as rr
 
-_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
-from mapping.occupancy import OccupancyGrid
+from src.mapping.occupancy import OccupancyGrid
 
 
 def parse_args():

@@ -1,16 +1,17 @@
 """drive_and_map.py — teleop the car while estimating pose from polar raycasts.
 
-Hub-client edition: the OAK is owned by camera_hub (run it first); this process pulls
-COLOR frames (FrameClient) + IMU (IMUClient) from the hub, so no device-exclusivity
-conflict. Perception = TRUE POLAR raycasts via IPM of the white-line mask (PolarRays),
-the geometry that matches the sim lidar. Pose = gyro heading + VESC-eRPM odometry.
-Streams pose + metric polar rays + camera/mask to the laptop (rerun_bridge).
+Hub-client edition: the OAK is owned by the camera hub (run it first); this process
+pulls COLOR + DEPTH + IMU from the hub's shared-memory channels (src/cam/hub.py), so
+no device-exclusivity conflict. Perception = TRUE POLAR raycasts via IPM of the
+white-line mask (PolarRays), the geometry that matches the sim lidar. Pose = gyro
+heading + VESC-eRPM odometry. Streams pose + metric polar rays + camera/mask to the
+laptop (rerun_bridge).
 
 All car parameters come from car.env (see car_config.py); CLI flags override a few.
 
 Prereqs on the Jetson:
-    OPENBLAS_CORETYPE=ARMV8 python3 src/camera_hub.py        # in one shell
-    OPENBLAS_CORETYPE=ARMV8 python3 src/mapping/drive_and_map.py [--no-motor]
+    OPENBLAS_CORETYPE=ARMV8 python3 -m src.cam.hub --depth      # in one shell
+    OPENBLAS_CORETYPE=ARMV8 python3 -m src.mapping.drive_and_map [--no-motor]
 
 Controls (F710): right stick = steer, R2 = forward, L2 = reverse, START = quit.
 """
@@ -25,23 +26,23 @@ import time
 import cv2
 import numpy as np
 
-_SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .../src
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
-from vesc_interface import VESCInterface
-from visual_rays import white_line_mask
-from camera_hub import FrameClient, IMUClient, DepthClient
-from teleop_gamepad import (
+from src.control.vesc_interface import VESCInterface
+from src.mask.visual_rays import white_line_mask
+from src.cam.hub import FrameClient, SHM_COLOR, SHM_DEPTH, SHM_IMU
+from src.control.teleop_gamepad import (
     Gamepad, deadzone, calibrate_trigger_rest, trigger_fraction,
     AXIS_STEER, AXIS_ACCEL, AXIS_BRAKE, BTN_QUIT,
 )
 
-from mapping.car_config import load as load_car
-from mapping.polar_rays import PolarRays
-from mapping.pose import DeadReckoning, close_loop
-from mapping.occupancy import OccupancyGrid
-from mapping.telemetry import TelemetryServer
+from src.mapping.car_config import load as load_car
+from src.mapping.polar_rays import PolarRays
+from src.mapping.pose import DeadReckoning, close_loop
+from src.mapping.occupancy import OccupancyGrid
+from src.mapping.telemetry import TelemetryServer
 
 
 def parse_args():
@@ -92,6 +93,33 @@ class _Reader(threading.Thread):
             return self.frame, self.t_recv
 
 
+class _ShmImu:
+    """Adapts the hub's SHM IMU channel to the drain() API the loop expects.
+
+    The SHM hub publishes only the latest raw gyro sample (1,3) — no accel, no
+    backlog — so drain() returns at most one freshly-read sample per call:
+    [(t, gx, gy, gz, 0, 0, 0)]. The loop integrates dt between calls (poll rate),
+    which is the right semantics for a latest-value channel. Short timeout so a
+    dead IMU never stalls the drive loop."""
+
+    def __init__(self):
+        self.client = FrameClient(stream=SHM_IMU, timeout=0.05)
+
+    def connect(self):
+        self.client.connect()
+
+    def drain(self):
+        try:
+            _, gyro = self.client.get()
+        except (ConnectionError, OSError):
+            return []
+        g = np.asarray(gyro, dtype=np.float32).reshape(-1)
+        return [(time.time(), float(g[0]), float(g[1]), float(g[2]), 0.0, 0.0, 0.0)]
+
+    def close(self):
+        self.client.close()
+
+
 def _jpeg_b64(img, quality):
     ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
     return base64.b64encode(buf).decode("ascii") if ok else None
@@ -120,17 +148,16 @@ def calibrate_gyro_bias(imu, seconds):
 def main():
     args = parse_args()
     cfg = load_car()
-    host = args.hub_host or cfg.hub_host
 
-    # --- connect to the hub (color + IMU) ---
-    frames = FrameClient(host=host, port=cfg.hub_port)
-    imu = IMUClient(host=host, port=cfg.hub_imu_port)
+    # --- connect to the hub's SHM channels (color + IMU) ---
+    frames = FrameClient(stream=SHM_COLOR)
+    imu = _ShmImu()
     try:
         frames.connect()
         imu.connect()
-    except OSError as e:
-        print("[map] cannot reach the hub at %s (%s)." % (host, e))
-        print("      Start it first:  OPENBLAS_CORETYPE=ARMV8 python3 src/camera_hub.py")
+    except (OSError, ConnectionError) as e:
+        print("[map] cannot reach the hub on shared memory (%s)." % e)
+        print("      Start it first:  OPENBLAS_CORETYPE=ARMV8 python3 -m src.cam.hub --depth")
         return
     reader = _Reader(frames, "getCvFrame")
     reader.start()
@@ -138,12 +165,12 @@ def main():
     depth_cli = None
     depth_reader = None
     if not args.no_depth:
-        depth_cli = DepthClient(host=host, port=cfg.hub_depth_port)
+        depth_cli = FrameClient(stream=SHM_DEPTH)
         try:
             depth_cli.connect()
-            depth_reader = _Reader(depth_cli, "getFrame")
+            depth_reader = _Reader(depth_cli, "getCvFrame")
             depth_reader.start()
-        except OSError as e:
+        except (OSError, ConnectionError) as e:
             print("[map] no depth channel (%s) -> ground filter disabled" % e)
             depth_cli = None
 

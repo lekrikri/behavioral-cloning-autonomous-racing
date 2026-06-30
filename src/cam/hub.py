@@ -11,7 +11,7 @@ preview + conduite autonome simultanées.
   OPENBLAS_CORETYPE=ARMV8 python3 camera_hub.py [--port 8077] [--width 512] [--height 256]
 
 ── Consommateur ──
-  from camera_hub import FrameClient
+  from src.cam.hub import FrameClient
   c = FrameClient(port=8077); c.connect()
   bgr = c.getCvFrame()        # derniere frame BGR (HxWx3 uint8)
 

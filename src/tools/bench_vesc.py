@@ -21,19 +21,23 @@ Runs 6 scripted sequences:
   - Ctrl-C at any time triggers an emergency stop.
 
 Usage:
-  OPENBLAS_CORETYPE=ARMV8 .venv/bin/python src/bench_vesc.py           # duty 50%, full test
-  .venv/bin/python src/bench_vesc.py --steer-only                     # no motor
-  .venv/bin/python src/bench_vesc.py --max-duty 0.3                   # gentler top speed (30%)
-  .venv/bin/python src/bench_vesc.py --mode current --max-current 3   # torque mode
-  .venv/bin/python src/bench_vesc.py --yes                            # skip prompts
+  OPENBLAS_CORETYPE=ARMV8 .venv/bin/python -m src.tools.bench_vesc           # duty 50%, full test
+  .venv/bin/python -m src.tools.bench_vesc --steer-only                     # no motor
+  .venv/bin/python -m src.tools.bench_vesc --max-duty 0.3                   # gentler top speed (30%)
+  .venv/bin/python -m src.tools.bench_vesc --mode current --max-current 3   # torque mode
+  .venv/bin/python -m src.tools.bench_vesc --yes                            # skip prompts
 """
 
 import argparse
 import sys
 import time
 
-sys.path.insert(0, "src")
-from vesc_interface import VESCInterface
+import pathlib
+_ROOT = pathlib.Path(__file__).resolve()
+while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
+    _ROOT = _ROOT.parent
+sys.path.insert(0, str(_ROOT))
+from src.control.vesc_interface import VESCInterface
 
 
 def ramp(vesc, s0, s1, t0, t1, duration, hz=50):

@@ -185,11 +185,11 @@ rays: float32 array (20,) → identique aux raycasts Unity
 
 ```bash
 # Étape 1 : calibrer le servo (trouver center, range, inversion)
-python3.8 src/calibrate_servo.py
+python3.8 -m src.tools.calibrate_servo
 
 # Étape 2 : collecter les stats Z-score réels de l'OAK-D (pas ceux de la sim)
 # → 3 phases : ligne droite, virages gauche, virages droite
-python3.8 src/calibrate_ray_stats.py
+python3.8 -m src.tools.calibrate_rays
 # → génère models/ray_stats.json (mean + std par rayon)
 ```
 
@@ -233,7 +233,7 @@ Watchdog :
 
 ```bash
 # Lancer l'inférence (roues en l'air d'abord !)
-python3.8 src/inference_realcar.py --duty-max 0.15
+python3.8 -m src.control.inference_realcar --duty-max 0.15
 ```
 
 ---
@@ -286,13 +286,13 @@ python src/evaluate.py --model models/v18/best.pth --data data/
 bash deploy_to_jetson.sh
 
 # Sur le Jetson — calibration servo (OBLIGATOIRE en 1er)
-python3.8 src/calibrate_servo.py
+python3.8 -m src.tools.calibrate_servo
 
 # Sur le Jetson — calibration raycasts OAK-D (OBLIGATOIRE en 2ème)
-python3.8 src/calibrate_ray_stats.py
+python3.8 -m src.tools.calibrate_rays
 
 # Sur le Jetson — lancer l'inférence real car (ROUES EN L'AIR d'abord)
-python3.8 src/inference_realcar.py --duty-max 0.15
+python3.8 -m src.control.inference_realcar --duty-max 0.15
 ```
 
 ---

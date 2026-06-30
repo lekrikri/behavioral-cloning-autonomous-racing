@@ -55,7 +55,7 @@ git push origin feat/mon-amelioration
 
 ```bash
 # Collecter des données (Unity doit tourner)
-python src/data_collector.py collect --output data/run_new.csv
+python -m src.tools.data_collector collect --output data/run_new.csv
 
 # Entraîner
 python src/train.py --data data/ --arch cnn --epochs 100 --loss huber

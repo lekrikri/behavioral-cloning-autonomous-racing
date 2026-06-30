@@ -13,7 +13,7 @@ Tests effectués :
   6. VESCInterface  — mode simulation (sans hardware)
   7. Pipeline complet — boucle entière sur 100 frames synthétiques
 
-Usage : python3 src/test_pipeline.py
+Usage : python3 -m src.tools.test_pipeline
 """
 
 import json
@@ -23,11 +23,15 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import pathlib
+_ROOT = pathlib.Path(__file__).resolve()
+while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
+    _ROOT = _ROOT.parent
+sys.path.insert(0, str(_ROOT))
 
 import onnxruntime as ort
-from src.depth_to_rays import DepthToRays
-from src.vesc_interface import VESCInterface
+from src.mask.depth_rays import DepthToRays
+from src.control.vesc_interface import VESCInterface
 
 # Charger Z-score
 _STATS_PATH = Path("models/real_ray_stats.json")
@@ -148,7 +152,7 @@ def test_onnx():
 
 def test_smoother():
     print("\n[3] SmoothingFilter — lissage adaptatif")
-    from src.inference_realcar import SmoothingFilter
+    from src.control.inference_realcar import SmoothingFilter
     sm = SmoothingFilter()
 
     # Premier step = valeur brute
@@ -213,7 +217,7 @@ def test_full_pipeline():
     inp    = sess.get_inputs()[0].name
     vesc   = VESCInterface(port="/dev/ttyACM_FAKE")
 
-    from src.inference_realcar import SmoothingFilter
+    from src.control.inference_realcar import SmoothingFilter
     smoother = SmoothingFilter()
 
     rng = np.random.default_rng(0)

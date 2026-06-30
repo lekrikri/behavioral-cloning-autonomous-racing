@@ -164,4 +164,4 @@ C:\python311\python.exe C:\Users\Admin\oak_info_mask.py
    ```bash
    cp /mnt/c/Users/Admin/raw_cam/*.png /home/lekrikri/Projects/G-CAR-000/data/raw_cam/
    ```
-5. Lancer `src/mask_generator.py` sur les images brutes pour générer les masques finaux
+5. Lancer `src/mask/training/mask_generator.py` sur les images brutes pour générer les masques finaux

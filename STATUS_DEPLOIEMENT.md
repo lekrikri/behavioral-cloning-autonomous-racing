@@ -35,7 +35,7 @@
 
 ### Premier roulage autonome ✅
 ```bash
-python3.8 src/inference_realcar.py --duty-max 0.20
+python3.8 -m src.control.inference_realcar --duty-max 0.20
 ```
 La voiture avance de manière autonome, steer/accel calculés en temps réel (~25 Hz).
 
@@ -92,13 +92,13 @@ ssh robocar@192.168.0.115
 cd ~/behavioral-cloning-autonomous-racing
 
 # Calibration Z-score (si besoin de recalibrer)
-python3.8 src/calibrate_ray_stats.py
+python3.8 -m src.tools.calibrate_rays
 
 # Inférence (roues en l'air d'abord !)
-python3.8 src/inference_realcar.py --duty-max 0.15
+python3.8 -m src.control.inference_realcar --duty-max 0.15
 
 # Servo seulement (debug)
-python3.8 src/calibrate_servo.py
+python3.8 -m src.tools.calibrate_servo
 ```
 
 ### Patch pyvesc (si réinstallé)

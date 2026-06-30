@@ -17,16 +17,20 @@ IMPORTANT — what this can and cannot do:
 !!! 90 km/h car — WHEELS OFF THE GROUND. Ctrl-C = emergency stop. !!!
 
 Usage:
-  OPENBLAS_CORETYPE=ARMV8 .venv/bin/python src/bench_sweep.py
-  .venv/bin/python src/bench_sweep.py --hold 2.5 --yes
+  OPENBLAS_CORETYPE=ARMV8 .venv/bin/python -m src.tools.bench_sweep
+  .venv/bin/python -m src.tools.bench_sweep --hold 2.5 --yes
 """
 
 import argparse
 import sys
 import time
 
-sys.path.insert(0, "src")
-from vesc_interface import VESCInterface
+import pathlib
+_ROOT = pathlib.Path(__file__).resolve()
+while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
+    _ROOT = _ROOT.parent
+sys.path.insert(0, str(_ROOT))
+from src.control.vesc_interface import VESCInterface
 
 # Forward direction for this car (positive current spins backward -> forward is negative).
 FW = -1.0

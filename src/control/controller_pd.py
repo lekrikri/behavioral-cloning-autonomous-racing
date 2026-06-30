@@ -2,9 +2,9 @@
 controller_pd.py — Contrôleur PD + stream MJPEG intégré (port 5601)
 
 Usage (Jetson Nano) :
-  OPENBLAS_CORETYPE=ARMV8 python3 -u src/controller_pd.py --level 3
-  OPENBLAS_CORETYPE=ARMV8 python3 -u src/controller_pd.py --dry-run
-  OPENBLAS_CORETYPE=ARMV8 python3 -u src/controller_pd.py --fixed-speed 0.22
+  OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.control.controller_pd --level 3
+  OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.control.controller_pd --dry-run
+  OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.control.controller_pd --fixed-speed 0.22
 
   --dry-run      : vision seule, VESC non commandé
   --fixed-speed  : vitesse constante (bypass machine à états) — mode calibration
@@ -24,10 +24,14 @@ except ImportError:
     class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
         daemon_threads = True
 
-sys.path.insert(0, os.path.dirname(__file__))
-from visual_rays import white_line_mask, VisualRays
+import pathlib
+_ROOT = pathlib.Path(__file__).resolve()
+while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
+    _ROOT = _ROOT.parent
+sys.path.insert(0, str(_ROOT))
+from src.mask.visual_rays import white_line_mask, VisualRays
 try:
-    from vesc_interface import VESCInterface as VescInterface
+    from src.control.vesc_interface import VESCInterface as VescInterface
 except ImportError:
     VescInterface = None
 

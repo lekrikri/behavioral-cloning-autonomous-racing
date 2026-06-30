@@ -9,7 +9,7 @@ Stratégie 3 phases recommandée (Grok/Gemini) :
 ⚠️  Les ray_stats.json de simulation NE FONCTIONNERONT PAS sur la depth map réelle.
 
 Usage :
-    python3.8 src/calibrate_ray_stats.py
+    python3.8 -m src.tools.calibrate_rays
 """
 
 import json
@@ -19,7 +19,11 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import pathlib
+_ROOT = pathlib.Path(__file__).resolve()
+while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
+    _ROOT = _ROOT.parent
+sys.path.insert(0, str(_ROOT))
 
 try:
     import depthai as dai
@@ -27,7 +31,7 @@ try:
 except ImportError:
     _DAI_AVAILABLE = False
 
-from src.depth_to_rays import DepthToRays, create_depthai_pipeline
+from src.mask.depth_rays import DepthToRays, create_depthai_pipeline
 
 OUTPUT_PATH = "models/real_ray_stats.json"
 MIN_FRAMES  = 200

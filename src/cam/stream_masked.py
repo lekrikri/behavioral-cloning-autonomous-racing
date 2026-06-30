@@ -4,7 +4,7 @@ camera_stream_masked.py — Stream MJPEG HTTP résilient avec masque lignes blan
 OAK-D Lite → preview RAW → white_line_mask + overlay → MJPEG HTTP
 
 Usage (Jetson Nano) :
-  OPENBLAS_CORETYPE=ARMV8 python3 -u src/camera_stream_masked.py --port 5601
+  OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.cam.stream_masked --port 5601
 
 VLC / navigateur :
   http://10.112.248.41:5601  (hotspot Krikri)
@@ -23,7 +23,11 @@ Améliorations anti-freeze :
 
 import sys, time, threading, argparse, socket
 import os
-sys.path.insert(0, os.path.dirname(__file__))
+import pathlib
+_ROOT = pathlib.Path(__file__).resolve()
+while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
+    _ROOT = _ROOT.parent
+sys.path.insert(0, str(_ROOT))
 
 from http.server import BaseHTTPRequestHandler
 try:
@@ -39,7 +43,7 @@ except Exception:
 
 import cv2
 import numpy as np
-from visual_rays import white_line_mask, VisualRays
+from src.mask.visual_rays import white_line_mask, VisualRays
 
 try:
     import depthai as dai

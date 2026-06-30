@@ -138,10 +138,10 @@ Masque probabilités (1, 128, 256)  → seuil 0.5 → binaire
 
 | Fichier | Rôle |
 |---|---|
-| [src/mask_generator.py](../src/mask_generator.py) | Génération auto masques (OpenCV, Phase 1) |
-| [src/unet_model.py](../src/unet_model.py) | Architecture Micro U-Net + DiceBCELoss |
-| [src/dataset_masks.py](../src/dataset_masks.py) | Dataset PyTorch + augmentations |
-| [src/train_mask.py](../src/train_mask.py) | Entraînement U-Net + export ONNX |
+| [src/mask/training/mask_generator.py](../src/mask/training/mask_generator.py) | Génération auto masques (OpenCV, Phase 1) |
+| [src/mask/training/unet_model.py](../src/mask/training/unet_model.py) | Architecture Micro U-Net + DiceBCELoss |
+| [src/mask/training/dataset_masks.py](../src/mask/training/dataset_masks.py) | Dataset PyTorch + augmentations |
+| [src/mask/training/train_mask.py](../src/mask/training/train_mask.py) | Entraînement U-Net + export ONNX |
 
 ---
 
@@ -158,13 +158,13 @@ pip install torch torchvision   # pour la Phase 2 uniquement
 
 ```bash
 # Génère les masques pour tout le dataset (quelques minutes)
-python src/mask_generator.py \
+python -m src.mask.training.mask_generator \
     --input  data/256_128/256_128 \
     --output data/masks_auto \
     --preview data/masks_preview   # optionnel : overlay vert pour vérifier
 
 # Tester sur une seule image
-python src/mask_generator.py --single data/256_128/256_128/154_original_image.png
+python -m src.mask.training.mask_generator --single data/256_128/256_128/154_original_image.png
 # → génère 154_original_image_mask.png et 154_original_image_preview.png
 ```
 
@@ -186,7 +186,7 @@ Format de sortie attendu : PNG binaire, même nom + `_mask.png`, 255=piste 0=hor
 ### Étape 4 — Entraîner le U-Net
 
 ```bash
-python src/train_mask.py \
+python -m src.mask.training.train_mask \
     --images data/256_128/256_128 \
     --masks  data/masks_auto \
     --output models/mask_v1 \
@@ -251,7 +251,7 @@ def predict(image_rgb):  # np.ndarray (128, 256, 3) uint8
 ## Liens utiles
 
 - Dataset : `data/256_128/256_128/` (2793 images de Boris)
-- Code : `src/mask_generator.py`, `src/unet_model.py`
+- Code : `src/mask/training/mask_generator.py`, `src/mask/training/unet_model.py`
 - Modèle actif : `models/mask_v1/best.onnx` (après entraînement)
 - Contact Boris pour questions sur le dataset : via Discord projet
 

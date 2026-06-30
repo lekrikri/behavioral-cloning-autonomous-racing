@@ -2,7 +2,7 @@
 camera_stream.py — Streaming MJPEG/H.264 depuis le Jetson Nano (depthai 2.x)
 
 Usage recommandé (Jetson Nano) :
-  OPENBLAS_CORETYPE=ARMV8 python3 -u src/camera_stream.py --serve --dst-port 5600
+  OPENBLAS_CORETYPE=ARMV8 python3 -u -m src.cam.stream --serve --dst-port 5600
 
 Usage VLC (Windows/Linux) :
   ouvrir "tcp://192.168.0.100:5600" dans VLC (Média > Ouvrir un flux réseau)

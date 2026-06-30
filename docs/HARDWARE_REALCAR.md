@@ -167,7 +167,7 @@ while True:
 - [ ] Viser < 5ms par frame (largement faisable)
 
 ### Phase 4 — Intégration complète
-- [ ] Écrire `src/inference_realcar.py`
+- [ ] Écrire `src/control/inference_realcar.py`
 - [ ] Tester en statique (voiture soulevée)
 - [ ] Calibrer steering_to_servo() et accel_to_duty()
 - [ ] Premier test sur piste réelle

@@ -31,13 +31,13 @@ src/client.py          → RobocarEnv (wrapper UnityEnvironment)
     ┌───┴───────────────────────────────────────┐
     │                                           │
     ▼ Phase Collecte                            ▼ Phase Inférence
-src/input_manager.py                     src/inference.py
+src/control/input_manager.py                     src/inference.py
   GamepadManager (pygame)                  load_model(.pth/.onnx)
   KeyboardManager (pynput)                 SmoothingFilter (α=0.7)
   auto-detect via create_input_manager()   JerkTracker
         │                                        │
         ▼                                        ▼
-src/data_collector.py                     actions → Unity
+src/tools/data_collector.py                     actions → Unity
   CSV: [timestamp, ray_0..N, speed,
         steering, acceleration]
         │
@@ -100,8 +100,8 @@ python src/client.py --test-only
 python src/client.py
 
 # Collecte données
-python src/data_collector.py collect --output data/run_01.csv
-python src/data_collector.py merge --input-dir data/ --output data/merged.csv
+python -m src.tools.data_collector collect --output data/run_01.csv
+python -m src.tools.data_collector merge --input-dir data/ --output data/merged.csv
 
 # EDA
 jupyter notebook notebooks/eda.ipynb

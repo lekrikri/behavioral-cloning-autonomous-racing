@@ -38,13 +38,13 @@ Contrôles manette (Xbox/PS layout):
 
 import threading
 import time
-from typing import Optional, Protocol
+from typing import Optional
 
 # ─────────────────────────────────────────────
 # Protocol commun
 # ─────────────────────────────────────────────
 
-class InputManagerProtocol(Protocol):
+class InputManagerProtocol:
     def start(self): ...
     def stop(self): ...
     def get_actions(self) -> tuple[float, float]: ...

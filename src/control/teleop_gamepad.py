@@ -207,6 +207,12 @@ def main():
 
             vesc.drive(steer, throttle)
 
+            try:
+                with open("/dev/shm/robocar_telemetry.txt", "w") as f_tel:
+                    f_tel.write(f"{steer:.4f},{throttle:.4f}")
+            except Exception:
+                pass
+
             if rt > lt:
                 tag = "FWD"
             elif lt > rt:

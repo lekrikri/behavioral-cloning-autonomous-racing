@@ -86,7 +86,7 @@ Laisser tourner à vide et observer la **LED du Flipsky** au moment du reset :
 
 ---
 
-## 2026-06-18 — OAK-D Lite crashe en streaming (X_LINK_ERROR) 🔬 EN COURS
+## 2026-06-18 — OAK-D Lite crashe en streaming (X_LINK_ERROR) ✅ RÉSOLU (2026-06-24)
 
 ### Symptôme
 Le stream caméra s'interrompt toutes les 10-60 secondes avec :
@@ -118,9 +118,11 @@ Pic de consommation OAK-D au démarrage de l'encodage > 900mA disponibles
 
 ### Correctifs
 
-**Fix définitif (non encore appliqué)** — Hub USB alimenté :
-- Brancher l'OAK-D sur un hub USB alimenté (5V ≥ 2A) → alimentation indépendante du Jetson
-- Coût : ~15-20€ (Anker, UGREEN, etc.)
+**Fix définitif (appliqué 2026-06-24)** — Hub USB alimenté par l'UBEC :
+- OAK-D branchée derrière un hub USB à injection ; le 5V du hub vient de l'**UBEC**
+  (sortie libre, indépendante du rail Jetson), pas du bus USB du Jetson.
+- L'OAK-D ne tire donc plus son courant des 900 mA partagés du Jetson → plus de brownout.
+- Résultat : `X_LINK_ERROR` disparu, stream stable. Pas de bloc secteur, tout vient de la LiPo.
 
 **Fix software appliqué** — Reconnexion auto + usb2Mode :
 - `usb2Mode=True` dans le constructeur `dai.Device(pipeline, True)` → réduit pic courant
@@ -136,8 +138,8 @@ Pic de consommation OAK-D au démarrage de l'encodage > 900mA disponibles
 - [x] Cause identifiée et documentée
 - [x] Fix software : reconnexion auto + usb2Mode=True
 - [x] Débranché le clavier (libère ~100mA)
-- [ ] **Hub USB alimenté à acheter et câbler** (fix définitif)
-- [ ] Valider stabilité > 5 min après ajout hub USB
+- [x] **Hub USB alimenté par l'UBEC câblé** (fix définitif, 2026-06-24)
+- [x] Validé : `X_LINK_ERROR` disparu après recâblage
 
 ### Références
 - [`docs/OAK_CAMERA_STREAM.md`](OAK_CAMERA_STREAM.md) — doc complète streaming

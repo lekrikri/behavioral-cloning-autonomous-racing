@@ -66,7 +66,7 @@ inrush. **La ligne UBEC n'a pas besoin de son propre antispark : du XT60 standar
 
 | Port | Périphérique | Usage |
 |------|--------------|-------|
-| USB3 | Luxonis OAK-D Lite (p/n a00483) | Caméra RGB + depth stéréo |
+| USB3 | Luxonis OAK-D Lite (p/n a00483) | Caméra RGB + depth stéréo — via **hub USB à injection alimenté par l'UBEC** (5V), pas directement sur le bus Jetson. Corrige le brownout `X_LINK_ERROR`, cf. [`../HARDWARE_DIAGNOSTICS.md`](../HARDWARE_DIAGNOSTICS.md) (2026-06-18 / résolu 2026-06-24) |
 | USB  | Flipsky FSESC Mini V6.7 Pro | Contrôle moteur/servo + télémétrie (`/dev/ttyACM0`) |
 | USB  | Dongle TP-Link | WiFi |
 | USB  | Dongle Logitech (manette F710) | Pilotage manuel / collecte de données |

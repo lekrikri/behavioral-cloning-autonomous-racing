@@ -20,6 +20,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import torch
+
+from src.features import derive_features
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler, random_split, Subset
 
 
@@ -83,16 +85,8 @@ class DrivingDataset(Dataset):
             rays = (rays - mu) / sigma
             print(f"[Dataset] Z-score appliqué (mu={mu.mean():.3f}, sigma_mean={sigma.mean():.3f})")
 
-        # Features dérivées : résumé spatial des rays pour aider le steering
-        # asymétrie L/R = signe du virage, front = obstacle devant, min = obstacle le plus proche
-        n = rays.shape[1]
-        half = n // 2
-        left_sum = rays[:, :half].sum(axis=1, keepdims=True)
-        right_sum = rays[:, half:].sum(axis=1, keepdims=True)
-        asymmetry = (right_sum - left_sum) / (left_sum + right_sum + 1e-8)  # (N,1) [-1,1]
-        front_ray = rays[:, n // 2 - 1 : n // 2 + 1].mean(axis=1, keepdims=True)  # (N,1)
-        min_ray = rays.min(axis=1, keepdims=True)  # (N,1)
-        derived = np.concatenate([asymmetry, front_ray, min_ray], axis=1).astype(np.float32)
+        # Features dérivées : résumé spatial des rays (asymétrie L/R, front, min).
+        derived = derive_features(rays)
 
         # Delta rays : différence temporelle frame t - frame t-1
         # Valide uniquement si episode_id+step présents (df déjà trié en amont)
@@ -399,14 +393,7 @@ class EpisodeSequenceDataset(Dataset):
             rays = (rays - mu) / sigma
 
         # Features dérivées
-        n = rays.shape[1]
-        half = n // 2
-        left_sum = rays[:, :half].sum(axis=1, keepdims=True)
-        right_sum = rays[:, half:].sum(axis=1, keepdims=True)
-        asymmetry = (right_sum - left_sum) / (left_sum + right_sum + 1e-8)
-        front_ray = rays[:, n // 2 - 1 : n // 2 + 1].mean(axis=1, keepdims=True)
-        min_ray = rays.min(axis=1, keepdims=True)
-        derived = np.concatenate([asymmetry, front_ray, min_ray], axis=1).astype(np.float32)
+        derived = derive_features(rays)
         self.n_derived = 3
 
         features = np.concatenate([rays, derived], axis=1)  # (N, n_rays+3)

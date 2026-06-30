@@ -1,0 +1,30 @@
+{
+  "_comment": "Profils d'usage : perception x intelligence -> worker auto. Workers = commandes pilotées par le core.",
+  "default": "P1",
+  "profiles": {
+    "P1": { "description": "masque Jetson + algo PD", "auto_worker": "auto_pd" },
+    "P2": { "description": "masque Jetson + IA NN", "auto_worker": "auto_nn" },
+    "P3": { "description": "inférence caméra + algo PD", "auto_worker": "auto_oncam_pd" },
+    "P4": { "description": "inférence caméra + IA NN", "auto_worker": "auto_oncam_nn" }
+  },
+  "workers": {
+    "auto_pd": {
+      "argv": ["python3", "-u", "src/controller_pd.py", "--source", "hub", "--hub-port", "{hub_port}", "--stream-port", "{stream_port}", "--max-duty", "{max_duty}", "--steering-max", "{steering_max}", "--gamepad"],
+      "env": { "OPENBLAS_CORETYPE": "ARMV8" }
+    },
+    "auto_nn": {
+      "argv": ["python3", "-u", "src/inference_realcar.py", "--source", "hub", "--hub-port", "{hub_port}", "--duty-max", "{max_duty}", "--model", "models/v18/best_jetson.onnx"],
+      "env": { "OPENBLAS_CORETYPE": "ARMV8" }
+    },
+    "auto_oncam_pd": { "argv": ["echo", "TODO: inférence on-cam + PD (profil P3)"], "env": {} },
+    "auto_oncam_nn": { "argv": ["echo", "TODO: inférence on-cam + NN (profil P4)"], "env": {} },
+    "manual": {
+      "argv": ["python3", "-u", "src/teleop_gamepad.py"],
+      "env": { "OPENBLAS_CORETYPE": "ARMV8" }
+    },
+    "stream_ui": {
+      "argv": ["python3", "-u", "src/mask_stream.py", "--source", "hub", "--hub-port", "{hub_port}"],
+      "env": { "OPENBLAS_CORETYPE": "ARMV8" }
+    }
+  }
+}

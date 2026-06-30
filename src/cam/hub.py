@@ -37,6 +37,7 @@ SHM_IMU   = "robocar_cam_imu"
 
 STREAM_COLOR = 0
 STREAM_DEPTH = 1
+STREAM_IMU   = 2
 
 SERVICE_NAME = "robocar-cam-hub.service"
 
@@ -117,10 +118,14 @@ class FrameClient:
             self.connect()
         deadline = time.time() + self.timeout
         while time.time() < deadline:
-            out = self.reader.read(copy=copy)
-            if out is not None and out[0]["seq"] != self._last:
-                self._last = out[0]["seq"]
-                return out[0]["seq"], out[1]
+            # Gate sur le seq (8 octets) AVANT de construire la vue + le dict meta complets :
+            # en idle-poll (consommateur plus rapide que le producteur) ça évite ~1000
+            # vues/dicts jetés par seconde quand rien de neuf n'est publié.
+            if self.reader.latest_seq() != self._last:
+                out = self.reader.read(copy=copy)
+                if out is not None and out[0]["seq"] != self._last:
+                    self._last = out[0]["seq"]
+                    return out[0]["seq"], out[1]
             time.sleep(0.001)
         raise ConnectionError(f"aucune frame du hub (timeout {self.timeout}s) — hub mort ?")
 
@@ -128,10 +133,13 @@ class FrameClient:
         return self.get()[1]
 
     def latest(self, copy=False):
-        """Dernière frame dispo SANS attendre une nouvelle (None si rien encore publié).
-        Pour les consommateurs qui ne veulent pas bloquer sur ce flux (ex. depth en fusion)."""
+        """Dernière frame dispo SANS bloquer (None si rien publié OU flux absent). Best-effort :
+        pour un flux secondaire/optionnel (ex. depth en fusion) qui ne doit jamais lever."""
         if self.reader is None:
-            self.connect()
+            try:
+                self.connect()
+            except ConnectionError:
+                return None   # région pas (encore) publiée → le caller dégrade proprement
         out = self.reader.read(copy=copy)
         return out[1] if out is not None else None
 
@@ -153,15 +161,23 @@ class _Publisher:
 
     def publish(self, name, arr, stream_id=0):
         w = self.writers.get(name)
-        if w is None:
+        # Recrée la région si elle a disparu : systemd-tmpfiles nettoie /dev/shm et les
+        # écritures mmap ne mettent PAS à jour mtime → il croit le fichier inutilisé et le
+        # supprime sous le writer. Auto-réparation (le filet en plus de l'exclusion tmpfiles).
+        if w is None or not os.path.exists(os.path.join("/dev/shm", name)):
+            if w is not None:
+                w.close()
             w = ShmRingWriter(name, slot_bytes=arr.nbytes, slot_count=self.slot_count)
             self.writers[name] = w
             print(f"[hub] région /dev/shm/{name} ({arr.shape} {arr.dtype}, {arr.nbytes} o/slot ×{self.slot_count})")
         w.write(arr, stream_id=stream_id)
 
     def closeall(self):
+        # On NE unlink PAS : au restart, l'ancienne instance (lente à mourir sur l'USB OAK)
+        # supprimerait sinon le fichier que la nouvelle vient de recréer (même chemin). Les
+        # régions persistent sur tmpfs ; la prochaine instance les réécrit (O_CREAT).
         for w in self.writers.values():
-            w.unlink()
+            w.close()
         self.writers.clear()
 
 
@@ -227,7 +243,7 @@ def _capture(pub, width, height, fps, want_imu, want_depth, running):
                             for pkt in d.packets:
                                 g = pkt.gyroscope
                                 gyro[0, 0], gyro[0, 1], gyro[0, 2] = g.x, g.y, g.z
-                            pub.publish(SHM_IMU, gyro)
+                            pub.publish(SHM_IMU, gyro, STREAM_IMU)
                     if q_depth is not None:
                         dd = q_depth.tryGet()
                         if dd is not None:

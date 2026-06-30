@@ -9,11 +9,11 @@
   },
   "workers": {
     "auto_pd": {
-      "argv": ["python3", "-u", "-m", "src.control.controller_pd", "--source", "hub", "--hub-port", "{hub_port}", "--stream-port", "{stream_port}", "--max-duty", "{max_duty}", "--steering-max", "{steering_max}", "--gamepad"],
+      "argv": ["python3", "-u", "-m", "src.control.controller_pd", "--source", "hub", "--stream-port", "{stream_port}", "--max-duty", "{max_duty}", "--steering-max", "{steering_max}", "--gamepad"],
       "env": { "OPENBLAS_CORETYPE": "ARMV8" }
     },
     "auto_nn": {
-      "argv": ["python3", "-u", "-m", "src.control.inference_realcar", "--source", "hub", "--hub-port", "{hub_port}", "--duty-max", "{max_duty}", "--model", "models/v18/best_jetson.onnx"],
+      "argv": ["python3", "-u", "-m", "src.control.inference_realcar", "--source", "hub", "--duty-max", "{max_duty}", "--model", "models/v18/best_jetson.onnx"],
       "env": { "OPENBLAS_CORETYPE": "ARMV8" }
     },
     "auto_oncam_pd": { "argv": ["echo", "TODO: inférence on-cam + PD (profil P3)"], "env": {} },
@@ -23,7 +23,7 @@
       "env": { "OPENBLAS_CORETYPE": "ARMV8" }
     },
     "stream_ui": {
-      "argv": ["python3", "-u", "-m", "src.mask.stream", "--source", "hub", "--hub-port", "{hub_port}"],
+      "argv": ["python3", "-u", "-m", "src.mask.stream", "--source", "hub"],
       "env": { "OPENBLAS_CORETYPE": "ARMV8" }
     }
   }

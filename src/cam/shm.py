@@ -64,7 +64,7 @@ class ShmRingWriter:
         self.slot_count = int(slot_count)
         size = _total_size(self.slot_count, self.slot_bytes)
         path = _path(name)
-        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
             os.ftruncate(fd, size)
             self.mm = mmap.mmap(fd, size, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
@@ -92,7 +92,9 @@ class ShmRingWriter:
         payload_off = base + _SLOT_HDR_SIZE
 
         # 1) payload, 2) entête du slot avec le seq, 3) publication de latest_seq EN DERNIER.
-        self.mm[payload_off:payload_off + nbytes] = frame.tobytes()
+        # Copie DIRECTE ndarray → mmap (1 seul memcpy, zéro alloc) ; frame est déjà C-contigu.
+        np.frombuffer(self.mm, dtype=np.uint8, count=nbytes, offset=payload_off)[:] = \
+            frame.reshape(-1).view(np.uint8)
         _SLOT_HDR.pack_into(self.mm, base, seq, stream_id, dcode, ch, 0, h, w, ts_ns, nbytes)
         _GLOBAL.pack_into(self.mm, 0, _MAGIC, 1, self.slot_count, self.slot_bytes, seq)
         self._seq = seq

@@ -2,8 +2,7 @@
   "_comment": "Config statique véhicule — params figés (justifier tout changement, cf. harness).",
   "camera": {
     "offset_px": 0,
-    "fov_deg": { "color": 68.79, "depth": 72.9 },
-    "hub_port": 8077
+    "fov_deg": { "color": 68.79, "depth": 72.9 }
   },
   "control": {
     "max_duty": 0.05,

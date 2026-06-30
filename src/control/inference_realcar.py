@@ -108,7 +108,6 @@ class RealCarInference:
         perception_mode: str = "depth",
         mask_mode: str       = "hsv",
         source: str          = "device",
-        hub_port: int        = 8077,
     ):
         print("\n[RealCar] ══════════════════════════════════════════")
         print("[RealCar]  Behavioral Cloning — Voiture Réelle v18  ")
@@ -145,7 +144,6 @@ class RealCarInference:
 
         self.perception_mode = perception_mode
         self.source          = source
-        self.hub_port        = hub_port
         self.depth_bridge    = DepthToRays()
         self.visual_bridge   = VisualRays(mode=mask_mode)
 
@@ -525,14 +523,16 @@ def main():
     parser.add_argument("--mask-mode",       choices=["hsv", "canny"], default="hsv",
                         help="Mode masque (si --perception-mode visual)")
     parser.add_argument("--source",   choices=["device", "hub"], default="hub",
-                        help="hub=lit camera_hub (défaut, partage la caméra) | device=ouvre l'OAK-D")
-    parser.add_argument("--hub-port", type=int, default=8077,
-                        help="vestige TCP, ignoré (le hub publie en mémoire partagée /dev/shm)")
+                        help="hub=lit le hub caméra en mémoire partagée (défaut, partage l'OAK-D) | device=ouvre l'OAK-D")
     args = parser.parse_args()
 
     if args.source == "hub":
-        from src.cam.hub import ensure_hub_or_prompt
-        if not ensure_hub_or_prompt(port=args.hub_port):
+        from src.cam.hub import ensure_hub_or_prompt, SHM_COLOR, SHM_DEPTH
+        # Préflight sur le flux RÉELLEMENT consommé selon le mode (sinon faux vert sur la
+        # couleur alors que le mode depth lit le depth). Fusion : color est le flux bloquant,
+        # le depth est best-effort (latest() → None si absent).
+        stream = SHM_DEPTH if args.perception_mode == "depth" else SHM_COLOR
+        if not ensure_hub_or_prompt(stream):
             sys.exit(1)
 
     RealCarInference(
@@ -548,7 +548,6 @@ def main():
         perception_mode  = args.perception_mode,
         mask_mode        = args.mask_mode,
         source           = args.source,
-        hub_port         = args.hub_port,
     ).run()
 
 

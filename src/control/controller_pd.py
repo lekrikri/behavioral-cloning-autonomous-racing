@@ -10,7 +10,7 @@ Usage (Jetson Nano) :
   --fixed-speed  : vitesse constante (bypass machine à états) — mode calibration
   --level N      : niveau contrôleur 1-4 (défaut : 3)
   --stream-port  : port HTTP stream MJPEG (défaut : 5601, 0 = désactivé)
-  --source       : hub (défaut, lit le camera_hub en mémoire partagée, partage l'OAK-D) |
+  --source       : hub (défaut, lit le hub caméra en mémoire partagée, partage l'OAK-D) |
                    device (ouvre l'OAK-D en direct, reconnexion + reset USB)
 """
 
@@ -1210,10 +1210,8 @@ def parse_args():
     p.add_argument("--no-corner",   action="store_true",
                    help="Desactive la detection de coin L (mode ligne droite / test).")
     p.add_argument("--source", choices=["device", "hub"], default="hub",
-                   help="hub=lit le camera_hub en mémoire partagée (défaut, partage l'OAK-D) | "
+                   help="hub=lit le hub caméra en mémoire partagée (défaut, partage l'OAK-D) | "
                         "device=ouvre l'OAK-D en direct")
-    p.add_argument("--hub-port", type=int, default=8077,
-                   help="vestige TCP, ignoré (le hub publie en mémoire partagée /dev/shm)")
     p.add_argument("--max-duty", type=float, default=0.50,
                    help="Duty cycle VESC maximal [0-1] (défaut 0.50).")
     p.add_argument("--gamepad", action="store_true",
@@ -1398,7 +1396,7 @@ def run(args):
                           ctrl.auto_offset, ctrl.servo_bias,
                           rec_str, rep_str))
 
-    # ── Source HUB : lit le camera_hub en mémoire partagée (zéro-copie, partage l'OAK-D) ──
+    # ── Source HUB : lit le hub caméra en mémoire partagée (partage l'OAK-D) ──
     if args.source == "hub":
         from src.cam.hub import FrameClient, ensure_hub_or_prompt
         if not ensure_hub_or_prompt():
@@ -1410,7 +1408,9 @@ def run(args):
         client.connect()
         print("[ctrl] source = hub (SHM /dev/shm/robocar_cam_color)")
         try:
-            _drive_loop(client.getCvFrame)
+            # copy=True : le traitement (CLAHE+blur+morpho) peut dépasser la fenêtre de relap
+            # du ring (~132 ms) ; on copie la frame pour ne jamais conduire sur une frame déchirée.
+            _drive_loop(lambda: client.get(copy=True)[1])
         except KeyboardInterrupt:
             print("[ctrl] Arret.")
         except Exception as e:

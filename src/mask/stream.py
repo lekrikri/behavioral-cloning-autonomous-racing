@@ -9,7 +9,7 @@ seules les frames rendues + compressées transitent vers le PC.
 
 ── Jetson ──
   OPENBLAS_CORETYPE=ARMV8 python3 mask_stream.py [--port 8088] [--width 512] [--height 256]
-  # --source hub (défaut) : lit camera_hub (preview + conduite autonome partagent la caméra).
+  # --source hub (défaut) : lit le hub caméra SHM (preview + conduite autonome partagent la caméra).
   #   Le hub doit tourner en service système robocar-cam-hub (docs/SERVICES.md) ; absent →
   #   on avertit et on indique comment le relancer.
 
@@ -116,12 +116,11 @@ class Driver:
 
     Nécessite d'être lancé depuis le vrai dépôt (scripts src/, models/, vesc_interface).
     Pour que 'auto' coexiste avec la preview, déployer la topologie hub :
-      camera_hub.py  +  mask_stream.py --source hub  +  ce sélecteur (lance inference --source hub).
+      hub (src/cam/hub.py, SHM)  +  mask_stream --source hub  +  ce sélecteur (lance inference --source hub).
     """
 
-    def __init__(self, repo_root, hub_port, vesc_port="/dev/ttyACM0"):
+    def __init__(self, repo_root, vesc_port="/dev/ttyACM0"):
         self.repo_root = repo_root
-        self.hub_port = hub_port
         self.vesc_port = vesc_port
         self.lock = threading.Lock()
         self.proc = None
@@ -159,7 +158,6 @@ class Driver:
             elif m == "auto":
                 cmd = [sys.executable, "-m", "src.control.inference_realcar",
                        "--perception-mode", "visual", "--source", "hub",
-                       "--hub-port", str(self.hub_port),
                        "--model", "models/v18/best_jetson.onnx", "--duty-max", "0.20"]
             else:
                 cmd = None
@@ -240,16 +238,14 @@ def _frames_device(state):
             yield q.get().getCvFrame()
 
 
-def _frames_hub(state, hub_port):
+def _frames_hub(state):
     """Générateur de frames depuis le hub (mémoire partagée, zéro-copie)."""
     from src.cam.hub import FrameClient
     client = FrameClient()
     print("[stream] source = hub (SHM /dev/shm/robocar_cam_color)")
     while state.running:
         try:
-            if client.sock is None:
-                client.connect()
-            yield client.getCvFrame()
+            yield client.getCvFrame()   # get() auto-connecte (attend la région SHM)
         except (ConnectionError, OSError):
             print("[stream] hub indisponible — reconnexion…")
             client.close()
@@ -257,7 +253,7 @@ def _frames_hub(state, hub_port):
     client.close()
 
 
-def capture_loop(state, source="device", hub_port=8077):
+def capture_loop(state, source="device"):
     """Thread : frames (device|hub) → masque (params live) → raycasts → overlay → JPEG."""
     vr = VisualRays(img_width=state.W, img_height=state.H, mode="hsv",
                     row_band=(0.0, 1.0))
@@ -267,7 +263,7 @@ def capture_loop(state, source="device", hub_port=8077):
     fps = 0.0
 
     H = state.H
-    frames = _frames_hub(state, hub_port) if source == "hub" else _frames_device(state)
+    frames = _frames_hub(state) if source == "hub" else _frames_device(state)
     for bgr in frames:
             snap = state.snapshot()
 
@@ -410,23 +406,21 @@ def main():
     parser.add_argument("--width",    type=int, default=512)
     parser.add_argument("--height",   type=int, default=256)
     parser.add_argument("--source",   choices=["device", "hub"], default="hub",
-                        help="hub=lit camera_hub (défaut, partage la caméra) | device=ouvre l'OAK-D")
-    parser.add_argument("--hub-port", type=int, default=8077,
-                        help="vestige TCP, ignoré (le hub publie en mémoire partagée /dev/shm)")
+                        help="hub=lit le hub caméra en mémoire partagée (défaut, partage l'OAK-D) | device=ouvre l'OAK-D")
     args = parser.parse_args()
 
     state = State(args.width, args.height)
     Handler.state = state
     repo_root = str(_ROOT)
-    Handler.driver = Driver(repo_root, args.hub_port)
+    Handler.driver = Driver(repo_root)
 
     if args.source == "hub":
         from src.cam.hub import ensure_hub_or_prompt
-        if not ensure_hub_or_prompt(port=args.hub_port):
+        if not ensure_hub_or_prompt():
             sys.exit(1)
 
     t = threading.Thread(target=capture_loop,
-                         args=(state, args.source, args.hub_port), daemon=True)
+                         args=(state, args.source), daemon=True)
     t.start()
 
     srv = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)

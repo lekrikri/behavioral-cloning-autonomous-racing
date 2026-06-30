@@ -41,7 +41,7 @@ class WorkerManager:
     def __init__(self, specs, cwd=None, params=None):
         self._specs = specs
         self._cwd = cwd
-        self._params = params or {}  # params véhicule injectés dans les argv ({hub_port}, ...)
+        self._params = params or {}  # params véhicule injectés dans les argv ({max_duty}, ...)
         self._running = {}  # name -> Worker
 
     def _resolve(self, argv):

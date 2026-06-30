@@ -1,0 +1,23 @@
+[Unit]
+Description=Robocar core — superviseur (orchestre les workers selon le profil)
+After=robocar-cam-hub.service
+Requires=robocar-cam-hub.service
+
+[Service]
+Type=simple
+User=robocar
+# Défaut prod = clone de référence sur main. sync-services.sh réécrit ce chemin
+# vers le repo d'où on lance le sync (clone de dev en dev, ce clone-ci en prod).
+WorkingDirectory=/home/robocar/robocar-Paris-PGE_MSC
+Environment=OPENBLAS_CORETYPE=ARMV8
+# Lance LE SUPERVISEUR (paquet core/), pas un worker. Le superviseur spawn les workers
+# (perception / policy / manuel / UI) selon le profil — voir configs/profiles.json.
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/bin/python3 -u -m core
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

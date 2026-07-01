@@ -71,3 +71,6 @@ data/256_128/
 # Claude Code — overrides personnels (jamais partagés)
 .claude/settings.local.json
 CLAUDE.local.md
+
+# Profil de perception actif (état device-local, non versionné)
+configs/active_profile.txt

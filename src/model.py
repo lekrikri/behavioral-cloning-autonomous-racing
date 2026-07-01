@@ -169,7 +169,7 @@ class RobocarMLP(nn.Module):
         dummy = torch.zeros(1, self.input_size, dtype=torch.float32)
         torch.onnx.export(
             self, dummy, str(path),
-            opset_version=18,
+            opset_version=11,
             do_constant_folding=True,
             input_names=["observation"],
             output_names=["action"],

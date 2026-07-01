@@ -7,9 +7,6 @@
 - `aarch64` est **nécessaire mais pas suffisant** : un wheel peut être aarch64 et exiger
   Python ≥ 3.8, une glibc récente ou CUDA 11+ → il échoue sur la Nano. **Vérifier l'install
   réellement sur la Jetson**, pas seulement l'archi.
-- **Travailler dans une venv** et **vérifier que les modifs s'appliquent réellement** sur
-  la Jetson. La venv a longtemps été incomplète (numpy seul → runtime réel = `python3`
-  système 3.6.9) : rendre la venv complète et déterministe est un **objectif**, pas un acquis.
 - `OPENBLAS_CORETYPE=ARMV8` devant tout Python (sinon SIGILL numpy sur le Tegra).
 
 ## Temps réel (contrainte centrale)

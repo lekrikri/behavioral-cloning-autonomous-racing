@@ -19,7 +19,7 @@
     "auto_oncam_pd": { "argv": ["echo", "TODO: inférence on-cam + PD (profil P3)"], "env": {} },
     "auto_oncam_nn": { "argv": ["echo", "TODO: inférence on-cam + NN (profil P4)"], "env": {} },
     "manual": {
-      "argv": ["python3", "-u", "-m", "src.control.teleop_gamepad"],
+      "argv": ["python3", "-u", "-m", "src.control.teleop_gamepad", "--throttle-mode", "duty", "--max-duty", "{teleop_max_duty}"],
       "env": { "OPENBLAS_CORETYPE": "ARMV8" }
     },
     "stream_ui": {

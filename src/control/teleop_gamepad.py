@@ -141,6 +141,8 @@ def main():
     p.add_argument("--invert-motor", action="store_true",
                    help="flip motor direction (default off: R2=forward on this car)")
     p.add_argument("--throttle-mode", choices=["current", "duty", "erpm"], default="current")
+    p.add_argument("--max-duty", type=float, default=0.5,
+                   help="cap duty en mode duty ; sur 4S avec moteur 2S garder <= 0.45 (anti sur-régime)")
     p.add_argument("--deadzone", type=float, default=0.08)
     p.add_argument("--hz", type=float, default=50.0)
     p.add_argument("--debug", action="store_true", help="print raw js events to map your pad")
@@ -189,6 +191,7 @@ def main():
         servo_center=args.servo_center,
         servo_range=args.servo_range,
         current_max=args.max_current,
+        max_duty=args.max_duty,
         invert_steer=args.invert_steer,
         # this car drives forward with invert OFF — overrides VESCInterface's default (True)
         invert_motor=args.invert_motor,

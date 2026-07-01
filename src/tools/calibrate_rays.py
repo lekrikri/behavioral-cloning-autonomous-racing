@@ -25,7 +25,8 @@ while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
     _ROOT = _ROOT.parent
 sys.path.insert(0, str(_ROOT))
 
-from src.mask.depth_rays import DepthToRays
+from src.mask.white_line import white_line_mask
+from src.mask.perception_config import resolve_profile
 
 OUTPUT_PATH = "models/real_ray_stats.json"
 MIN_FRAMES  = 200
@@ -53,18 +54,35 @@ def validate_stats(rays_arr: np.ndarray):
 
 
 def calibrate():
-    from src.cam.hub import FrameClient, SHM_DEPTH, ensure_hub_or_prompt
-    if not ensure_hub_or_prompt(SHM_DEPTH):
+    from src.cam.hub import FrameClient, SHM_COLOR, SHM_DEPTH, ensure_hub_or_prompt
+    if not ensure_hub_or_prompt(SHM_COLOR):
         sys.exit(1)
 
-    bridge = DepthToRays()
+    # Recalibre sur LA MÊME perception que l'inférence : le PROFIL ACTIF (celui de la prod),
+    # pas un profil codé en dur — sinon les stats ne collent pas au masque utilisé pour rouler.
+    profile, prof_name = resolve_profile(None)
+    print(f"[Calibration] profil = {prof_name}")
+    mask_kw = profile.mask_kwargs()
+    geom = [None]        # construit à la première frame (taille réelle)
+    polar = [None]
+
+    def _rays(bgr, depth):
+        if geom[0] is None or geom[0].H != bgr.shape[0] or geom[0].W != bgr.shape[1]:
+            from src.mask.camera_ground import CameraGround
+            geom[0] = CameraGround(bgr.shape[1], bgr.shape[0], profile.fov_deg,
+                                   profile.cam_height_m, profile.cam_pitch_deg)
+            polar[0] = profile.polar_rays(geom=geom[0])
+        mask = white_line_mask(bgr, depth_mm=depth, geom=geom[0], **mask_kw)
+        return polar[0].normalized(polar[0](mask)[0])
+
     all_rays = []
 
     print("\n[Calibration] ══════════════════════════════════════════")
-    print("[Calibration]  Z-score Réel — Stratégie 3 Phases       ")
+    print("[Calibration]  Z-score Réel (POLAIRE) — Stratégie 3 Phases")
     print("[Calibration] ══════════════════════════════════════════\n")
 
-    client = FrameClient(stream=SHM_DEPTH)   # lit le depth du hub (SHM, zéro-copie)
+    c_color = FrameClient(stream=SHM_COLOR)   # couleur cadence ; depth best-effort
+    c_depth = FrameClient(stream=SHM_DEPTH)
 
     for phase_label, phase_desc in PHASES:
         print(f"\n  ━━━ Phase {phase_label} ━━━")
@@ -75,8 +93,12 @@ def calibrate():
         n_phase = 0
         try:
             while time.time() - t_phase < PHASE_SEC:
-                rays  = bridge(client.getCvFrame())
-                # clip avant stockage (recommandation Gemini)
+                bgr = c_color.getCvFrame()
+                try:
+                    depth = c_depth.latest()
+                except (ConnectionError, OSError):
+                    depth = None
+                rays  = _rays(bgr, depth)
                 rays  = np.clip(rays, 0.0, 1.0)
                 all_rays.append(rays)
                 n_phase += 1
@@ -90,7 +112,7 @@ def calibrate():
 
         print(f"\n  ✅ Phase terminée — {n_phase} frames")
 
-    client.close()
+    c_color.close(); c_depth.close()
 
     # ── Calcul des stats ────────────────────────────────────────────────────
     n_frames = len(all_rays)

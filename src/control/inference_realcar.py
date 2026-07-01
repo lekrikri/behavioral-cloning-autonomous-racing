@@ -92,7 +92,7 @@ class RealCarInference:
         current_max: float = CURRENT_MAX,
         duty_max: float    = 0.20,
         servo_center: float = 0.50,
-        servo_range: float  = 0.35,
+        servo_range: float  = 0.85,   # sur-course : sature à la butée (clamp servo [0.10,0.90]) dès ~steer 0.47
         invert_steer: bool  = False,
         invert_motor: bool  = False,   # duty mode : accel positif -> marche avant
         steer_gain: float   = 1.0,
@@ -442,7 +442,8 @@ def main():
     parser.add_argument("--duty-max",     type=float, default=0.20,
                         help="Duty cycle max [0-1] en mode duty (defaut 0.20 = 20%%)")
     parser.add_argument("--servo-center", type=float, default=0.50)
-    parser.add_argument("--servo-range",  type=float, default=0.35)
+    parser.add_argument("--servo-range",  type=float, default=0.85,
+                        help="course servo ; 0.85 sur-pilote (sature à la butée [0.10,0.90] dès steer~0.47), 0.40 = butée calibrée proportionnelle")
     parser.add_argument("--invert-steer", action="store_true")
     parser.add_argument("--invert-motor",    dest="invert_motor", action="store_true",  default=False,
                         help="inverse le sens moteur (à utiliser si la voiture recule au défaut)")

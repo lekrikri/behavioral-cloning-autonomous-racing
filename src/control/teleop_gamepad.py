@@ -118,9 +118,12 @@ def calibrate_trigger_rest(pad, axes, window_s=0.4):
     return {a: pad.axis(a) for a in axes}
 
 
-def trigger_fraction(pad, axis, rest):
-    """Map a trigger axis to [0,1]: 0 = released, 1 = fully pressed."""
-    raw = pad.axis(axis)
+def trigger_fraction(raw, rest):
+    """Map a trigger raw value to [0,1]: 0 = released, 1 = fully pressed.
+
+    `rest` is the released value; the caller tracks it as a RUNNING MINIMUM, so a rest
+    mis-sampled while the trigger was held (e.g. the pad re-arms the worker the instant
+    you squeeze R2) self-heals the first time the trigger is released."""
     frac = (raw - rest) / (1.0 - rest) if rest < 1.0 else 0.0
     return max(0.0, min(1.0, frac))
 
@@ -201,8 +204,14 @@ def main():
                 break
 
             steer = deadzone(pad.axis(args.axis_steer), args.deadzone)
-            rt = trigger_fraction(pad, args.axis_accel, rest[args.axis_accel])
-            lt = trigger_fraction(pad, args.axis_brake, rest[args.axis_brake])
+            raw_rt = pad.axis(args.axis_accel)
+            raw_lt = pad.axis(args.axis_brake)
+            # Repos = plus basse valeur vue = vrai repos. Corrige une calibration faite
+            # gâchette pressée (ré-arm en poussant R2) dès le premier relâché.
+            rest[args.axis_accel] = min(rest[args.axis_accel], raw_rt)
+            rest[args.axis_brake] = min(rest[args.axis_brake], raw_lt)
+            rt = trigger_fraction(raw_rt, rest[args.axis_accel])
+            lt = trigger_fraction(raw_lt, rest[args.axis_brake])
             throttle = rt * args.max_throttle - lt * args.max_reverse
 
             vesc.drive(steer, throttle)

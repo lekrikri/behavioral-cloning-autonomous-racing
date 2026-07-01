@@ -27,13 +27,13 @@ connectent par défaut (`--source hub`).
 
 ## Procédure
 
-### 1. Lancer le streamer
+### 1. Lancer l'interface de debug
 ```bash
 # Jetson — le hub tourne déjà en service (robocar-cam-hub). UN seul terminal :
 cd ~/robocar-Paris-lecrabe
-OPENBLAS_CORETYPE=ARMV8 python3 -m src.mask.stream   # --source hub est le défaut
+OPENBLAS_CORETYPE=ARMV8 python3 -m src.tools.debug.server   # lit le hub (SHM)
 ```
-Attendre `[stream] source = hub (SHM ...)`. Si le hub ne publie pas, le streamer avertit
+Attendre `[debug] http :8088 ...`. Si le hub ne publie pas, l'interface avertit
 et indique comment le relancer (`sudo systemctl restart robocar-cam-hub`).
 
 ### 2. Ouvrir l'interface depuis le PC
@@ -43,23 +43,23 @@ ssh -L 8088:localhost:8088 robocar      # tunnel (le PC initie → OK même via 
 ```
 
 ### 3. Régler le masque
-Toggles `t` (top-hat), `f` (forme), `c` (temporel), `o`/`p` (ROI), `+`/`-` (seuil V), etc.
-Procédure détaillée dans [`MASK_TUNING.md`](MASK_TUNING.md). Jugez sur les **raycasts** (`r`), pas que le masque.
+Page **Masque** : sliders des filtres (seuil V, S max, top-hat, morpho, aire mini,
+rectilinéarité, depth_tol, CLAHE) + cases masque/rayons. Le faisceau **polaire** est dessiné
+depuis le centre voiture ; jugez sur les rayons, pas que le masque. Détails : [`MASK_TUNING.md`](MASK_TUNING.md).
 
 ### 4. Conduite — ⚠️ roues en l'air d'abord
-Barre **conduite** dans l'interface :
-- **MANUEL** → lance le teleop (stick droit = direction, R2 = avance). 
-- **AUTONOME** → lance l'inférence (lit le hub, `duty-max=0.20`). La direction suit le masque.
-- **RIEN** → arrêt moteur + direction recentrée (état par défaut, sûr).
+Page **Accueil** : choisir un **profil** puis piloter le pipeline conduite :
+- **PLAY** → lance l'inférence autonome avec le profil (lit le hub). La direction suit le masque.
+- **PAUSE** → coupe le moteur (maintien sûr), le profil reste chargé.
+- **STOP** → arrêt moteur + arrêt du pipeline (état par défaut, sûr).
 
-Si un mode n'apparaît pas `(process actif)`, il a échoué au lancement (manette débranchée, modèle absent, etc.) →
-l'interface retombe sur `none` et le terminal logge `'manual'/'auto' n'a pas démarré (code …)`.
+Si l'état ne passe pas `(process actif)`, le lancement a échoué (modèle absent, VESC débranché, etc.) →
+l'interface retombe sur `stop` et le terminal logge `play n'a pas démarré (code …)`.
 
 ## Variantes
 
-- **Réglage seul, caméra en direct** (sans passer par le hub) : `python3 -m src.mask.stream --source device`.
 - **Hub à la main** (debug, service arrêté) : `sudo systemctl stop robocar-cam-hub`, lancer
-  `python3 -m src.cam.hub` dans un terminal, puis `python3 -m src.mask.stream` (défaut `--source hub`).
+  `python3 -m src.cam.hub` dans un terminal, puis `python3 -m src.tools.debug.server`.
 
 ## Dépannage
 

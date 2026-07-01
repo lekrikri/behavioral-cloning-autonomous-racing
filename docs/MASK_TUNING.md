@@ -23,14 +23,18 @@ visibles et de l'écartement (qui varient sur notre circuit).
 > laissé) : la policy BC a été entraînée à *voir* la ligne. Réglez toujours pour ne
 > jamais perdre la ligne, même si quelques artefacts passent.
 
-## L'outil : `mask_stream.py`
+## L'outil : interface de debug (`src/tools/debug/`)
 
-Traitement sur la Jetson, affichage déporté fluide (MJPEG) dans le navigateur du PC.
+Traitement sur la Jetson (client du hub), affichage déporté fluide (MJPEG) dans le
+navigateur du PC. Page **Masque** = réglage ; page **Accueil** = profil + Play/Pause/Stop.
+
+> Le réglage se fait par **sliders** (plus de raccourcis clavier), et les filtres
+> anti-artefacts sont désormais **ON par défaut** (le redesign vise la robustesse). Les
+> valeurs sont portées par le **profil de perception** (`configs/profiles/*.json`).
 
 ```bash
 # Sur la Jetson
-~/mask_test/run-stream.sh
-#   ou : cd ~/mask_test && OPENBLAS_CORETYPE=ARMV8 python3 mask_stream.py
+OPENBLAS_CORETYPE=ARMV8 python3 -m src.tools.debug.server
 
 # Sur le PC
 ssh -L 8088:localhost:8088 robocar      # tunnel
@@ -98,12 +102,13 @@ vraie ligne ET l'artefact à tuer**. À chaque étape, surveillez les deux éche
 
 ## Figer les valeurs trouvées
 
-Une fois les bonnes valeurs identifiées, reportez-les comme **défauts** dans le code (elles
-sont aujourd'hui OFF par défaut pour préserver le comportement historique) :
+Une fois les bonnes valeurs identifiées, reportez-les dans le **profil de perception** :
 
-- [`src/mask/visual_rays.py`](../src/mask/visual_rays.py) — défauts de `white_line_mask()` et `VisualRays`
-  (`tophat_k`, `tophat_thresh`, `max_fill_ratio`, `temporal_window`).
-- [`src/mask/live_mask.py`](../src/mask/live_mask.py) — constantes `TOPHAT_K_ON` / `MAX_FILL_ON` / `TEMPORAL_ON`.
+- [`configs/profiles/classic.json`](../configs/profiles/classic.json) — filtres du masque
+  (`v_min_floor`, `s_max`, `tophat_k`, `tophat_thresh`, `morph_k`, `min_area`,
+  `min_elongation`, `depth_tol`, `clahe_clip`) + géométrie caméra + faisceau polaire.
+- Le masque unique est [`src/mask/white_line.py`](../src/mask/white_line.py) ; le faisceau
+  [`src/mask/polar_rays.py`](../src/mask/polar_rays.py).
 
-Le mode `visual`/`fusion` de [`src/control/inference_realcar.py`](../src/control/inference_realcar.py) lit
-ces défauts via `VisualRays` → les bonnes valeurs s'appliquent automatiquement à l'inférence.
+[`src/control/inference_realcar.py`](../src/control/inference_realcar.py) charge le profil
+(`--profile`) → les valeurs s'appliquent automatiquement à l'inférence et à l'interface.

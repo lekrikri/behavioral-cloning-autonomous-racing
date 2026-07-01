@@ -62,6 +62,8 @@ from src.mask.perception_config import PerceptionProfile, resolve_profile
 from src.control.vesc_interface import VESCInterface
 from src.features import derive_features
 from src.control_post import SmoothingFilter, apply_steer_offset, accel_from_geometry
+from src.control.reactive_controller import ReactiveController, ReactiveConfig
+from src.control.live_params import LiveParamsReader
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 MODEL_PATH          = "models/v18/best.onnx"
@@ -97,43 +99,52 @@ class RealCarInference:
         log_csv: bool       = True,
         profile: PerceptionProfile = None,
         source: str          = "device",
+        brain: str           = "model",
     ):
         print("\n[RealCar] ══════════════════════════════════════════")
         print("[RealCar]  Behavioral Cloning — Voiture Réelle v18  ")
         print("[RealCar] ══════════════════════════════════════════")
 
-        if not _ORT_AVAILABLE:
-            raise RuntimeError("onnxruntime non installé.")
-        if not Path(model_path).exists():
-            raise FileNotFoundError(f"Modèle introuvable : {model_path}")
-
-        self.sess = ort.InferenceSession(
-            model_path,
-            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-        )
-        self.input_name = self.sess.get_inputs()[0].name
-        print(f"[RealCar] ONNX chargé — provider: {self.sess.get_providers()[0]}")
-
-        # ── Z-score ───────────────────────────────────────────────────────────
-        real_stats = Path(stats_path)
-        sim_stats  = Path(FALLBACK_STATS_PATH)
-        if real_stats.exists():
-            with open(real_stats) as f:
-                stats = json.load(f)
-            print(f"[RealCar] Z-score RÉEL chargé ✅")
-        elif sim_stats.exists():
-            with open(sim_stats) as f:
-                stats = json.load(f)
-            print(f"[RealCar] ⚠️  Z-score SIMULATION utilisé (recalibrer avec calibrate_ray_stats.py)")
-        else:
-            raise FileNotFoundError("Aucun ray_stats.json trouvé")
-
-        self.ray_mu    = np.array(stats["mean"], dtype=np.float32)
-        self.ray_sigma = np.array(stats["std"],  dtype=np.float32)
-
+        self.brain    = brain
         self.source   = source
         self.profile  = profile or PerceptionProfile()   # défaut = profil classic
         self.mask_kw  = self.profile.mask_kwargs()
+
+        # ── Cerveau : modèle ONNX ou contrôleur réactif (algo polaire) ────────
+        self.sess = self.input_name = None
+        self.reactive = self._live = None
+        if brain == "reactive":
+            self.reactive = ReactiveController(ReactiveConfig(**self.profile.control_kwargs()))
+            self._live    = LiveParamsReader()          # réglage à chaud via configs/control_live.json
+            print(f"[RealCar] Cerveau = RÉACTIF (algo polaire) | kp={self.reactive.cfg.kp} "
+                  f"forward_sigma={self.reactive.cfg.forward_sigma}")
+        else:
+            if not _ORT_AVAILABLE:
+                raise RuntimeError("onnxruntime non installé.")
+            if not Path(model_path).exists():
+                raise FileNotFoundError(f"Modèle introuvable : {model_path}")
+            self.sess = ort.InferenceSession(
+                model_path,
+                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            )
+            self.input_name = self.sess.get_inputs()[0].name
+            print(f"[RealCar] ONNX chargé — provider: {self.sess.get_providers()[0]}")
+
+            # ── Z-score (modèle uniquement) ───────────────────────────────────
+            real_stats = Path(stats_path)
+            sim_stats  = Path(FALLBACK_STATS_PATH)
+            if real_stats.exists():
+                with open(real_stats) as f:
+                    stats = json.load(f)
+                print(f"[RealCar] Z-score RÉEL chargé ✅")
+            elif sim_stats.exists():
+                with open(sim_stats) as f:
+                    stats = json.load(f)
+                print(f"[RealCar] ⚠️  Z-score SIMULATION utilisé (recalibrer avec calibrate_ray_stats.py)")
+            else:
+                raise FileNotFoundError("Aucun ray_stats.json trouvé")
+            self.ray_mu    = np.array(stats["mean"], dtype=np.float32)
+            self.ray_sigma = np.array(stats["std"],  dtype=np.float32)
         # Géométrie IPM + faisceau polaire construits sur la 1re frame (taille réelle).
         self.geom     = None
         self.polar    = None
@@ -331,29 +342,32 @@ class RealCarInference:
                 time.sleep(0.02)
                 continue
 
-            # ── Z-score ───────────────────────────────────────────────────
-            rays_z = (rays - self.ray_mu[:20]) / (self.ray_sigma[:20] + 1e-8)
+            half      = len(rays) // 2
+            front_raw = float(rays[half - 1: half + 1].mean())
 
-            # ── Features dérivées ─────────────────────────────────────────
-            half     = len(rays_z) // 2   # conservé pour front_raw (heuristique accel)
-            derived  = derive_features(rays_z)
-            features = np.concatenate([rays_z, derived]).astype(np.float32)
-
-            # ── Inférence ONNX ────────────────────────────────────────────
-            pred      = self.sess.run(None, {self.input_name: features[np.newaxis, :]})[0][0]
-            steer_raw = float(pred[0])
-            accel_raw = float(1.0 / (1.0 + np.exp(-pred[1])))  # sigmoid sur logit
-
-            # ── Smoothing ─────────────────────────────────────────────────
-            pred_s   = self.smoother.update(np.array([steer_raw, accel_raw], dtype=np.float32))
-            steer    = apply_steer_offset(pred_s[0])
-            steering = float(np.clip(steer * self.steer_gain, -1.0, 1.0))
-
-            # ── Heuristique accel (front_raw) ─────────────────────────────
-            # réel : corner_damp ON + plancher 0.50 (diverge du sim — voir control_post)
-            front_raw    = float(rays[half - 1: half + 1].mean())
-            acceleration = accel_from_geometry(steering, front_raw,
-                                               corner_damp=True, accel_floor=0.50)
+            # ── Décision : contrôleur réactif ou modèle ONNX ──────────────
+            if self.brain == "reactive":
+                live = self._live.poll()          # mtime-gated : re-parse seulement si changé
+                if live:
+                    self.reactive.set_params(live)
+                accel_c, steer_c = self.reactive(rays)   # rays bruts [0,1] — pas de z-score
+                steering     = float(np.clip(steer_c * self.steer_gain, -1.0, 1.0))
+                acceleration = float(accel_c)             # déjà lissé + plafonné par le contrôleur
+                steer_raw, asym = steer_c, 0.0
+            else:
+                rays_z   = (rays - self.ray_mu[:20]) / (self.ray_sigma[:20] + 1e-8)
+                derived  = derive_features(rays_z)
+                features = np.concatenate([rays_z, derived]).astype(np.float32)
+                pred      = self.sess.run(None, {self.input_name: features[np.newaxis, :]})[0][0]
+                steer_raw = float(pred[0])
+                accel_raw = float(1.0 / (1.0 + np.exp(-pred[1])))  # sigmoid sur logit
+                pred_s   = self.smoother.update(np.array([steer_raw, accel_raw], dtype=np.float32))
+                steer    = apply_steer_offset(pred_s[0])
+                steering = float(np.clip(steer * self.steer_gain, -1.0, 1.0))
+                asym     = float(derived[0])
+                # réel : corner_damp ON + plancher 0.50 (diverge du sim — voir control_post)
+                acceleration = accel_from_geometry(steering, front_raw,
+                                                   corner_damp=True, accel_floor=0.50)
 
             # ── Envoi VESC ────────────────────────────────────────────────
             self.vesc.send(steering, acceleration)
@@ -367,7 +381,7 @@ class RealCarInference:
             if self._csv_writer and self._step % 3 == 0:
                 self._csv_writer.writerow([
                     round(time.time() - self._start_time, 3),
-                    round(steering, 4), round(steer_raw, 4), round(float(derived[0]), 4),
+                    round(steering, 4), round(steer_raw, 4), round(asym, 4),
                     round(acceleration, 4),
                     round(front_raw, 4), round(float(rays.min()), 4),
                     round(fps, 1),
@@ -442,6 +456,8 @@ def main():
                              "le dernier profil actif choisi dans l'interface (persisté), sinon classic")
     parser.add_argument("--source",   choices=["device", "hub"], default="hub",
                         help="hub=lit le hub caméra en mémoire partagée (défaut, partage l'OAK-D) | device=ouvre l'OAK-D")
+    parser.add_argument("--brain",    choices=["model", "reactive"], default=None,
+                        help="cerveau : model=ONNX (défaut) | reactive=algo polaire. Par défaut : celui du profil")
     args = parser.parse_args()
 
     if args.source == "hub":
@@ -453,7 +469,8 @@ def main():
 
     # Profil : --profile explicite > dernier profil actif (interface) > classic.
     profile, prof_name = resolve_profile(args.profile)
-    print(f"[RealCar] profil de perception = {prof_name}")
+    brain = args.brain or profile.brain
+    print(f"[RealCar] profil de perception = {prof_name} | cerveau = {brain}")
 
     RealCarInference(
         model_path   = args.model,
@@ -469,6 +486,7 @@ def main():
         log_csv          = not args.no_log,
         profile          = profile,
         source           = args.source,
+        brain            = brain,
     ).run()
 
 

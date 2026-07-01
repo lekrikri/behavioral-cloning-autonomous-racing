@@ -1,6 +1,7 @@
 """HTML for the debug interface pages (home + mask). Stdlib string templates, no deps."""
 
 from src.tools.debug.capture import SLIDERS, FILTER_TOGGLES
+from src.tools.debug.control_state import CONTROL_SLIDERS
 
 _CSS = """<style>
 body{background:#111;color:#ddd;font-family:monospace;margin:0;padding:10px}
@@ -13,7 +14,9 @@ label{display:inline-block;width:150px}input[type=range]{width:260px;vertical-al
 .val{color:#6cf;width:52px;display:inline-block;text-align:right}
 </style>"""
 
-_NAV = '<div class=nav><a href="/">Accueil</a> &nbsp;|&nbsp; <a href="/mask">Masque</a></div>'
+_NAV = ('<div class=nav><a href="/">Accueil</a> &nbsp;|&nbsp; '
+        '<a href="/mask">Masque</a> &nbsp;|&nbsp; '
+        '<a href="/intelligence">Intelligence</a></div>')
 
 
 def home_page():
@@ -47,9 +50,9 @@ setInterval(function(){{fetch('/status').then(r=>r.json()).then(refresh);}},2000
 </script></body></html>""".format(css=_CSS, nav=_NAV)
 
 
-def _slider_rows():
+def _slider_rows(sliders=SLIDERS):
     rows = []
-    for name, lo, hi, step in SLIDERS:
+    for name, lo, hi, step in sliders:
         rows.append(
             '<div class=row><label>{n}</label>'
             '<input type=range min={lo} max={hi} step={st} id="s_{n}" '
@@ -108,3 +111,38 @@ function pollStats(){{fetch('/stats').then(r=>r.json()).then(function(s){{
   document.getElementById('frames').textContent=s.frames;}});}}
 pollStats(); setInterval(pollStats,1000);
 </script></body></html>""".format(css=_CSS, nav=_NAV, sliders=_slider_rows(), toggles=_filter_toggles())
+
+
+def intelligence_page():
+    return """<!doctype html><html><head><meta charset=utf-8><title>Robocar — Intelligence</title>
+{css}</head><body>{nav}
+<h3>Intelligence — cerveau &amp; contrôleur réactif</h3>
+<div class=row>profil actif : <b id=prof>—</b>
+  <button onclick="save()">💾 sauver dans le profil</button></div>
+<div class=row>cerveau :
+  <label><input type=radio name=brain value=model onchange="setBrain('model')"> modèle IA (ONNX)</label>
+  <label><input type=radio name=brain value=reactive onchange="setBrain('reactive')"> réactif (algo)</label>
+  &nbsp;<span style="color:#fa0">cerveau persisté au clic — prend effet au prochain Play</span>
+</div>
+<div class=row style="color:#888">Params réactifs — réglage à chaud pendant la conduite :</div>
+{sliders}
+<div class=row>état : <span id=k>—</span></div>
+<script>
+function setP(n,v){{fetch('/control_param?name='+n+'&value='+v).then(r=>r.text()).then(function(t){{
+  document.getElementById('k').textContent=t;
+  var vv=document.getElementById('v_'+n); if(vv) vv.textContent=v;}});}}
+function setBrain(k){{fetch('/brain?kind='+k).then(r=>r.text()).then(function(t){{
+  document.getElementById('k').textContent=t;}});}}
+function save(){{fetch('/control_save').then(r=>r.text()).then(function(t){{
+  document.getElementById('k').textContent=t;}});}}
+function loadParams(){{fetch('/control_params').then(r=>r.json()).then(function(p){{
+  document.getElementById('prof').textContent=p._profile||'—';
+  var b=p._brain||'model';
+  document.querySelectorAll('input[name=brain]').forEach(function(r){{r.checked=(r.value===b);}});
+  for(var n in p){{
+    var s=document.getElementById('s_'+n); if(s) s.value=p[n];
+    var vv=document.getElementById('v_'+n); if(vv) vv.textContent=p[n];
+  }}
+}});}}
+loadParams();
+</script></body></html>""".format(css=_CSS, nav=_NAV, sliders=_slider_rows(CONTROL_SLIDERS))

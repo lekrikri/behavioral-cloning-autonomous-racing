@@ -74,3 +74,5 @@ CLAUDE.local.md
 
 # Profil de perception actif (état device-local, non versionné)
 configs/active_profile.txt
+# Params de contrôle réglés à chaud (canal IPC serveur -> inférence, éphémère)
+configs/control_live.json

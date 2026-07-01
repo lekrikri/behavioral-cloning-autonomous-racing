@@ -21,12 +21,14 @@ sys.path.insert(0, str(_ROOT))
 
 from src.mask.perception_config import resolve_profile, write_active_profile
 from src.tools.debug.capture import MaskState, capture_loop
+from src.tools.debug.control_state import ControlState
 from src.tools.debug.driver import Driver
 from src.tools.debug import pages
 
 
 class Handler(BaseHTTPRequestHandler):
     state = None      # injected: MaskState
+    control = None    # injected: ControlState
     driver = None     # injected: Driver
 
     def log_message(self, *a):
@@ -48,6 +50,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send(pages.home_page(), "text/html; charset=utf-8")
         elif path == "/mask":
             self._send(pages.mask_page(), "text/html; charset=utf-8")
+        elif path == "/intelligence":
+            self._send(pages.intelligence_page(), "text/html; charset=utf-8")
+        elif path == "/control_params":
+            self._send(json.dumps(self.control.ui_state()), "application/json")
+        elif path == "/control_param":
+            name = qs.get("name", [""])[0]
+            value = qs.get("value", [""])[0]
+            self._send(self.control.set_param(name, value) if name else "")
+        elif path == "/brain":
+            self._send(self.control.set_brain(qs.get("kind", [""])[0]))
+        elif path == "/control_save":
+            self._send(self.control.save_to_profile())
+            write_active_profile(self.control.profile.name)
         elif path == "/params":
             self._send(json.dumps(self.state.ui_state()), "application/json")
         elif path == "/stats":
@@ -62,6 +77,7 @@ class Handler(BaseHTTPRequestHandler):
             name = qs.get("name", [""])[0]
             self.driver.set_profile(name)               # sync le profil de conduite (Play)
             msg = self.state.load_profile_into(name)
+            self.control.load_profile_into(name)        # sync l'onglet Intelligence + canal live
             write_active_profile(name)                  # persiste -> prod + prochain démarrage
             self._send(msg)
         elif path == "/mask_save":
@@ -73,6 +89,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/profile":
             name = qs.get("name", ["classic"])[0]
             self.state.load_profile_into(name)          # sync la preview masque
+            self.control.load_profile_into(name)        # sync l'onglet Intelligence + canal live
             st = self.driver.set_profile(name)
             write_active_profile(name)                  # persiste -> prod + prochain démarrage
             self._send(json.dumps(st), "application/json")
@@ -126,6 +143,7 @@ def main():
 
     state = MaskState(profile)
     Handler.state = state
+    Handler.control = ControlState(profile)
     Handler.driver = Driver(str(_ROOT), vesc_port=args.vesc_port, profile_name=name)
 
     t = threading.Thread(target=capture_loop, args=(state,), daemon=True)

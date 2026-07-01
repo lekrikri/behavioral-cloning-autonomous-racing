@@ -64,6 +64,7 @@ class Driver:
             env["OPENBLAS_CORETYPE"] = "ARMV8"        # sinon SIGILL numpy sur le Tegra
             cmd = [sys.executable, "-m", "src.control.inference_realcar",
                    "--profile", self.profile_name, "--source", "hub",
+                   "--brain", prof.brain,
                    "--model", prof.model, "--duty-max", str(prof.duty_max)]
             try:
                 self.proc = subprocess.Popen(cmd, cwd=self.repo_root, env=env)

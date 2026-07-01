@@ -6,6 +6,9 @@ command. The debug interface loads a profile on its home page; Play runs the dri
 pipeline with it. Two profiles are planned: "classic" (this algorithmic mask, to be
 calibrated) and "ai" (a trained segmentation model), selected by `kind`.
 
+Two orthogonal axes: `kind` (classic|ai) selects the PERCEPTION stack (how frames become
+rays); `brain` (model|reactive) selects the DECISION module (how rays become commands).
+
 Flat dataclass -> trivial JSON round trip (same style as RobocarConfig). Profiles live
 as JSON files under configs/profiles/.
 
@@ -54,6 +57,20 @@ class PerceptionProfile:
     model: str = "models/v18/best_jetson.onnx"
     duty_max: float = 0.20
 
+    # --- Brain (module de décision, swappable) ---
+    brain: str = "model"               # "model" (ONNX) | "reactive" (algo polaire)
+    # Params du contrôleur réactif (préfixe ctrl_ ; miroir de ReactiveConfig, réglables live).
+    ctrl_kp: float = 0.9
+    ctrl_kd: float = 0.15
+    ctrl_forward_sigma: float = 6.0
+    ctrl_v_max: float = 1.0
+    ctrl_v_min: float = 0.5
+    ctrl_turn_slowdown: float = 0.7
+    ctrl_steer_max: float = 0.85
+    ctrl_steer_deadzone: float = 0.03
+    ctrl_steer_rate_max: float = 0.35
+    ctrl_heading_ema: float = 0.4
+
     # ── Builders ────────────────────────────────────────────────────────────────
     def camera_ground(self):
         from src.mask.camera_ground import CameraGround
@@ -75,6 +92,14 @@ class PerceptionProfile:
                     morph_k=self.morph_k, min_area=self.min_area,
                     min_elongation=self.min_elongation, depth_tol=self.depth_tol,
                     bottom_ignore_frac=self.bottom_ignore_frac)
+
+    def control_kwargs(self) -> dict:
+        """kwargs pour ReactiveConfig (retire le préfixe ctrl_, ajoute n_rays)."""
+        out = {"n_rays": self.n_rays}
+        for f in fields(self):
+            if f.name.startswith("ctrl_"):
+                out[f.name[len("ctrl_"):]] = getattr(self, f.name)
+        return out
 
     # ── Persistence ─────────────────────────────────────────────────────────────
     def save(self, path) -> None:

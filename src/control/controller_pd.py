@@ -10,11 +10,12 @@ Usage (Jetson Nano) :
   --fixed-speed  : vitesse constante (bypass machine à états) — mode calibration
   --level N      : niveau contrôleur 1-4 (défaut : 3)
   --stream-port  : port HTTP stream MJPEG (défaut : 5601, 0 = désactivé)
-  --source       : hub (défaut, lit le hub caméra en mémoire partagée, partage l'OAK-D) |
-                   device (ouvre l'OAK-D en direct, reconnexion + reset USB)
+
+Source vidéo : le hub caméra (SHM). controller_pd est un CLIENT du hub — il n'ouvre
+jamais l'OAK-D lui-même (le hub possède la caméra et gère la reconnexion).
 """
 
-import sys, time, argparse, os, threading, struct, socket, csv, glob, fcntl
+import sys, time, argparse, os, threading, struct, socket, csv
 import numpy as np
 import cv2
 
@@ -31,120 +32,16 @@ _ROOT = pathlib.Path(__file__).resolve()
 while not (_ROOT / "src" / "__init__.py").exists() and _ROOT != _ROOT.parent:
     _ROOT = _ROOT.parent
 sys.path.insert(0, str(_ROOT))
-from src.mask.visual_rays import white_line_mask, VisualRays
+from src.mask.white_line import white_line_mask
+from src.mask.lane_detect import (LaneParams, get_blobs, detect_corner_blob,
+                                  clean_mask_artifacts, find_lane_histogram,
+                                  find_lane_scanlines)
+from src.mask.perception_config import PerceptionProfile
 try:
     from src.control.vesc_interface import VESCInterface as VescInterface
 except ImportError:
     VescInterface = None
 
-def _find_oak_sysfs():
-    """Retourne (dir_path, dev_name) du device OAK-D dans sysfs, ou (None, None)."""
-    for vendor_path in glob.glob('/sys/bus/usb/devices/*/idVendor'):
-        try:
-            with open(vendor_path) as f:
-                if f.read().strip() != '03e7':
-                    continue
-        except Exception:
-            continue
-        dir_path = os.path.dirname(vendor_path)
-        dev_name = os.path.basename(dir_path)
-        return dir_path, dev_name
-    return None, None
-
-
-def _usb_reset_method1_authorized():
-    """Méthode 1 : authorized 0→1 (soft power cycle)."""
-    dir_path, _ = _find_oak_sysfs()
-    if dir_path is None:
-        return False
-    auth = os.path.join(dir_path, 'authorized')
-    if not os.path.exists(auth):
-        return False
-    try:
-        with open(auth, 'w') as f: f.write('0')
-        print("[ctrl] USB [1] authorized=0")
-        time.sleep(4)
-        with open(auth, 'w') as f: f.write('1')
-        print("[ctrl] USB [1] authorized=1")
-        time.sleep(5)
-        return True
-    except Exception as e:
-        print("[ctrl] USB [1] err: {}".format(e))
-    return False
-
-
-def _usb_reset_method2_unbind_bind():
-    """Méthode 2 : unbind + rebind driver USB (plus agressif)."""
-    _, dev_name = _find_oak_sysfs()
-    if dev_name is None:
-        # Device peut ne plus être listé après crash — chercher dans unbind quand même
-        return False
-    try:
-        with open('/sys/bus/usb/drivers/usb/unbind', 'w') as f:
-            f.write(dev_name)
-        print("[ctrl] USB [2] unbind {}".format(dev_name))
-        time.sleep(5)
-        with open('/sys/bus/usb/drivers/usb/bind', 'w') as f:
-            f.write(dev_name)
-        print("[ctrl] USB [2] bind {}".format(dev_name))
-        time.sleep(6)
-        return True
-    except Exception as e:
-        print("[ctrl] USB [2] err: {}".format(e))
-    return False
-
-
-def _usb_reset_method3_ioctl():
-    """Méthode 3 : ioctl USBDEVFS_RESET (reset électrique bas niveau)."""
-    USBDEVFS_RESET = 0x5514
-    dir_path, _ = _find_oak_sysfs()
-    if dir_path is None:
-        return False
-    try:
-        with open(os.path.join(dir_path, 'busnum')) as f:
-            bus = int(f.read().strip())
-        with open(os.path.join(dir_path, 'devnum')) as f:
-            dev = int(f.read().strip())
-        dev_path = '/dev/bus/usb/{:03d}/{:03d}'.format(bus, dev)
-        with open(dev_path, 'wb') as fd:
-            fcntl.ioctl(fd, USBDEVFS_RESET, 0)
-        print("[ctrl] USB [3] ioctl reset {}".format(dev_path))
-        time.sleep(4)
-        return True
-    except Exception as e:
-        print("[ctrl] USB [3] err: {}".format(e))
-    return False
-
-
-# Compteur global pour alterner les méthodes de reset
-_reset_attempt_total = 0
-
-def _usb_reset_oak():
-    """Escalade automatique des méthodes de reset USB selon le nombre d'échecs."""
-    global _reset_attempt_total
-    _reset_attempt_total += 1
-    n = _reset_attempt_total
-    print("[ctrl] USB reset OAK-D (tentative {})".format(n))
-    # Alterner : 1, 2, 1, 3, 1, 2, 1, 3, ...
-    if n % 4 == 2:
-        ok = _usb_reset_method2_unbind_bind()
-    elif n % 4 == 0:
-        ok = _usb_reset_method3_ioctl()
-    else:
-        ok = _usb_reset_method1_authorized()
-    if not ok:
-        # Essayer les autres méthodes en cascade si la principale échoue
-        for fn in [_usb_reset_method1_authorized, _usb_reset_method2_unbind_bind, _usb_reset_method3_ioctl]:
-            if fn():
-                break
-    return True
-
-
-try:
-    import depthai as dai
-except ImportError:
-    print("[ctrl] depthai non installe")
-    sys.exit(1)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -192,12 +89,8 @@ _latest_jpeg = None
 _frame_id    = 0
 _stream_lock = threading.Lock()
 _placeholder = None
-_last_frame_time = [time.time()]   # watchdog : heure de la dernière frame reçue
-_watchdog_trigger = [False]        # mis à True par le watchdog pour forcer un reset
-_camera_restarted = [False]        # mis à True après chaque reconnexion OAK-D → reset Kalman
-_coast_steer    = [0.0]            # dernier steering valide pour coast mode
-_coast_throttle = [0.06]           # dernier throttle valide pour coast mode
-_coast_crash_t  = [0.0]            # timestamp du début du crash caméra actuel
+_last_frame_time = [time.time()]   # heure de la dernière frame reçue (santé du flux)
+_camera_restarted = [False]        # reconnexion flux → reset Kalman côté controller
 _drive_enabled = True   # contrôlé via HTTP /stop et /go
 _go_reset = [False]         # mis à True par /go → PDController reset son état CORNER/Kalman
 _calibrate_request = [False]       # mis à True par /calibrate → PDController applique l'offset
@@ -370,412 +263,10 @@ def push_frame(bgr, mask, info, rejected_blobs=None):
 # VISION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_blobs(mask):
-    """Retourne (accepted_blobs, rejected_blobs) — les rejetés servent uniquement à la visu orange."""
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cy_min     = int(CAM_H * 0.44)
-    cy_max     = int(CAM_H * 0.97)
-    y_bot_min  = int(CAM_H * 0.62)
-    # 0.10 : pieds de chaises (area<<800) déjà éliminés par MIN_BLOB_AREA,
-    # les lignes en perspective ont w/h ~0.10-0.30 selon distance
-    aspect_min = 0.10
-    w_min      = 20
-    blobs    = []
-    rejected = []
-    for i in range(1, n):
-        area   = stats[i, cv2.CC_STAT_AREA]
-        x      = stats[i, cv2.CC_STAT_LEFT]
-        y_top  = stats[i, cv2.CC_STAT_TOP]
-        w      = stats[i, cv2.CC_STAT_WIDTH]
-        h      = max(stats[i, cv2.CC_STAT_HEIGHT], 1)
-        aspect = w / float(h)
-        cx     = x + w // 2
-        cy     = y_top + stats[i, cv2.CC_STAT_HEIGHT] // 2
-        y_bot  = y_top + stats[i, cv2.CC_STAT_HEIGHT]
-        rect   = (x, y_top, w, h)
-
-        if cy < cy_min or cy > cy_max:
-            rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "cy", "rect": rect})
-            continue
-        if y_bot < y_bot_min:
-            rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "ybot", "rect": rect})
-            continue
-        if area < MIN_BLOB_AREA:
-            rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "area", "rect": rect})
-            continue
-        if aspect < aspect_min:
-            rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "asp", "rect": rect})
-            continue
-        if w < w_min:
-            rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "w", "rect": rect})
-            continue
-        # Blobs compacts et pleins (logo/flèche au sol) — solidity haute + pas extrêmement allongé
-        # Les lignes de piste ont solidity faible (<0.50) car fines dans leur bounding box
-        # Les logos remplis ont solidity >0.65. Aspect < 2.5 évite de filtrer les lignes proches horizontales
-        bbox_area = w * h
-        solidity = float(area) / max(bbox_area, 1)
-        if area > 3000 and solidity > 0.65 and aspect < 2.5:
-            rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "cmp", "rect": rect})
-            continue
-        # Rayons de soleil / reflets horizontaux : très larges et peu hauts (w>>h)
-        # Les lignes de piste longitudinales ont aspect < 4, les rayons > 5
-        if aspect > 5.0 and area > 1500:
-            rejected.append({"cx": cx, "cy": cy, "area": area, "reason": "horiz", "rect": rect})
-            continue
-        blobs.append({"cx": cx, "cy": cy, "area": area, "aspect": round(aspect, 1)})
-
-    blobs.sort(key=lambda b: b["area"], reverse=True)
-    if len(blobs) >= 2:
-        left  = min(blobs, key=lambda b: b["cx"])
-        right = max(blobs, key=lambda b: b["cx"])
-        if left is not right:
-            return [left, right], rejected
-    return blobs, rejected
-
-
-def err_from_mask(mask):
-    M = cv2.moments(mask)
-    if M["m00"] < 1:
-        return None
-    return int(M["m10"] / M["m00"]) - CAM_W // 2
-
-
-def err_from_scanlines(mask):
-    """3 scanlines à FAR/MID/NEAR : cherche pixel blanc le + à gauche et + à droite
-    sur chaque ligne horizontale → centre entre elles → médiane des 3 centres.
-    Robuste aux faux positifs : sol au milieu ignoré (on prend les extrêmes).
-    Retourne (err, scan_points) où scan_points = [(cx, row), ...] pour affichage.
-    """
-    rows = [int(CAM_H * ROI_FAR), int(CAM_H * ROI_MID), int(CAM_H * ROI_NEAR)]
-    centers = []
-    scan_points = []
-    for r in rows:
-        r = min(r, CAM_H - 1)
-        line = mask[r, :]
-        whites = np.where(line > 0)[0]
-        if len(whites) < 5:
-            continue
-        left  = int(whites[0])
-        right = int(whites[-1])
-        if right - left < 20:   # trop étroit = bruit
-            continue
-        center = (left + right) // 2
-        centers.append(center)
-        scan_points.append((center, r))
-    if not centers:
-        return None, []
-    median_c = sorted(centers)[len(centers) // 2]
-    return median_c - CAM_W // 2, scan_points
-
-
-def err_from_bands(mask):
-    row_near = int(CAM_H * ROI_NEAR)
-    row_mid  = int(CAM_H * ROI_MID)
-    row_far  = int(CAM_H * ROI_FAR)
-    mask_near = mask.copy(); mask_near[:row_near, :] = 0
-    mask_mid  = mask.copy(); mask_mid[row_near:, :] = 0; mask_mid[:row_mid, :] = 0
-    mask_far  = mask.copy(); mask_far[row_mid:, :] = 0;  mask_far[:row_far, :] = 0
-    return err_from_mask(mask_near), err_from_mask(mask_mid), err_from_mask(mask_far)
-
-
-def clean_mask_artifacts(mask, bgr=None):
-    """
-    Filtre intelligent du masque : supprime les composantes qui ne sont pas des lignes.
-
-    Deux niveaux de filtrage :
-    1. Géométrie : area, aspect ratio, position Y — rejette chaussures, logos, murs
-    2. Sobel edges (si bgr fourni) : les vraies lignes ont des bords nets sur fond gris.
-       Les reflets/artefacts diffus ont des bords flous → gradient Sobel faible.
-
-    Retourne (mask_clean, rejected_mask) pour la visualisation.
-    """
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    clean    = np.zeros_like(mask)
-    rejected = np.zeros_like(mask)
-    roi_top  = int(CAM_H * 0.52)
-
-    # Pré-calcul Sobel sur image grise (une seule fois pour toutes les composantes)
-    sobel_mag = None
-    if bgr is not None:
-        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-        sx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-        sy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-        sobel_mag = np.sqrt(sx * sx + sy * sy)
-
-    for i in range(1, n):
-        area  = stats[i, cv2.CC_STAT_AREA]
-        bx    = stats[i, cv2.CC_STAT_LEFT]
-        by    = stats[i, cv2.CC_STAT_TOP]
-        bw    = stats[i, cv2.CC_STAT_WIDTH]
-        bh    = max(stats[i, cv2.CC_STAT_HEIGHT], 1)
-        y_bot = by + bh   # bas du blob — clé : une ligne de piste touche la zone proche
-        blob_mask = (labels == i)
-
-        reason = None
-
-        if area < 350:
-            reason = "small"
-        elif y_bot < int(CAM_H * 0.50):
-            # Le bas du blob est entièrement dans la moitié haute → mur/fond de salle
-            # Une vraie ligne vue de loin a quand même son bas dans la moitié basse
-            reason = "high"
-        else:
-            asp = float(max(bw, bh)) / max(min(bw, bh), 1)
-            if asp < 1.8 and area < 1500:
-                reason = "compact"  # carré compact petit → reflet, logo, chaussure
-            elif sobel_mag is not None and area < 4000:
-                # Sobel uniquement sur les blobs de taille MOYENNE.
-                # Les vraies lignes proches sont grandes (area >> 4000) → jamais filtrées ici.
-                # Le filtre cible les artefacts moyens diffus : mur lointain, reflet de sol.
-                kernel3 = np.ones((3, 3), np.uint8)
-                blob_u8 = blob_mask.astype(np.uint8) * 255
-                border  = cv2.dilate(blob_u8, kernel3) - blob_u8
-                border_pixels = sobel_mag[border > 0]
-                if len(border_pixels) > 0:
-                    mean_grad = float(np.mean(border_pixels))
-                    if mean_grad < 10.0:  # seuls les reflets vraiment flous sont rejetés
-                        reason = "diffuse"
-
-        if reason is not None:
-            rejected[blob_mask] = 255
-        else:
-            clean[blob_mask] = 255
-
-    return clean, rejected
-
-
-def find_lane_histogram(mask, prev_left=None, prev_right=None):
-    """
-    Détecte les deux lignes de piste par histogramme de colonnes.
-
-    Au lieu de chercher des blobs (objets connectés), on somme les pixels blancs
-    par colonne dans la zone basse. Les vraies lignes de piste traversent l'image
-    en hauteur → gros pic. Les artefacts isolés (meubles, ombres) = pic faible.
-
-    Returns: (left_cx, right_cx, left_conf, right_conf)
-      left_cx / right_cx : position pixel du pic gauche/droit, None si non détecté
-      left_conf / right_conf : énergie du pic (somme pixels blancs dans la colonne)
-    """
-    y_start = int(CAM_H * 0.62)
-    y_end   = int(CAM_H * 0.97)
-    roi = mask[y_start:y_end, :]
-
-    # Histogramme : somme des pixels blancs par colonne (valeur max = 255 × hauteur_roi)
-    hist = np.sum(roi.astype(np.float32), axis=0)
-
-    # Lissage gaussien 21px : fusionne les pixels adjacents d'une même ligne blanche
-    # Une ligne de piste fait ~30-60px de large → le pic se consolide
-    k = 21
-    sigma = k / 4.0
-    xs = np.arange(-(k // 2), k // 2 + 1, dtype=np.float32)
-    gauss = np.exp(-0.5 * (xs / sigma) ** 2)
-    gauss /= gauss.sum()
-    hist = np.convolve(hist, gauss, mode='same')
-
-    mid = CAM_W // 2
-
-    # Seuil minimum : au moins ~12px blancs dans la colonne
-    HIST_MIN = 12.0 * 255.0
-
-    left_half  = hist[:mid]
-    right_half = hist[mid:]
-
-    left_peak  = float(np.max(left_half))
-    right_peak = float(np.max(right_half))
-
-    # Multi-pics : chercher le pic le plus cohérent avec la track_width et la position précédente
-    # Au lieu du simple argmax (vulnérable aux gros artefacts), on liste les pics locaux
-    # et on choisit celui dont le score est le meilleur.
-    def _best_peak(half_hist, offset, prev_cx, peer_cx, peer_side):
-        """
-        Retourne le meilleur cx dans half_hist (offset = décalage par rapport à la demi-image).
-        Si prev_cx fourni : sliding windows ±SLIDE_WIN autour de la position précédente.
-        peer_cx : position de la ligne de l'autre côté (pour contrainte de track_width).
-        """
-        n = len(half_hist)
-        # Sliding windows : restreindre la zone de recherche si on a un historique
-        if prev_cx is not None:
-            local_center = prev_cx - offset
-            i_min = max(2, local_center - SLIDE_WIN)
-            i_max = min(n - 2, local_center + SLIDE_WIN)
-        else:
-            i_min, i_max = 2, n - 2
-
-        best_cx = None
-        best_score = -1.0
-        for i in range(i_min, i_max + 1):
-            v = half_hist[i]
-            if v < HIST_MIN:
-                continue
-            if not (v > half_hist[i - 1] and v > half_hist[i + 1]):
-                continue
-            cx = i + offset
-            score = v
-            if prev_cx is not None:
-                score += max(0.0, 3000.0 - abs(cx - prev_cx) * 60.0)
-            if peer_cx is not None:
-                dist = abs(cx - peer_cx)
-                score += max(0.0, 4000.0 - abs(dist - TRACK_WIDTH_EST_PX) * 80.0)
-            if score > best_score:
-                best_score = score
-                best_cx = cx
-        # Fallback local argmax
-        if best_cx is None:
-            sub = half_hist[i_min:i_max + 1]
-            if len(sub) > 0 and float(np.max(sub)) >= HIST_MIN:
-                best_cx = int(np.argmax(sub)) + i_min + offset
-        return best_cx
-
-    left_cx  = _best_peak(left_half,  0,   prev_left,  None, +1)
-    right_cx = _best_peak(right_half, mid, prev_right, left_cx, -1)
-    # Deuxième passe : re-scorer left avec right connu
-    left_cx  = _best_peak(left_half,  0,   prev_left,  right_cx, +1)
-
-    left_peak  = float(left_half[left_cx]) if left_cx is not None else 0.0
-    right_peak = float(right_half[right_cx - mid]) if right_cx is not None else 0.0
-
-    return left_cx, right_cx, left_peak, right_peak
-
-
-def find_lane_scanlines(mask, n_lines=6):
-    """
-    Raycasts horizontaux pour détecter le bord INTÉRIEUR de chaque ligne de piste.
-
-    Stratégie : chercher depuis chaque moitié de l'image vers le centre.
-      - Moitié gauche (x=0 à mid-30) : le blanc le plus proche du centre = bord intérieur ligne gauche
-      - Moitié droite (x=mid+30 à CAM_W) : le blanc le plus proche du centre = bord intérieur ligne droite
-
-    Avantage : insensible au bruit vert central (on ne part pas du centre, on évite cette zone).
-    Les vraies lignes de piste sont en dehors de la zone centrale.
-
-    Returns: (left_cx, right_cx, scanline_rows, left_hits, right_hits)
-      left_cx / right_cx : médiane des touches, None si aucune touche
-      scanline_rows : liste des y des scanlines (pour visu)
-      left_hits / right_hits : liste des touches (x, y) pour visu
-    """
-    mid_x = CAM_W // 2
-    MARGIN = 30   # zone morte autour du centre (30px de chaque côté)
-    MIN_WHITES = 4  # nombre minimum de pixels blancs pour valider une touche
-
-    # Scanlines de 65% à 90% de la hauteur — zone proche, lignes larges et nettes
-    rows = [int(CAM_H * (0.65 + i * (0.25 / max(n_lines - 1, 1)))) for i in range(n_lines)]
-
-    left_xs   = []
-    right_xs  = []
-    left_hits  = []
-    right_hits = []
-
-    for r in rows:
-        r = min(r, CAM_H - 1)
-        line = mask[r, :]
-
-        # Moitié gauche : bord intérieur de la ligne gauche = blanc le plus proche du centre
-        whites_l = np.where(line[:mid_x - MARGIN] > 0)[0]
-        if len(whites_l) >= MIN_WHITES:
-            hit_l = int(whites_l[-1])   # le plus à droite = bord intérieur
-            # Validation continuité verticale : la ligne doit exister aussi 3px au-dessus
-            if r >= 3:
-                above = int(np.sum(mask[r - 3:r, max(0, hit_l - 3):hit_l + 4]))
-                if above >= 3 * 255:  # au moins 3 pixels blancs au-dessus
-                    left_xs.append(hit_l)
-                    left_hits.append((hit_l, r))
-            else:
-                left_xs.append(hit_l)
-                left_hits.append((hit_l, r))
-
-        # Moitié droite : bord intérieur de la ligne droite = blanc le plus proche du centre
-        whites_r = np.where(line[mid_x + MARGIN:] > 0)[0]
-        if len(whites_r) >= MIN_WHITES:
-            hit_r = int(mid_x + MARGIN + whites_r[0])  # le plus à gauche = bord intérieur
-            # Validation continuité verticale
-            if r >= 3:
-                above = int(np.sum(mask[r - 3:r, hit_r - 3:min(CAM_W, hit_r + 4)]))
-                if above >= 3 * 255:
-                    right_xs.append(hit_r)
-                    right_hits.append((hit_r, r))
-            else:
-                right_xs.append(hit_r)
-                right_hits.append((hit_r, r))
-
-    left_cx  = int(np.median(left_xs))  if left_xs  else None
-    right_cx = int(np.median(right_xs)) if right_xs else None
-
-    return left_cx, right_cx, rows, left_hits, right_hits
-
-
-def fuse_lane_estimates(hist_left, hist_right, scan_left, scan_right):
-    """
-    Fusionne les estimations histogramme + raycasts horizontaux.
-
-    Si les deux méthodes sont proches (< 40px) → moyenne pondérée.
-    Si divergence → préférer l'histogramme (vue globale plus robuste).
-    Si une seule méthode donne un résultat → utiliser celle-là.
-
-    Returns: (left_cx, right_cx) — valeurs fusionnées ou None
-    """
-    MAX_DIVERGENCE = 40   # px
-
-    def _fuse_one(h, s):
-        if h is not None and s is not None:
-            if abs(h - s) <= MAX_DIVERGENCE:
-                return int(round(0.5 * h + 0.5 * s))  # moyenne équipondérée
-            else:
-                return h  # divergence → histogramme prioritaire
-        if h is not None:
-            return h
-        if s is not None:
-            return s
-        return None
-
-    return _fuse_one(hist_left, scan_left), _fuse_one(hist_right, scan_right)
-
-
-def detect_corner_blob(mask):
-    """Détecte le marqueur de coin L : blob compact (area >= MIN_CORNER_AREA, aspect < 1.8).
-    Appliqué sur mask_wide (ROI 45%) pour voir le L bien avant d'y arriver.
-    Retourne dict {cx, cy, area} ou None.
-    """
-    n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cy_min = int(CAM_H * 0.62)  # coin L visible seulement dans le bas (60%+), élimine murs/plafond
-    best = None
-    for i in range(1, n):
-        area = stats[i, cv2.CC_STAT_AREA]
-        w    = stats[i, cv2.CC_STAT_WIDTH]
-        h    = max(stats[i, cv2.CC_STAT_HEIGHT], 1)
-        asp  = w / float(h)
-        cy   = stats[i, cv2.CC_STAT_TOP]  + stats[i, cv2.CC_STAT_HEIGHT] // 2
-        cx   = stats[i, cv2.CC_STAT_LEFT] + w // 2
-        if area >= MIN_CORNER_AREA and asp < 1.5 and cy >= cy_min:
-            if best is None or area > best["area"]:
-                best = {"cx": cx, "cy": cy, "area": area, "aspect": round(asp, 1)}
-    return best
-
-
-def err_from_two_lines(blobs, track_width=None):
-    mid_x = CAM_W // 2
-    CLEAR_LEFT  = mid_x - 76
-    CLEAR_RIGHT = mid_x + 76
-    # Largeur dynamique : utilise la mesure récente si dispo, sinon constante
-    tw_est = int(track_width) if track_width is not None else TRACK_WIDTH_EST_PX
-    left_blobs  = [b for b in blobs if b["cx"] < CLEAR_LEFT]
-    right_blobs = [b for b in blobs if b["cx"] > CLEAR_RIGHT]
-    left  = max(left_blobs,  key=lambda b: b["area"]) if left_blobs  else None
-    right = max(right_blobs, key=lambda b: b["area"]) if right_blobs else None
-    if left and right:
-        center = (left["cx"] + right["cx"]) // 2
-        return center - mid_x, right["cx"] - left["cx"]
-    if left:
-        est_right = left["cx"] + tw_est
-        return (left["cx"] + est_right) // 2 - mid_x, tw_est
-    if right:
-        est_left = right["cx"] - tw_est
-        return (est_left + right["cx"]) // 2 - mid_x, tw_est
-    return None, None
-
-
-# ══════════════════════════════════════════════════════════════════════════════
+# --------------------------------------------------------------------------
 # CONTRÔLEUR
-# ══════════════════════════════════════════════════════════════════════════════
+# --------------------------------------------------------------------------
+
 
 class _Kalman1D(object):
     """Filtre de Kalman 1D pour l'erreur latérale. Robuste aux dropouts b=0/b=1."""
@@ -838,10 +329,17 @@ class PDController:
         # ── Sliding windows : positions précédentes pour restreindre la recherche
         self.hist_prev_left    = None  # cx ligne gauche frame précédente
         self.hist_prev_right   = None  # cx ligne droite frame précédente
-        self.vr           = VisualRays(
-            img_width=CAM_W, img_height=CAM_H,
-            row_band=(ROI_FAR, ROI_BOTTOM), morph_k=5,
+        # Paramètres de détection de lignes (globals runtime → objet explicite)
+        self.lp = LaneParams(
+            cam_w=CAM_W, cam_h=CAM_H, roi_far=ROI_FAR, roi_mid=ROI_MID, roi_near=ROI_NEAR,
+            min_blob_area=MIN_BLOB_AREA, min_corner_area=MIN_CORNER_AREA,
+            track_width_px=TRACK_WIDTH_EST_PX, slide_win=SLIDE_WIN,
         )
+        # Signal d'espace libre : faisceau polaire (remplace le scan-colonne VisualRays).
+        self.polar = PerceptionProfile(
+            cam_width=CAM_W, cam_height=CAM_H,
+            row_start_frac=ROI_FAR, row_end_frac=ROI_BOTTOM,
+        ).polar_rays()
 
     def _pd(self, err):
         now = time.time()
@@ -899,8 +397,8 @@ class PDController:
             self.hist_prev_left  = None  # oublier positions sliding windows
             self.hist_prev_right = None
             print("[ctrl] camera restart → reset Kalman+track_widths+sliding_windows")
-        rays    = self.vr(bgr)
-        blobs, rejected_blobs = get_blobs(mask)
+        rays    = self.polar.normalized(self.polar(mask)[0])
+        blobs, rejected_blobs = get_blobs(mask, self.lp)
         n_blobs = len(blobs)
         forward_clearance = float(np.mean(rays[8:12]))
         err = None
@@ -914,17 +412,17 @@ class PDController:
 
         # ── Détection coin L dans mask_wide (ROI large 45%) ───────────────
         m_wide = mask_wide if mask_wide is not None else mask
-        corner_blob = detect_corner_blob(m_wide)
+        corner_blob = detect_corner_blob(m_wide, self.lp)
 
         # ── Masque nettoyé : supprime artefacts (reflets, chaussures, murs) ──
         # Le masque brut reste pour la visu orange (blobs rejetés).
         # L'histogramme et les scanlines utilisent le masque propre.
-        mask_clean, mask_rejected = clean_mask_artifacts(mask, bgr=bgr)
+        mask_clean, mask_rejected = clean_mask_artifacts(mask, bgr=bgr, p=self.lp)
 
         # ── Détection lignes : Histogramme sliding + Scanlines + Fusion ─────
         hist_l, hist_r, hist_lconf, hist_rconf = find_lane_histogram(
-            mask_clean, prev_left=self.hist_prev_left, prev_right=self.hist_prev_right)
-        scan_l, scan_r, scan_rows, scan_left_hits, scan_right_hits = find_lane_scanlines(mask_clean)
+            mask_clean, prev_left=self.hist_prev_left, prev_right=self.hist_prev_right, p=self.lp)
+        scan_l, scan_r, scan_rows, scan_left_hits, scan_right_hits = find_lane_scanlines(mask_clean, p=self.lp)
 
         # Confiance scanlines : nb hits / 6 scanlines
         conf_scan_l = len(scan_left_hits)  / 6.0
@@ -1209,9 +707,6 @@ def parse_args():
                    help="Override STEERING_MAX [0.3-1.0] (defaut: 0.85).")
     p.add_argument("--no-corner",   action="store_true",
                    help="Desactive la detection de coin L (mode ligne droite / test).")
-    p.add_argument("--source", choices=["device", "hub"], default="hub",
-                   help="hub=lit le hub caméra en mémoire partagée (défaut, partage l'OAK-D) | "
-                        "device=ouvre l'OAK-D en direct")
     p.add_argument("--max-duty", type=float, default=0.50,
                    help="Duty cycle VESC maximal [0-1] (défaut 0.50).")
     p.add_argument("--gamepad", action="store_true",
@@ -1288,25 +783,8 @@ def run(args):
     print("[ctrl] Niveau {} | {} | KP={} | offset={}px | steer_max={}".format(
         args.level, speed_str, KP, CAMERA_OFFSET_PX, STEERING_MAX))
 
-    # Watchdog : thread qui surveille les frames et force un reset si caméra gelée
-    def _watchdog():
-        FRAME_TIMEOUT = 10.0  # secondes sans frame → reset forcé
-        while True:
-            time.sleep(3)
-            if time.time() - _last_frame_time[0] > FRAME_TIMEOUT:
-                print("[watchdog] Aucune frame depuis {:.0f}s — reset USB force".format(
-                    time.time() - _last_frame_time[0]))
-                _watchdog_trigger[0] = True
-                _usb_reset_oak()
-                _last_frame_time[0] = time.time()  # reset le timer pour ne pas boucler
-
-    # Watchdog USB uniquement en mode device : en mode hub, c'est le hub qui possède l'OAK-D,
-    # un reset USB côté client le perturberait (la péremption des frames est gérée par le timeout
-    # du FrameClient).
-    if args.source == "device":
-        wt = threading.Thread(target=_watchdog, daemon=True)
-        wt.start()
-
+    # Pas de watchdog USB ici : le hub possède l'OAK-D et gère la reconnexion ; côté client,
+    # la péremption des frames est gérée par le timeout du FrameClient.
     if args.gamepad:
         print("[ctrl] --gamepad ignoré : la prise de main manette est gérée par le superviseur core/.")
 
@@ -1325,9 +803,11 @@ def run(args):
                 bgr = cv2.resize(bgr[y0:, :], (CAM_W, CAM_H),
                                  interpolation=cv2.INTER_LINEAR)
 
+            # Masque brut : les filtres agressifs (top-hat, rectilinéarité) sont OFF ici,
+            # car ce contrôleur a son propre nettoyage en aval (clean_mask_artifacts).
             mask = white_line_mask(
-                bgr, hsv_low=HSV_LOW, hsv_high=HSV_HIGH,
-                morph_k=5, blur_k=3, use_clahe=True, min_area=MIN_BLOB_AREA,
+                bgr, v_min_floor=int(HSV_LOW[2]), s_max=int(HSV_HIGH[1]),
+                morph_k=5, min_area=MIN_BLOB_AREA, tophat_k=0, min_elongation=1.0,
             )
             # Masque large (ROI 45%) pour détection anticipée des coins
             mask_wide = mask.copy()
@@ -1358,11 +838,6 @@ def run(args):
                     "state":    info["state"],
                     "blobs":    info["n_blobs"],
                 })
-
-            # Mémoriser pour coast mode (crash caméra)
-            if abs(steering) < 0.5 and throttle > 0:
-                _coast_steer[0]    = steering
-                _coast_throttle[0] = throttle
 
             if vesc is not None:
                 if _drive_enabled:
@@ -1396,85 +871,27 @@ def run(args):
                           ctrl.auto_offset, ctrl.servo_bias,
                           rec_str, rep_str))
 
-    # ── Source HUB : lit le hub caméra en mémoire partagée (partage l'OAK-D) ──
-    if args.source == "hub":
-        from src.cam.hub import FrameClient, ensure_hub_or_prompt
-        if not ensure_hub_or_prompt():
-            if vesc:
-                try: vesc.stop(); vesc.close()
-                except: pass
-            return
-        client = FrameClient()
-        client.connect()
-        print("[ctrl] source = hub (SHM /dev/shm/robocar_cam_color)")
-        try:
-            # copy=True : le traitement (CLAHE+blur+morpho) peut dépasser la fenêtre de relap
-            # du ring (~132 ms) ; on copie la frame pour ne jamais conduire sur une frame déchirée.
-            _drive_loop(lambda: client.get(copy=True)[1])
-        except KeyboardInterrupt:
-            print("[ctrl] Arret.")
-        except Exception as e:
-            print("[ctrl] Hub injoignable ({}) — arret moteur.".format(type(e).__name__))
-        finally:
-            client.close()
-
-    # ── Source DEVICE : ouvre l'OAK-D en direct (reconnexion + coast + reset USB) ──
-    else:
-        attempt = 0
-        while True:
-            try:
-                attempt += 1
-                pipeline = dai.Pipeline()
-                cam = pipeline.create(dai.node.ColorCamera)
-                cam.setPreviewSize(CAM_W, CAM_H)
-                cam.setInterleaved(False)
-                cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-                cam.setFps(CAM_FPS)
-                xout = pipeline.create(dai.node.XLinkOut)
-                xout.setStreamName("preview")
-                cam.preview.link(xout.input)
-
-                with dai.Device(pipeline, True) as device:
-                    q = device.getOutputQueue("preview", maxSize=1, blocking=False)
-                    if attempt > 1:
-                        _camera_restarted[0] = True  # signale au controller de reset Kalman
-                    attempt = 0
-                    _drive_loop(lambda: q.get().getCvFrame())
-
-            except KeyboardInterrupt:
-                print("[ctrl] Arret."); break
-            except Exception as e:
-                print("[ctrl] Erreur ({}) — coast mode + reset USB + reconnexion".format(type(e).__name__))
-                _coast_crash_t[0] = time.time()
-                _usb_reset_oak()
-                delay = max(5, min(5 * attempt, 30))
-                coast_s = float(_coast_steer[0])
-                coast_t = float(_coast_throttle[0])
-                # Coast mode : décroissance progressive pendant le reset USB
-                elapsed = 0.0
-                while elapsed < delay:
-                    elapsed = time.time() - _coast_crash_t[0]
-                    if vesc and _drive_enabled:
-                        if elapsed < 0.5:
-                            s = coast_s
-                            t = coast_t
-                        elif elapsed < 1.5:
-                            s = coast_s * 0.90
-                            t = coast_t * 0.90
-                        elif elapsed < 2.5:
-                            s = coast_s * 0.70
-                            t = coast_t * 0.60
-                        else:
-                            try: vesc.stop()
-                            except: pass
-                            break
-                        try: vesc.drive(s, t)
-                        except: pass
-                    time.sleep(0.05)
-                if vesc:
-                    try: vesc.stop()
-                    except: pass
-                print("[ctrl] Reconnexion dans {}s restantes...".format(max(0, delay - elapsed)))
+    # Source unique = hub caméra (SHM). controller_pd est un client : il n'ouvre jamais
+    # l'OAK-D. Le hub possède la caméra et gère la reconnexion.
+    from src.cam.hub import FrameClient, ensure_hub_or_prompt
+    if not ensure_hub_or_prompt():
+        if vesc:
+            try: vesc.stop(); vesc.close()
+            except: pass
+        return
+    client = FrameClient()
+    client.connect()
+    print("[ctrl] source = hub (SHM /dev/shm/robocar_cam_color)")
+    try:
+        # copy=True : le traitement (CLAHE+morpho) peut dépasser la fenêtre de relap du ring
+        # (~132 ms) ; on copie la frame pour ne jamais conduire sur une frame déchirée.
+        _drive_loop(lambda: client.get(copy=True)[1])
+    except KeyboardInterrupt:
+        print("[ctrl] Arret.")
+    except Exception as e:
+        print("[ctrl] Hub injoignable ({}) — arret moteur.".format(type(e).__name__))
+    finally:
+        client.close()
 
     if vesc:
         try: vesc.stop(); vesc.close()

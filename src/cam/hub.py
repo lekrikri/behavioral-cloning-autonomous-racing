@@ -209,10 +209,12 @@ def _build_pipeline(dai, width, height, fps, want_imu, want_depth):
         imu.out.link(ximu.input)
 
     if want_depth:
-        # Config depth canonique partagée avec create_depthai_pipeline → DepthToRays calibré
-        # reste valide quelle que soit la source (hub ou device direct).
+        # Depth alignée sur la couleur (CAM_A) et à la taille du preview → pixel-à-pixel
+        # avec le masque, requis par le filtre « surfaces verticales » de white_line_mask.
         from src.mask.depth_rays import add_stereo_depth
-        stereo = add_stereo_depth(pipeline, dai)
+        stereo = add_stereo_depth(pipeline, dai,
+                                  align_socket=dai.CameraBoardSocket.CAM_A,
+                                  output_size=(width, height))
         xd = pipeline.create(dai.node.XLinkOut)
         xd.setStreamName("depth")
         stereo.depth.link(xd.input)

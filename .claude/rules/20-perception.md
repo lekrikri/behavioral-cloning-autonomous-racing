@@ -2,11 +2,14 @@
 
 ## Raycasts polaires (parité simulateur)
 
-- La représentation **principale** des distances est **polaire** : rayons angulaires depuis
-  un centre, comme le simulateur (`configs/config.json` : `nbRay`, `fov`, `rayMaxDistance`).
+- La **seule** représentation de sortie est **polaire** : un faisceau régulier depuis le
+  centre voiture, comme le simulateur (`configs/config.json` : `nbRay`, `fov`, `rayMaxDistance`).
   Le modèle a été entraîné sur ce format → le réel doit le reproduire.
-- D'autres représentations sont tolérées en complément, mais **la polaire doit toujours
-  rester disponible** et faire référence.
+- Implémentation : `src/mask/polar_rays.py` (`PolarRays`) via IPM sur le plan sol
+  (`src/mask/camera_ground.py`, géométrie partagée). Les anciens raycasts scan-colonne
+  (VisualRays) et depth (DepthToRays) ont été **supprimés** — ne pas les réintroduire.
+- La depth n'est **plus** une source de rayons : elle sert de **filtre** du masque
+  (rejet des surfaces verticales, voir ci-dessous).
 
 ## FOV caméra : FIXE
 
@@ -16,6 +19,12 @@
 
 ## Masque de lignes
 
-- Anti-artefacts (reflets, plinthes blanches) = couches structurelles empilées, togglables,
-  **OFF par défaut**. Le **depth gating** est le différenciateur. Ne pas réintroduire un
-  seuil couleur seul (il ne sépare pas le blanc achromatique des lignes).
+- Source unique : `src/mask/white_line.py` (`white_line_mask`). Entrée = frame BGR
+  (+ depth alignée), sortie = image binaire (lignes blanches, reste noir).
+- Anti-artefacts = couches empilées **paramétrables** et désormais **ON par défaut** (le
+  redesign vise la robustesse multi-situations) : CLAHE, gate achromatique-brillant
+  (rejet sombres + couleurs), white top-hat (rejet grandes plages brillantes), morpho,
+  **filtre depth** (rejet surfaces verticales vs plan sol) et filtre composantes
+  (aire mini + rectilinéarité PCA). Réglables via le profil de perception (`configs/profiles/`).
+- Ne pas réintroduire un seuil couleur seul (il ne sépare pas le blanc achromatique des
+  lignes) : le **filtre depth** reste le différenciateur clé.

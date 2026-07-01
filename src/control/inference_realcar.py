@@ -5,7 +5,8 @@ Hardware : Jetson Nano + Luxonis OAK-D Lite + Flipsky FSESC Mini V6.7 Pro
 Modèle   : RobocarSpatial v18 (ONNX) — input [23] : 20 rays Z-scorés + 3 derived features
 
 Architecture multi-thread :
-  Thread 1 (perception)  : OAK-D → depth frame → raycasts virtuels
+  Thread 1 (perception)  : OAK-D → masque lignes blanches (couleur + depth alignée) →
+                           faisceau POLAIRE (raycasts depuis le centre voiture)
   Thread 2 (contrôle)    : raycasts → ONNX → smoother → VESC
   Watchdog               : arrêt auto si pas de frame depuis WATCHDOG_S secondes
 
@@ -18,7 +19,7 @@ Architecture multi-thread :
 Usage :
   python3.8 -m src.control.inference_realcar --duty-max 0.20
   python3.8 -m src.control.inference_realcar --duty-max 0.20 --servo-center 0.52 --invert-steer
-  python3.8 -m src.control.inference_realcar --duty-max 0.20 --perception-mode visual
+  python3.8 -m src.control.inference_realcar --duty-max 0.20 --profile classic
 """
 
 import csv
@@ -53,8 +54,11 @@ except ImportError:
     _DAI_AVAILABLE = False
     print("[WARNING] depthai non installé")
 
-from src.mask.depth_rays import DepthToRays, create_depthai_pipeline, add_stereo_depth
-from src.mask.visual_rays   import VisualRays, create_color_pipeline
+from src.mask.depth_rays import add_stereo_depth
+from src.mask.white_line import white_line_mask
+from src.mask.camera_ground import CameraGround
+from src.mask.polar_rays import PolarRays
+from src.mask.perception_config import PerceptionProfile, resolve_profile
 from src.control.vesc_interface import VESCInterface
 from src.features import derive_features
 from src.control_post import SmoothingFilter, apply_steer_offset, accel_from_geometry
@@ -74,6 +78,7 @@ EMERGENCY_VALID_FRAC_MIN = 0.003  # "blackout" : objet collé qui occulte la len
                                   # (~1% de pixels valides en usage normal -> marge x3).
 EMERGENCY_CENTER_BAND   = (0.40, 0.60)  # fraction de colonnes (centre image) scrutée
 DEPTH_DEAD_MAX_MM       = 200    # frame.max() en deçà -> depth map nulle (capteur/hub perdu)
+MIN_VALID_MM            = 100.0  # depth < 10cm = bruit sol/réflexion -> ignoré pour la proximité
 
 
 class RealCarInference:
@@ -90,8 +95,7 @@ class RealCarInference:
         invert_motor: bool  = False,   # duty mode : accel positif -> marche avant
         steer_gain: float   = 1.0,
         log_csv: bool       = True,
-        perception_mode: str = "depth",
-        mask_mode: str       = "hsv",
+        profile: PerceptionProfile = None,
         source: str          = "device",
     ):
         print("\n[RealCar] ══════════════════════════════════════════")
@@ -127,10 +131,14 @@ class RealCarInference:
         self.ray_mu    = np.array(stats["mean"], dtype=np.float32)
         self.ray_sigma = np.array(stats["std"],  dtype=np.float32)
 
-        self.perception_mode = perception_mode
-        self.source          = source
-        self.depth_bridge    = DepthToRays()
-        self.visual_bridge   = VisualRays(mode=mask_mode)
+        self.source   = source
+        self.profile  = profile or PerceptionProfile()   # défaut = profil classic
+        self.mask_kw  = self.profile.mask_kwargs()
+        # Géométrie IPM + faisceau polaire construits sur la 1re frame (taille réelle).
+        self.geom     = None
+        self.polar    = None
+        print(f"[RealCar] Profil perception = {self.profile.name} ({self.profile.kind}) | "
+              f"{self.profile.n_rays} rayons polaires | max {self.profile.max_range_m:.1f} m")
 
         # ── VESC avec params calibrés ─────────────────────────────────────────
         self.vesc = VESCInterface(
@@ -173,149 +181,72 @@ class RealCarInference:
         print(f"[RealCar] CURRENT_MAX = {current_max:.1f}A | WATCHDOG = {WATCHDOG_S*1000:.0f}ms")
         print("[RealCar] ✅ Prêt. Lance run() pour démarrer.\n")
 
+    def _ensure_perception(self, h, w):
+        """Construit géométrie IPM + faisceau polaire à la taille réelle de la frame."""
+        if self.geom is not None and self.geom.H == h and self.geom.W == w:
+            return
+        self.geom  = CameraGround(w, h, self.profile.fov_deg,
+                                  self.profile.cam_height_m, self.profile.cam_pitch_deg)
+        self.polar = self.profile.polar_rays(geom=self.geom)
+        print(f"[Perception] géométrie {w}x{h} | FOV {self.profile.fov_deg:.1f}° | "
+              f"h={self.profile.cam_height_m:.2f}m pitch={self.profile.cam_pitch_deg:.0f}°")
+
+    def _rays_from(self, bgr, depth):
+        """Frame couleur (+ depth alignée optionnelle) -> rayons polaires normalisés [0,1]."""
+        self._ensure_perception(bgr.shape[0], bgr.shape[1])
+        mask = white_line_mask(bgr, depth_mm=depth, geom=self.geom, **self.mask_kw)
+        dist, _ = self.polar(mask)
+        return self.polar.normalized(dist)
+
     def _check_proximity(self, depth_frame) -> bool:
-        """Obstacle trop proche dans la bande centrale ? (depth uint16, mm)
+        """Obstacle trop proche dans la bande centrale ? (depth uint16 mm, alignée couleur).
 
         Deux déclencheurs, car la stéréo a un angle mort sous ~35cm (MinZ) :
           1. obstacle MESURÉ proche : médiane des pixels valides < EMERGENCY_NEAR_MM
-          2. "blackout"             : quasi aucun pixel valide (objet collé qui
-             occulte la lentille) -> sinon l'obstacle "disparaît" et la voiture réaccélère.
-        On teste la fraction de pixels VALIDES (pas l'inverse) : la depth OAK-D Lite
-        est déjà éparse (~1% valides en normal), donc seul un blackout total discrimine.
+          2. "blackout"             : quasi aucun pixel valide (objet collé qui occulte
+             la lentille) -> sinon l'obstacle "disparaît" et la voiture réaccélère.
         """
-        b = self.depth_bridge
-        c0, c1 = int(b.W * EMERGENCY_CENTER_BAND[0]), int(b.W * EMERGENCY_CENTER_BAND[1])
-        roi = depth_frame[b.row_start:b.row_end, c0:c1]
-        valid = roi[(roi >= b.min_valid_mm) & (roi <= b.max_dist_mm)]
+        if depth_frame is None or self.geom is None:
+            return False
+        g = self.geom
+        r0, r1 = int(g.H * self.profile.row_start_frac), int(g.H * self.profile.row_end_frac)
+        c0, c1 = int(g.W * EMERGENCY_CENTER_BAND[0]), int(g.W * EMERGENCY_CENTER_BAND[1])
+        roi = depth_frame[r0:r1, c0:c1]
+        if roi.size == 0:
+            return False
+        max_mm = self.profile.max_range_m * 1000.0
+        valid = roi[(roi >= MIN_VALID_MM) & (roi <= max_mm)]
         if valid.size and float(np.median(valid)) < EMERGENCY_NEAR_MM:
             return True
         return (valid.size / float(roi.size)) < EMERGENCY_VALID_FRAC_MIN
 
-    def _apply_calib_fov(self, device, socket, bridge, label):
-        """Applique le FOV usine du capteur au bridge (fallback = constante codée)."""
-        try:
-            fov = device.readCalibration().getFov(socket)
-            bridge.set_fov(fov)
-            print(f"[Perception] FOV {label} = {fov:.1f}° (calibration usine)")
-        except Exception as e:
-            print(f"[Perception] FOV {label} : getFov indisponible ({e}) — fallback {bridge.fov_deg:.1f}°")
-
     def _perception_thread(self):
-        if not _DAI_AVAILABLE:
-            print("[Perception] depthai non disponible")
-            return
-        if self.perception_mode == "visual":
-            self._perception_visual()
-        elif self.perception_mode == "fusion":
-            self._perception_fusion()
+        if self.source == "hub":
+            self._perception_hub()
+        elif _DAI_AVAILABLE:
+            self._perception_device()
         else:
-            self._perception_depth()
+            print("[Perception] depthai non disponible et source != hub")
 
     def _publish(self, rays, prox: bool = False) -> None:
         """Publie atomiquement la dernière frame perçue : rays + flag proximité + timestamp.
 
-        Invariant unique des 6 boucles de perception. prox=False pour les modes
-        sans depth (visual) — l'arrêt d'urgence y est inactif par construction.
+        Point d'entrée unique des boucles de perception (hub / device). prox=False si la
+        depth est absente — l'arrêt d'urgence est alors inactif par construction.
         """
         with self._lock:
             self._latest_rays       = rays
             self._proximity_blocked = prox
             self._last_frame_t      = time.time()
 
-    def _perception_depth(self):
-        if self.source == "hub":
-            self._perception_depth_hub(); return
-        pipeline = create_depthai_pipeline()
-        with dai.Device(pipeline) as device:
-            q = device.getOutputQueue("depth", maxSize=1, blocking=False)
-            print("[Perception] OAK-D connectée — flux DEPTH démarré")
-            self._apply_calib_fov(device, dai.CameraBoardSocket.CAM_B, self.depth_bridge, "depth")
-            with self._lock:
-                self._last_frame_t     = time.time()
-                self._perception_ready = True
-            while self._running:
-                msg = q.tryGet()
-                if msg is not None:
-                    frame = msg.getFrame()
-                    if frame.max() < DEPTH_DEAD_MAX_MM:
-                        print("\n[Perception] ⚠️  Depth map nulle — perte OAK-D !")
-                        self.vesc.stop()
-                    else:
-                        rays = self.depth_bridge(frame)
-                        self._publish(rays, self._check_proximity(frame))
-                time.sleep(0.005)
-
-    def _perception_depth_hub(self):
-        """Mode depth alimenté par le hub (SHM robocar_cam_depth, zéro-copie)."""
-        from src.cam.hub import FrameClient, SHM_DEPTH
-        client = FrameClient(stream=SHM_DEPTH)
-        print("[Perception] source = hub (SHM robocar_cam_depth) — flux DEPTH")
-        with self._lock:
-            self._last_frame_t     = time.time()
-            self._perception_ready = True
-        while self._running:
-            try:
-                frame = client.getCvFrame()
-            except (ConnectionError, OSError):
-                print("[Perception] hub depth indisponible — reconnexion…")
-                client.close(); time.sleep(0.5); continue
-            if frame.max() < DEPTH_DEAD_MAX_MM:
-                print("\n[Perception] ⚠️  Depth map nulle — hub/OAK-D ?")
-                self.vesc.stop()
-            else:
-                rays = self.depth_bridge(frame)
-                self._publish(rays, self._check_proximity(frame))
-        client.close()
-
-    def _perception_visual_hub(self):
-        """Mode visual alimenté par le hub (frames en mémoire partagée, zéro-copie) — pas
-        d'ouverture caméra ici. Permet à la preview (mask_stream) et à l'inférence de
-        partager l'OAK-D."""
-        from src.cam.hub import FrameClient
-        client = FrameClient()
-        print("[Perception] source = hub (SHM robocar_cam_color) — flux VISUAL (masque)")
-        with self._lock:
-            self._last_frame_t     = time.time()
-            self._perception_ready = True
-        while self._running:
-            try:
-                bgr = client.getCvFrame()
-            except (ConnectionError, OSError):
-                print("[Perception] hub indisponible — reconnexion…")
-                client.close()
-                time.sleep(0.5)
-                continue
-            rays = self.visual_bridge(bgr)
-            self._publish(rays)
-        client.close()
-
-    def _perception_visual(self):
-        if self.source == "hub":
-            self._perception_visual_hub()
-            return
-        pipeline = create_color_pipeline()
-        with dai.Device(pipeline) as device:
-            q = device.getOutputQueue("color", maxSize=2, blocking=False)
-            print("[Perception] OAK-D connectée — flux VISUAL (masque) démarré")
-            self._apply_calib_fov(device, dai.CameraBoardSocket.CAM_A, self.visual_bridge, "visual")
-            with self._lock:
-                self._last_frame_t     = time.time()
-                self._perception_ready = True
-            while self._running:
-                msg = q.tryGet()
-                if msg is not None:
-                    rays = self.visual_bridge(msg.getCvFrame())
-                    self._publish(rays)
-                time.sleep(0.005)
-
-    def _perception_fusion_hub(self):
-        """Fusion depth+visual alimentée par le hub (SHM, zéro-copie). La couleur cadence la
-        boucle (getCvFrame bloque sur une nouvelle frame) ; le depth est lu en 'dernière dispo'
-        (latest, non bloquant) pour ne pas freiner la couleur."""
+    def _perception_hub(self):
+        """Perception polaire alimentée par le hub (SHM couleur + depth alignée, zéro-copie).
+        La couleur cadence la boucle (getCvFrame bloque sur une nouvelle frame) ; la depth est
+        lue en 'dernière dispo' (latest, non bloquant) pour ne pas freiner la couleur."""
         from src.cam.hub import FrameClient, SHM_COLOR, SHM_DEPTH
         c_color = FrameClient(stream=SHM_COLOR)
         c_depth = FrameClient(stream=SHM_DEPTH)
-        print("[Perception] source = hub (SHM color+depth) — flux FUSION")
+        print("[Perception] source = hub (SHM color + depth alignée) — faisceau POLAIRE")
         with self._lock:
             self._last_frame_t     = time.time()
             self._perception_ready = True
@@ -324,66 +255,47 @@ class RealCarInference:
                 bgr = c_color.getCvFrame()
             except (ConnectionError, OSError):
                 print("[Perception] hub indisponible — reconnexion…")
-                c_color.close(); c_depth.close(); time.sleep(0.5); continue
-            rays_visual = self.visual_bridge(bgr)
-            depth = c_depth.latest()
-            prox = False
-            if depth is not None and depth.max() >= DEPTH_DEAD_MAX_MM:
-                prox = self._check_proximity(depth)
-                rays_fused = np.minimum(self.depth_bridge(depth), rays_visual)
-            else:
-                rays_fused = rays_visual   # fallback si depth absent/KO
-            self._publish(rays_fused, prox)
+                c_color.close(); c_depth.close(); time.sleep(0.5)
+                c_color = FrameClient(stream=SHM_COLOR)
+                c_depth = FrameClient(stream=SHM_DEPTH)
+                continue
+            depth = c_depth.latest()          # best-effort, non bloquant
+            rays = self._rays_from(bgr, depth)
+            self._publish(rays, self._check_proximity(depth))
         c_color.close(); c_depth.close()
 
-    def _perception_fusion(self):
-        """
-        Fusion depth + visual : np.minimum(rays_depth, rays_visual)
-        → conserve le signal le plus contraignant (obstacle le plus proche).
-        Depth détecte les murs/obstacles en volume.
-        Visual détecte les bords de piste (lignes blanches au sol).
-        """
-        if self.source == "hub":
-            self._perception_fusion_hub(); return
-        # Un seul pipeline v2 : couleur (CAM_A) + depth stéréo via la config canonique partagée
-        # (add_stereo_depth = même config que le mode depth et le hub → DepthToRays reste calibré)
-        pipeline = create_color_pipeline()
-        stereo = add_stereo_depth(pipeline, dai)
-        xout_d = pipeline.create(dai.node.XLinkOut)
-        xout_d.setStreamName("depth")
-        stereo.depth.link(xout_d.input)
+    def _perception_device(self):
+        """Perception polaire en ouvrant l'OAK-D : couleur CAM_A + depth stéréo alignée couleur."""
+        pipeline = dai.Pipeline()
+        cam = pipeline.create(dai.node.ColorCamera)
+        cam.setBoardSocket(dai.CameraBoardSocket.CAM_A)
+        cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+        cam.setIspScale(1, 3)
+        cam.setPreviewSize(self.profile.cam_width, self.profile.cam_height)
+        cam.setInterleaved(False)
+        cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
+        cam.setFps(30)
+        xc = pipeline.create(dai.node.XLinkOut); xc.setStreamName("color"); cam.preview.link(xc.input)
+        stereo = add_stereo_depth(pipeline, dai,
+                                  align_socket=dai.CameraBoardSocket.CAM_A,
+                                  output_size=(self.profile.cam_width, self.profile.cam_height))
+        xd = pipeline.create(dai.node.XLinkOut); xd.setStreamName("depth"); stereo.depth.link(xd.input)
 
         with dai.Device(pipeline) as device:
             q_color = device.getOutputQueue("color", maxSize=2, blocking=False)
             q_depth = device.getOutputQueue("depth", maxSize=1, blocking=False)
-            print("[Perception] OAK-D connectée — flux FUSION (depth + masque) démarré")
-            self._apply_calib_fov(device, dai.CameraBoardSocket.CAM_B, self.depth_bridge,  "depth")
-            self._apply_calib_fov(device, dai.CameraBoardSocket.CAM_A, self.visual_bridge, "visual")
+            print("[Perception] OAK-D connectée — faisceau POLAIRE (couleur + depth alignée)")
             with self._lock:
                 self._last_frame_t     = time.time()
                 self._perception_ready = True
-
+            last_depth = None
             while self._running:
                 bgr_msg   = q_color.get()
                 depth_msg = q_depth.tryGet()
-
-                rays_visual = self.visual_bridge(bgr_msg.getCvFrame())
-
-                prox = False
                 if depth_msg is not None:
-                    frame = depth_msg.getFrame()
-                    if frame.max() >= DEPTH_DEAD_MAX_MM:
-                        rays_depth = self.depth_bridge(frame)
-                        prox = self._check_proximity(frame)
-                        # Fusion : minimum → le signal le plus contraignant
-                        rays_fused = np.minimum(rays_depth, rays_visual)
-                    else:
-                        rays_fused = rays_visual   # fallback si depth KO
-                else:
-                    rays_fused = rays_visual       # fallback si pas de frame depth
-
-                self._publish(rays_fused, prox)
-                time.sleep(0.005)
+                    last_depth = depth_msg.getFrame()
+                rays = self._rays_from(bgr_msg.getCvFrame(), last_depth)
+                self._publish(rays, self._check_proximity(last_depth))
 
     def _control_thread(self):
         print(f"[Control] Boucle démarrée @ {CONTROL_HZ} Hz")
@@ -525,22 +437,23 @@ def main():
     parser.add_argument("--steer-gain", type=float, default=1.0,
                         help="multiplicateur du steering (compense l'atténuation sim-to-real ; 1.0 = brut)")
     parser.add_argument("--no-log",          action="store_true")
-    parser.add_argument("--perception-mode", choices=["depth", "visual", "fusion"], default="depth",
-                        help="depth=depth map stéreo | visual=masque HSV/Canny couleur")
-    parser.add_argument("--mask-mode",       choices=["hsv", "canny"], default="hsv",
-                        help="Mode masque (si --perception-mode visual)")
+    parser.add_argument("--profile",  default=None,
+                        help="profil de perception (configs/profiles/<nom>.json). Par défaut : "
+                             "le dernier profil actif choisi dans l'interface (persisté), sinon classic")
     parser.add_argument("--source",   choices=["device", "hub"], default="hub",
                         help="hub=lit le hub caméra en mémoire partagée (défaut, partage l'OAK-D) | device=ouvre l'OAK-D")
     args = parser.parse_args()
 
     if args.source == "hub":
-        from src.cam.hub import ensure_hub_or_prompt, SHM_COLOR, SHM_DEPTH
-        # Préflight sur le flux RÉELLEMENT consommé selon le mode (sinon faux vert sur la
-        # couleur alors que le mode depth lit le depth). Fusion : color est le flux bloquant,
-        # le depth est best-effort (latest() → None si absent).
-        stream = SHM_DEPTH if args.perception_mode == "depth" else SHM_COLOR
-        if not ensure_hub_or_prompt(stream):
+        from src.cam.hub import ensure_hub_or_prompt, SHM_COLOR
+        # Le faisceau polaire est cadencé par la couleur ; la depth (filtre surfaces
+        # verticales + arrêt d'urgence) est best-effort via latest(). Préflight = couleur.
+        if not ensure_hub_or_prompt(SHM_COLOR):
             sys.exit(1)
+
+    # Profil : --profile explicite > dernier profil actif (interface) > classic.
+    profile, prof_name = resolve_profile(args.profile)
+    print(f"[RealCar] profil de perception = {prof_name}")
 
     RealCarInference(
         model_path   = args.model,
@@ -554,8 +467,7 @@ def main():
         invert_motor     = args.invert_motor,
         steer_gain       = args.steer_gain,
         log_csv          = not args.no_log,
-        perception_mode  = args.perception_mode,
-        mask_mode        = args.mask_mode,
+        profile          = profile,
         source           = args.source,
     ).run()
 

@@ -9,7 +9,7 @@
   },
   "workers": {
     "auto_pd": {
-      "argv": ["python3", "-u", "-m", "src.control.controller_pd", "--source", "hub", "--stream-port", "{stream_port}", "--max-duty", "{max_duty}", "--steering-max", "{steering_max}", "--gamepad"],
+      "argv": ["python3", "-u", "-m", "src.control.controller_pd", "--stream-port", "{stream_port}", "--max-duty", "{max_duty}", "--steering-max", "{steering_max}", "--gamepad"],
       "env": { "OPENBLAS_CORETYPE": "ARMV8" }
     },
     "auto_nn": {
@@ -23,7 +23,7 @@
       "env": { "OPENBLAS_CORETYPE": "ARMV8" }
     },
     "stream_ui": {
-      "argv": ["python3", "-u", "-m", "src.mask.stream", "--source", "hub"],
+      "argv": ["python3", "-u", "-m", "src.tools.debug.server"],
       "env": { "OPENBLAS_CORETYPE": "ARMV8" }
     }
   }
